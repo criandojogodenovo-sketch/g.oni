@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>G.oni Llumni — Player</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #0b0e14; color: #e8ecf4;
+      font-family: system-ui, sans-serif;
+      overscroll-behavior: none;
+    }
+    #player { position: absolute; inset: 0; }
+    #player canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #hud {
+      position: absolute; top: 8px; left: 8px; z-index: 5;
+      font-family: ui-monospace, monospace; font-size: 11px; color: #3ecf8e;
+      background: rgba(11,14,20,0.7); padding: 4px 8px; border-radius: 6px;
+    }
+    #drop {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      z-index: 10; background: rgba(11,14,20,0.92); text-align: center; padding: 30px;
+    }
+    #drop h1 { font-size: 20px; margin: 0 0 8px; }
+    #drop p { color: #9aa6bd; line-height: 1.5; max-width: 420px; margin: 0 auto 20px; }
+    #drop button {
+      font: inherit; padding: 12px 22px; border-radius: 8px; border: none;
+      background: #ffb020; color: #1a1204; font-weight: 700; cursor: pointer;
+    }
+    .joy {
+      position: absolute; left: 18px; bottom: 18px; width: 120px; height: 120px;
+      border-radius: 50%; background: rgba(20,25,37,0.55); border: 2px solid #39445f;
+      z-index: 6; touch-action: none;
+    }
+    .joy .knob {
+      position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; border-radius: 50%;
+      background: rgba(255,176,32,0.85); transform: translate(-50%, -50%);
+    }
+    .jump {
+      position: absolute; right: 22px; bottom: 30px; width: 76px; height: 76px; border-radius: 50%;
+      background: rgba(20,25,37,0.6); border: 2px solid #39445f; color: #e8ecf4;
+      font-weight: 700; z-index: 6; font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="player">
+    <canvas id="gl"></canvas>
+    <div id="hud">carregando…</div>
+    <div class="joy" id="joy"><div class="knob" id="knob"></div></div>
+    <button class="jump" id="jump">PULAR</button>
+    <div id="drop">
+      <div>
+        <h1>G.oni Llumni · Player</h1>
+        <p>Runtime standalone para jogos exportados.<br />Arraste um arquivo <b>.g.oni</b> para cá, escolha um arquivo ou abra com <b>?src=URL</b>.</p>
+        <button id="pick">Abrir jogo (.g.oni)</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/runtime/src/player.ts"></script>
+</body>
+</html>

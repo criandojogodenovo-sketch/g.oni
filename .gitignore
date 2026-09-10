@@ -1,0 +1,31 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+core/build/
+*.wasm.tmp
+
+# Ambiente local
+.env
+.env.*
+*.local
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Capacitor / Android (plataformas geradas localmente)
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+ios/Pods/
+ios/build/
+
+# Vercel
+.vercel
+
+# Logs
+*.log
+npm-debug.log*
