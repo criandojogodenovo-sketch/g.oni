@@ -3,13 +3,32 @@
 Build de produção 100% estático (`dist/`), pronto para Vercel, Netlify,
 GitHub Pages ou qualquer CDN.
 
+> **Deploy ativo deste projeto:**
+> **https://g-oni-llumni.vercel.app** (produção) ·
+> **https://g-oni-llumni.vercel.app/runtime/player** (runtime player)
+
+---
+
+## Conectar o repositório (deploys automáticos — passo único manual)
+
+O projeto já existe na Vercel. Para que **cada `git push` na `main` gere um
+deploy automático**, conecte o repositório uma única vez no painel:
+
+1. Acesse **vercel.com** → projeto **g-oni-llumni**
+2. **Settings → Git → Connect Git Repository**
+3. Escolha `criandojogodenovo-sketch/g.oni` → branch `main`
+4. Pronto: push = deploy 🚀
+
+> O comando `vercel git connect` via CLI exige o GitHub App da Vercel
+> instalado com acesso ao repo; a via do painel é o caminho recomendado.
+
 ---
 
 ## 1. Vercel via painel (recomendado)
 
 1. Faça push do projeto para um repositório GitHub
 2. Acesse **vercel.com/new** e importe o repositório
-3. A Vercel detecta **Vite** automaticamente; se pedir:
+3. A Vercel detecta **Vite** automaticamente (ou via `vercel.json`, já incluído):
    - **Framework Preset:** Vite
    - **Build Command:** `npm run build`
    - **Output Directory:** `dist`
