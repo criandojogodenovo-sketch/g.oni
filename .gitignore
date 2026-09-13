@@ -1,31 +1,52 @@
-# Dependências
-node_modules/
+# =============================================================================
+# eng:: — Git ignore (FASE 1)
+# =============================================================================
 
-# Build
-dist/
-core/build/
-*.wasm.tmp
+# Diretórios de build (presets geram build/<preset>)
+build/
+.build/
+out/
+cmake-build-*/
 
-# Ambiente local
-.env
-.env.*
-*.local
+# CMake
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+_deps/
 
-# Sistema
+# Artefatos compilados
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# FetchContent / dependências baixadas
+third_party/src/
+third_party/build/
+
+# IDE / editores
+.idea/
+.vscode/
+.cache/
+*.swp
+*.swo
+.vs/
+
+# Sistema operacional
 .DS_Store
 Thumbs.db
 
-# Capacitor / Android (plataformas geradas localmente)
-android/app/build/
-android/.gradle/
-android/build/
-android/local.properties
-ios/Pods/
-ios/build/
-
-# Vercel
-.vercel
-
-# Logs
-*.log
-npm-debug.log*
+# Secrets — NUNCA commitar (guardrail §15.1)
+.env
+.env.*
+*.token
+*.key
+secrets/

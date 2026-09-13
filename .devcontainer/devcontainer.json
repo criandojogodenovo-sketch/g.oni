@@ -1,0 +1,19 @@
+{
+    "name": "eng — engine de jogos",
+    "image": "mcr.microsoft.com/devcontainers/cpp:ubuntu-24.04",
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/common-utils:1": {}
+    },
+    "forwardPorts": [
+        8173,
+        8174
+    ],
+    "portsAttributes": {
+        "8173": { "label": "editor-bridge WebSocket (FASE 7+)" },
+        "8174": { "label": "editor-bridge HTTP assets (FASE 7+)" }
+    },
+    "postCreateCommand": "bash .devcontainer/scripts/install-base.sh && bash .devcontainer/scripts/install-graphics.sh && bash .devcontainer/scripts/install-android.sh && bash .devcontainer/scripts/verify.sh",
+    "remoteUser": "vscode"
+}
