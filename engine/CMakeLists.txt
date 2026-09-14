@@ -11,3 +11,4 @@ add_subdirectory(log)     # Logger/sinks/format — sem dependências
 # FASE 2 (missão §B.0): refletem sobre core; ecs/scene no topo.
 add_subdirectory(reflect) # TypeRegistry + ENG_REFLECT — sobre core
 add_subdirectory(events)  # EventBus + Subscription RAII — sobre core
+add_subdirectory(jobs)    # JobSystem work-stealing — sobre core
