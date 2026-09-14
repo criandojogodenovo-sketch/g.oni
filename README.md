@@ -2,10 +2,11 @@
 
 [![CI Linux](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-linux.yml)
 
-Engine de jogos 3D escrita em **C++20**, com editor web (TypeScript) e alvo
-principal **Android** (Vulkan 1.3, GLES 3.2 como compatibilidade).
+Engine de jogos 3D escrita em **C++20**, com alvo principal **Android**
+(Vulkan 1.3, GLES 3.2 como compatibilidade).
 Projeto conduzido por fases com contrato técnico formal; este repositório
-está na **FASE 1** (núcleo fundacional).
+está na **FASE 2** (núcleo fundacional concluído; metadados, eventos,
+jobs, ECS e cena em progresso).
 
 ## Estado — FASE 1 (concluída)
 
