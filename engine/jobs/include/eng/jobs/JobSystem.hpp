@@ -31,6 +31,14 @@
 ///     EVOLUÇÃO documentada em ADR-023 — SEM código stub nesta fase.
 ///   - `submit()` concorrente com `shutdown()` a partir de threads externas
 ///     deve ser serializado pelo chamador (ver ADR-023, seção "ordas").
+///   - Ciclo de vida e contabilidade LINEARIZÁVEL (ADR-023): `queued_`
+///     conta o job ANTES da publicação na fila; a transferência
+///     fila→execução incrementa `inFlight_` ANTES de decrementar `queued_`
+///     — a soma `queued_ + inFlight_` nunca cai a zero durante uma
+///     transferência, logo `waitAll` jamais retorna cedo.
+///   - Workers dormem em `std::counting_semaphore` (contagem persistente:
+///     release antes de acquire não se perde — sem categoria de lost-wakeup;
+///     sem spin de predicado). Envio não disputa o mutex de wake.
 
 #include <atomic>
 #include <condition_variable>
@@ -39,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -215,6 +224,8 @@ public:
     /// Enfileira `task` (invocável como f()). Devolve handle inválido se o
     /// sistema já está desligado (sem crash — documentado). Complexidade:
     /// O(1) (deque do worker alvo + possível heap do callable).
+    /// Contabilidade: o job é CONTADO antes de ser publicado — waitAll é
+    /// linearizável em relação a submits concorrentes (ADR-023).
     template<typename F>
     [[nodiscard]] JobHandle submit(F&& task)
     {
@@ -228,16 +239,13 @@ public:
 
         const unsigned target =
             nextQueue_.fetch_add(1, std::memory_order_relaxed) % workerCount_;
+        queued_.fetch_add(1, std::memory_order_release); // conta ANTES de publicar
         {
             detail::WorkerQueue& queue = *queues_[target];
             std::lock_guard<std::mutex> lock(queue.mutex);
             queue.jobs.push_back(std::move(job));
         }
-        queued_.fetch_add(1, std::memory_order_release);
-        {
-            std::lock_guard<std::mutex> lock(wakeMutex_);
-            wakeCv_.notify_one();
-        }
+        workAvailable_.release(); // acorda um worker estacionado
         return JobHandle(std::move(state));
     }
 
@@ -258,6 +266,13 @@ public:
 private:
     void workerLoop(unsigned id);
     void executeTask(detail::Task&& task);
+    /// Transferência fila→execução SEM janela zero-zero: inFlight_ sobe ANTES
+    /// de queued_ cair — a soma nunca toca zero durante a transferência.
+    void transferToInFlight() noexcept
+    {
+        inFlight_.fetch_add(1, std::memory_order_relaxed);
+        queued_.fetch_sub(1, std::memory_order_release);
+    }
     [[nodiscard]] std::optional<detail::Task> tryPopOwn(unsigned id);
     [[nodiscard]] std::optional<detail::Task> trySteal(unsigned id);
 
@@ -265,11 +280,14 @@ private:
     std::vector<std::unique_ptr<detail::WorkerQueue>> queues_;
     std::vector<std::thread> threads_;
 
+    /// Estacionamento de workers: contagem persistente de jobs publicados —
+    /// release antes de acquire é seguro por construção (sem lost-wakeup).
+    std::counting_semaphore<> workAvailable_{0};
     std::mutex wakeMutex_;
-    std::condition_variable wakeCv_;
+    std::condition_variable wakeCv_; ///< esperas de waitAll
     std::atomic<bool> running_{false};
     std::atomic<bool> shutdownDone_{false};
-    std::atomic<int> queued_{0};    ///< jobs nas filas
+    std::atomic<int> queued_{0};    ///< jobs contados (ainda não publicados + nas filas)
     std::atomic<int> inFlight_{0};  ///< jobs em execução
     std::atomic<unsigned> nextQueue_{0};
 };

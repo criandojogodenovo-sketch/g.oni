@@ -104,8 +104,11 @@ void JobSystem::shutdown()
             return; // idempotente: segunda chamada é no-op
         }
         running_.store(false, std::memory_order_release);
-        wakeCv_.notify_all(); // acorda workers para drenar e encerrar
+        wakeCv_.notify_all(); // desperta esperas de waitAll (avaliação do predicado)
     }
+    // acorda TODOS os estacionados para drenar e encerrar — a contagem
+    // persistente do semáforo garante que nenhum fique bloqueado
+    workAvailable_.release(workerCount_);
     for (std::thread& thread : threads_) {
         if (thread.joinable()) {
             thread.join();
@@ -131,7 +134,7 @@ std::optional<detail::Task> JobSystem::tryPopOwn(unsigned id)
     }
     detail::Task task = std::move(queue.jobs.back()); // LIFO local
     queue.jobs.pop_back();
-    queued_.fetch_sub(1, std::memory_order_release); // saiu da fila
+    transferToInFlight(); // inFlight++ antes de queued-- (ADR-023)
     return task;
 }
 
@@ -146,7 +149,7 @@ std::optional<detail::Task> JobSystem::trySteal(unsigned id)
         }
         detail::Task task = std::move(queue.jobs.front());
         queue.jobs.pop_front();
-        queued_.fetch_sub(1, std::memory_order_release); // saiu da fila
+        transferToInFlight(); // inFlight++ antes de queued-- (ADR-023)
         return task;
     }
     return std::nullopt;
@@ -154,7 +157,7 @@ std::optional<detail::Task> JobSystem::trySteal(unsigned id)
 
 void JobSystem::executeTask(detail::Task&& task)
 {
-    inFlight_.fetch_add(1, std::memory_order_relaxed);
+    // inFlight_ já foi incrementado na transferência (tryPopOwn/trySteal).
 
 #if ENG_JOBS_DETAIL_CATCH
     try {
@@ -193,16 +196,15 @@ void JobSystem::workerLoop(unsigned id)
             continue;
         }
 
-        std::unique_lock<std::mutex> lock(wakeMutex_);
         if (!running_.load(std::memory_order_acquire)
             && queued_.load(std::memory_order_acquire) == 0) {
             return; // desligado e drenado: encerra o worker
         }
-        wakeCv_.wait(lock, [this] {
-            return queued_.load(std::memory_order_acquire) > 0
-                   || !running_.load(std::memory_order_acquire);
-        });
-        // Acordou com trabalho (ou shutdown): volta a pop/steal no topo.
+        // Estaciona no semáforo: a contagem é persistente (release antes de
+        // acquire é seguro — sem categoria de lost-wakeup; ADR-023). Acorda
+        // com novo trabalho ou com os releases do shutdown.
+        workAvailable_.acquire();
+        // Volta ao topo: pop/steal de novo.
     }
 }
 
