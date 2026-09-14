@@ -12,3 +12,4 @@ add_subdirectory(log)     # Logger/sinks/format — sem dependências
 add_subdirectory(reflect) # TypeRegistry + ENG_REFLECT — sobre core
 add_subdirectory(events)  # EventBus + Subscription RAII — sobre core
 add_subdirectory(jobs)    # JobSystem work-stealing — sobre core
+add_subdirectory(ecs)     # World + sparse-sets — sobre core/reflect
