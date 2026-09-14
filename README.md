@@ -5,8 +5,8 @@
 Engine de jogos 3D escrita em **C++20**, com alvo principal **Android**
 (Vulkan 1.3, GLES 3.2 como compatibilidade).
 Projeto conduzido por fases com contrato técnico formal; este repositório
-está na **FASE 2** (núcleo fundacional concluído; metadados, eventos,
-jobs, ECS e cena em progresso).
+está na **FASE 2** (núcleo fundacional + metadados, eventos, jobs, ECS e cena
+concluídos).
 
 ## Estado — FASE 1 (concluída)
 
@@ -22,6 +22,32 @@ jobs, ECS e cena em progresso).
       100% verdes com ASan+UBSan+LSan e `-Werror` (debug e release/LTO)
 - [x] CI: GitHub Actions (linux-debug + linux-release)
 - [x] Devcontainer com camadas idempotentes (base/graphics/android) + verify
+
+## Estado — FASE 2 (concluída)
+
+- [x] `eng::reflect` — `TypeRegistry` + macros `ENG_REFLECT` (ADR-021):
+      nome canônico/size/align/propriedades (offset+tipo)/enums com
+      enumeradores; TypeId FNV-1a 64 determinístico; registro idempotente;
+      leituras concorrentes testadas; lookup ausente → nullptr
+- [x] `eng::events` — `EventBus` + `Subscription` RAII (ADR-022): ordem de
+      inscrição determinística; cancelamento seguro DURANTE dispatch;
+      reentrância; handler type-erased com small-buffer — sem std::function;
+      publish nunca aloca
+- [x] `eng::jobs` — `JobSystem` work-stealing (ADR-023): deque por worker
+      (pop LIFO, roubo FIFO circular), `JobHandle::wait`/`waitAll`;
+      contabilidade linearizável; shutdown que DRENA e faz join (idempotente);
+      propagação de exceções via `ENG_JOBS_CATCH_EXCEPTIONS` (debug ON /
+      release OFF); TSan limpo
+- [x] `eng::ecs` — `World` sparse-set (ADR-024): `Entity{index,generation}`
+      com reciclagem; handles obsoletos são no-op seguro; `each<Ts...>`
+      const-correct com snapshot mutável-seguro; componentes move-only
+- [x] `eng::scene` — hierarquia de nós sobre o ECS (ADR-025): floresta de
+      raízes; attach com detecção de ciclos; destroyNode em cascata;
+      transforms locais + matrizes mundo (sob demanda O(prof.) e em lote
+      iterativo com cache)
+- [x] Testes FASE 2: 5 novos executáveis — **81 casos / ~5.000 asserções**,
+      100% verdes com sanitizers e `-Werror`
+- [x] 5 novos ADRs (021–025) + docs de arquitetura por módulo
 
 ## Pré-requisitos
 
@@ -43,7 +69,7 @@ ctest --preset linux-release --output-on-failure  # release com LTO
 
 Detalhes completos: [docs/build.md](docs/build.md).
 
-## Estrutura (FASE 1)
+## Estrutura (FASE 2)
 
 ```
 ├── .devcontainer/         # camadas base/graphics/android + verify.sh
@@ -52,13 +78,19 @@ Detalhes completos: [docs/build.md](docs/build.md).
 ├── CMakeLists.txt         # raiz (C++20, módulos de política)
 ├── CMakePresets.json      # linux-debug | linux-release
 ├── docs/
-│   ├── architecture/00-overview.md   # grafo de dependências (normativo)
+│   ├── adr/               # ADR-021…025 (decisões da FASE 2)
+│   ├── architecture/      # 00-overview + 02…06 por módulo
 │   └── build.md
 └── engine/
     ├── core/              # Result, Error, Span, Version
     ├── math/              # Vec2/3/4, Mat4, Quat, Transform
     ├── mem/               # Allocator, Heap, Arena
-    └── log/               # Logger, sinks, format, macros
+    ├── log/               # Logger, sinks, format, macros
+    ├── reflect/           # TypeRegistry + macros ENG_REFLECT
+    ├── events/            # EventBus + Subscription RAII
+    ├── jobs/              # JobSystem work-stealing
+    ├── ecs/               # World sparse-set + Entity geracional
+    └── scene/             # hierarquia de nós + transforms
 ```
 
 Cada módulo segue `include/eng/<módulo>/`, `src/`, `tests/` e expõe o alvo
@@ -79,7 +111,7 @@ Grafo de dependências e regras de camadas: [docs/architecture/00-overview.md](d
 | Fase | Escopo |
 |---|---|
 | 1 ✅ | core, math, mem, log + build/CI/devcontainer |
-| 2 | reflect, events, jobs, ecs, scene |
+| 2 ✅ | reflect, events, jobs, ecs, scene |
 | 3 | platform, fs, assets (JSON5 → cook) |
 | 3.5 | toolchain de shaders (glslang + spirv-val + SPIRV-Cross) |
 | 4 | rhi + backend Vulkan (validado em dispositivo/emulador) |
