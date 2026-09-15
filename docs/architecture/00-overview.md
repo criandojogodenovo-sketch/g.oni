@@ -1,40 +1,58 @@
-# Arquitetura — Visão Geral (FASE 2)
+# Arquitetura — Visão Geral (FASE 3)
 
 > Documento normativo do grafo de dependências entre módulos (PARTE 2 do
 > contrato). **Regra:** dependências unidirecionais, sem ciclos; nenhum módulo
 > `engine/*` inclui headers de `android/`, `editor/` ou de backends de outros
 > módulos.
 
-## Estado atual (FASE 1 + FASE 2 — entregues)
+## Estado atual (FASE 1 + 2 + 3 — entregues)
 
-A FASE 1 entrega quatro módulos fundacionais **independentes** (grafo
-acíclico por construção). A FASE 2 entrega cinco módulos sobre a fundação —
-`reflect`, `events`, `jobs` declaram a camada sobre `core` (sem consumir
-símbolos ainda); `ecs` sobre `core`/`reflect` (idem, §B.4); `scene` consome
-`ecs` e `math` de fato:
+A FASE 1 entrega quatro módulos fundacionais **independentes**. A FASE 2
+entrega cinco módulos sobre a fundação. A FASE 3 entrega as camadas de
+persistência — `fs`, `platform`, `serial`, `assets`, `project` — e a
+serialização de Scene/ECS (que vive DENTRO de `eng::scene`, ADR-033/D3):
 
 ```mermaid
 graph TD
     subgraph "FASE 1 (entregue)"
-        core["eng::core<br/>Result, Error, Span, Version"]
+        core["eng::core<br/>Result, Error, Span, Version, Uuid128"]
         math["eng::math<br/>Vec2/3/4, Mat4, Quat, Transform"]
         mem["eng::mem<br/>Allocator, Heap, Arena"]
         log["eng::log<br/>Logger, Sinks, Format, Macros"]
     end
     subgraph "FASE 2 (entregue)"
-        reflect["eng::reflect<br/>TypeRegistry, ENG_REFLECT (ADR-021)"]
-        events["eng::events<br/>EventBus, Subscription (ADR-022)"]
-        jobs["eng::jobs<br/>JobSystem work-stealing (ADR-023)"]
+        reflect["eng::reflect<br/>TypeRegistry (ADR-021)"]
+        events["eng::events<br/>EventBus (ADR-022)"]
+        jobs["eng::jobs<br/>JobSystem (ADR-023)"]
         ecs["eng::ecs<br/>World sparse-set (ADR-024)"]
-        scene["eng::scene<br/>hierarquia + transforms (ADR-025)"]
+        scene["eng::scene<br/>hierarquia + transforms + serialização (ADR-025/033)"]
     end
-    core -.->|camada declarada| reflect
-    core -.->|camada declarada| events
-    core -.->|camada declarada| jobs
-    core -.->|camada declarada| ecs
-    reflect -.->|aresta declarada, §B.4| ecs
+    subgraph "FASE 3 (entregue)"
+        fs["eng::fs<br/>Path/File/FileSystem (ADR-027)"]
+        platform["eng::platform<br/>Info/Paths/Environment (ADR-026)"]
+        serial["eng::serial<br/>JSON/envelope/codec (ADR-030/031)"]
+        assets["eng::assets<br/>Id/Registry/Manager (ADR-028/029)"]
+        project["eng::project<br/>Config/Paths/File (ADR-032)"]
+    end
+    reflect -.->|camada declarada| ecs
     math --> scene
     ecs --> scene
+    serial -.->|declarada| fs
+    core --> fs
+    fs --> platform
+    core --> serial
+    reflect --> serial
+    core --> assets
+    fs --> assets
+    serial --> assets
+    reflect -.->|declarada| assets
+    events -.->|declarada, FASE 4| assets
+    core --> project
+    fs --> project
+    serial --> project
+    platform --> project
+    assets -.->|declarada| project
+    scene -.- serial & reflect & log
 ```
 
 **Matriz de adjacência (entregue):**
@@ -49,12 +67,28 @@ graph TD
 | `eng::events` | core (declarada) | [022](../adr/ADR-022-events-lifetime.md) |
 | `eng::jobs` | core (declarada) | [023](../adr/ADR-023-jobs-architecture.md) |
 | `eng::ecs` | core, reflect (declaradas) | [024](../adr/ADR-024-ecs-storage.md) |
-| `eng::scene` | core (declarada), **ecs, math (consumidas)** | [025](../adr/ADR-025-scene-hierarchy.md) |
+| `eng::scene` | core, ecs, math (+ serial, reflect, log — serialização, ADR-033) | [025](../adr/ADR-025-scene-hierarchy.md) · [033](../adr/ADR-033-scene-serialization.md) |
+| `eng::fs` | core, log | [027](../adr/ADR-027-filesystem-abstraction.md) |
+| `eng::platform` | core, log, **fs** | [026](../adr/ADR-026-platform-fs-boundary.md) |
+| `eng::serial` | core, reflect, fs (declarada) + nlohmann/json | [030](../adr/ADR-030-serialization-format.md) · [031](../adr/ADR-031-serialization-versioning.md) |
+| `eng::assets` | core, fs, serial, reflect, events (declarada — FASE 4) | [028](../adr/ADR-028-asset-identity.md) · [029](../adr/ADR-029-asset-lifecycle.md) |
+| `eng::project` | core, fs, serial, platform, assets/log (declaradas) | [032](../adr/ADR-032-project-structure.md) |
+| `tests/` (raiz) | TODOS — integração e2e | — |
 | executáveis de teste | módulo testado + Catch2 (externa) | — |
 
+Regras duras da FASE 3 (missão §5.1), verificadas: `eng::fs` NÃO depende
+de `eng::platform`; `eng::assets` NÃO depende de `eng::jobs`; NENHUM
+módulo novo depende de Vulkan/OpenGL/Android/JNI; nenhum módulo depende
+de `eng::scene` exceto `tests/` (por isso a serialização de cena vive
+DENTRO de scene — ADR-033, desvio D3 da auditoria em
+[phase3_audit.md](../phase3_audit.md)).
+
 Documentação por módulo: [02-reflect](02-reflect.md) ·
-[03-events](03-events.md) · [04-jobs](04-jobs.md) · [05-ecs](05-ecs.md) ·
-[06-scene](06-scene.md).
+[03-events](03-events.md) · [04-jobs](04-jobs.md) ·
+[05-ecs](05-ecs.md) · [06-scene](06-scene.md) · [07-fs](07-fs.md) ·
+[08-platform](08-platform.md) · [09-serial](09-serial.md) ·
+[10-assets](10-assets.md) · [11-project](11-project.md) ·
+[12-scene-serialization](12-scene-serialization.md).
 
 Decisão registrada: `eng::mem` reporta vazamentos via `fprintf(stderr)` no
 destrutor do `HeapAllocator` em vez de usar `eng::log`. Motivo: introduzir a
@@ -69,10 +103,10 @@ Arestas futuras — **referência de projeto, não código existente**:
 
 ```mermaid
 graph TD
-    core --> fs["eng::fs (FASE 3)"]
-    core --> assets["eng::assets (FASE 3)"]
-    math --> rhi["eng::rhi (FASE 4)"]
-    platform["eng::platform (FASE 3)"] --> rhi
+    core --> rhi["eng::rhi (FASE 4)"]
+    math --> rhi
+    jobs --> rhi
+    assets -->|loadAsync, FASE 4| rhi
     rhi --> rhi_vulkan["rhi-vulkan (FASE 4)"]
     rhi --> rhi_gl["rhi-gl (FASE 5)"]
     physics["eng::physics (FASE 6)"] --> physics_jolt["physics-jolt (FASE 6)"]
@@ -89,21 +123,30 @@ Regras que mantêm o grafo acíclico conforme os módulos entram:
 2. Fundações (`core`, `math`, `mem`, `log`) nunca ganham dependências para
    módulos de nível superior.
 3. `android/`, `editor/` são consumidores de `engine/` — nunca o contrário.
+4. (FASE 3) Nenhum módulo depende de `eng::scene` exceto `tests/` — a
+   serialização de cena vive DENTRO de scene (ADR-033).
 
 ## Isenções de política de compilação (registradas)
 
 - **ADR-004 (sem exceções):** válido para as bibliotecas `eng::*`
   (`-fno-exceptions`). Executáveis de **teste** mantêm exceções habilitadas
-  porque Catch2 as exige para reportar falhas.
+  porque Catch2 as exige para reportar falhas. Dependência nlohmann/json
+  (FASE 3): usada APENAS pelas vias que não lançam, por construção do
+  wrapper `eng::serial::JsonValue` (ADR-030).
 - **ADR-005 (sem RTTI):** válido para bibliotecas `eng::*` **e** executáveis de
   teste (`-fno-rtti` em ambos — `eng_apply_test_policy`). Motivo técnico: com
   RTTI habilitado nos testes, o GCC emite referências a `typeinfo` de classes
   polimórficas do motor que os TUs `-fno-rtti` nunca definem, quebrando o link.
-  Catch2 v3.5.2 compila limpo sem RTTI nesta configuração.
+  Catch2 v3.5.2 compila limpo sem RTTI nesta configuração. A FASE 3 não usa
+  RTTI em lugar nenhum (type-erasure por TypeTag/keys — ADR-029/033).
 - **C++20 modules:** desativados (`CMAKE_CXX_SCAN_FOR_MODULES OFF`) — a
   varredura automática do CMake injeta `-fmodules-ts`, que conflita com a
   combinação lib(`-fno-rtti`) + testes ao linkar. Reavaliar quando módulos
   forem adotados de fato.
+- **Headers de dependências como SYSTEM (FASE 3):** nlohmann/json tem seus
+  includes marcados SYSTEM para os consumidores — os warnings do projeto
+  (ADR-020) aplicam-se ao NOSSO código; dependências compilam com seus
+  flags nativos (padrão já registrado em EngineWarnings.cmake).
 
 ## Layout de módulo (padrão para todos os `engine/*`)
 
@@ -112,5 +155,8 @@ engine/<módulo>/
 ├── CMakeLists.txt        # eng_add_module(<módulo> ...) + testes
 ├── include/eng/<módulo>/ # headers públicos
 ├── src/                  # implementação (.cpp)
-└── tests/                # testes Catch2 v3
+└── tests/                # testes Catch2 v3 (unitários do módulo)
+
+tests/                    # integração e2e (FASE 3): única camada que
+                          # compõe scene+assets+project (missão §5.1)
 ```

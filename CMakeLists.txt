@@ -30,7 +30,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(EngineOptions)        # opções globais + eng_add_module()
 include(EngineWarnings)       # ADR-020: -Wall -Wextra -Wpedantic [-Werror]
 include(EngineSanitizers)     # ASan+UBSan (presets de debug)
-include(EngineDependencies)   # FASE 1: apenas Catch2 v3.5.2 (§17.1 item 11)
+include(EngineDependencies)   # FASE 1: Catch2 v3.5.2 · FASE 3: nlohmann/json v3.11.3 (ADR-030)
 
 include(CTest)
 
@@ -38,5 +38,5 @@ add_subdirectory(engine)
 # FASE 3 (missão §2.8): integração e2e — pode compor scene+assets+project.
 add_subdirectory(tests)
 
-message(STATUS "eng ${PROJECT_VERSION} — FASE 1 (eng::core, eng::math, eng::mem, eng::log)")
+message(STATUS "eng ${PROJECT_VERSION} — FASE 3 (fs, platform, serial, assets, project + serialização de cena)")
 message(STATUS "Presets canônicos: linux-debug, linux-release — ver docs/build.md")

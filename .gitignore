@@ -8,6 +8,10 @@ build/
 out/
 cmake-build-*/
 
+# Projetos de jogo: cache derivado e estado local (FASE 3, ADR-032)
+cache/
+.goni/
+
 # CMake
 CMakeUserPresets.json
 CMakeCache.txt
