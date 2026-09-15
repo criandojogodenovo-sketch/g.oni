@@ -1,12 +1,14 @@
-# eng::core — Result, Error, Span, Version (§17.1 item 16)
+# eng::core — Result, Error, Span, Version (+ Uuid128 na FASE 3, ADR-028)
 eng_add_module(core
     src/Error.cpp
+    src/Uuid.cpp
     src/Version.cpp
 )
 
 if(ENG_BUILD_TESTS)
     add_executable(eng_core_tests
         tests/ResultTests.cpp
+        tests/UuidTests.cpp
         tests/VersionTests.cpp
         tests/SpanTests.cpp
     )
