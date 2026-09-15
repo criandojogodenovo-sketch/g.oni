@@ -19,3 +19,4 @@ add_subdirectory(scene)   # Hierarquia de nós + transforms — sobre core/ecs/m
 add_subdirectory(fs)      # Path/File/FileSystem — sobre core/log (ADR-027)
 add_subdirectory(platform) # Info/Paths/Environment — sobre core/log/fs (ADR-026)
 add_subdirectory(serial)   # JSON/envelope/migrations/codec — sobre core/reflect (ADR-030/031)
+add_subdirectory(assets)  # AssetId/Registry/Resolver/Manager — sobre core/fs/serial/reflect (ADR-028/029)
