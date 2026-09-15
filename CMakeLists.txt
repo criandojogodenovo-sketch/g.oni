@@ -35,6 +35,8 @@ include(EngineDependencies)   # FASE 1: apenas Catch2 v3.5.2 (§17.1 item 11)
 include(CTest)
 
 add_subdirectory(engine)
+# FASE 3 (missão §2.8): integração e2e — pode compor scene+assets+project.
+add_subdirectory(tests)
 
 message(STATUS "eng ${PROJECT_VERSION} — FASE 1 (eng::core, eng::math, eng::mem, eng::log)")
 message(STATUS "Presets canônicos: linux-debug, linux-release — ver docs/build.md")
