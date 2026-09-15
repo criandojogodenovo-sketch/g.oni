@@ -14,3 +14,6 @@ add_subdirectory(events)  # EventBus + Subscription RAII — sobre core
 add_subdirectory(jobs)    # JobSystem work-stealing — sobre core
 add_subdirectory(ecs)     # World + sparse-sets — sobre core/reflect
 add_subdirectory(scene)   # Hierarquia de nós + transforms — sobre core/ecs/math
+# FASE 3 (missão §5.1): fundações de persistência primeiro (fs), depois as
+# camadas que as consomem.
+add_subdirectory(fs)      # Path/File/FileSystem — sobre core/log (ADR-027)
