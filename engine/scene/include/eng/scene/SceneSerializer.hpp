@@ -1,0 +1,164 @@
+#pragma once
+
+/// eng::scene::SceneSerializer — persistência determinística do grafo de
+/// nós (FASE 3, missão §2.7; ADR-033 — desvio D3: vive DENTRO de scene).
+///
+/// Formato (formatVersion 1):
+/// {
+///   "formatVersion": 1,
+///   "sceneEntityIds": ["uuid", ...],            // ordenadas (hi,lo)
+///   "entities": [
+///     { "id": "uuid", "parent": "uuid"|null,
+///       "components": [ {"type": "eng::math::Transform", "data": {…}} ] }
+///   ]
+/// }
+///
+/// Decisões (ADR-033):
+///   - Entidades ordenadas por SceneEntityId; componentes por nome de tipo
+///     (determinismo byte-a-byte: serialize(deserialize(x)) == x).
+///   - Dados de componentes via reflect (nome estável + PropertyInfo por
+///     offset) — NUNCA typeid/índice; enums por NOME de enumerador.
+///   - TIPOS DE COMPONENTE são registrados explicitamente
+///     (registerComponentType<T>) porque World não expõe enumeração
+///     dinâmica de pools (achado crítico 1 da auditoria) — built-in:
+///     eng::math::Transform.
+///   - Hierarchy vira o campo "parent" (ordem de anexação NÃO é persistida;
+///     pós-load ela é a canônica por SceneEntityId); WorldMatrix é cache
+///     derivado e não é persistido; entradas SceneIdentity/Hierarchy/
+///     WorldMatrix no JSON são toleradas com WARN (escritores externos).
+///   - Pai obsoleto (bypass do world na origem) → serializado como RAIZ
+///     (mesma política de ADR-025).
+///   - Referência de asset quebrada NÃO impede o load (parse só valida
+///     forma); a checagem contra o AssetRegistry é da camada de composição
+///     (runtime/editor/tests) — documentado em ADR-033/D4.
+///   - load ADICIONA nós aos existentes; ids duplicados → ParseError.
+///
+/// Thread-safety (ADR-034): save/load não são concorrentes sobre a mesma
+/// Scene; o registro de componentes é single-threaded (init), leitura
+/// concorrente após registro é segura.
+#include <cstdint>
+#include <map>
+#include <string>
+#include <string_view>
+
+#include "eng/core/Result.hpp"
+#include "eng/scene/Scene.hpp"
+#include "eng/scene/SceneIdentity.hpp"
+#include "eng/serial/JsonValue.hpp"
+
+namespace eng::scene {
+
+class SceneSerializer final {
+public:
+    SceneSerializer() = delete;
+
+    /// Registra um tipo de componente como serializável. `typeName` é o
+    /// NOME ESTÁVEL registrado no reflect (o mesmo do ENG_REFLECT_BEGIN).
+    /// O tipo precisa estar registrado no reflect ANTES (senão erro).
+    /// Built-ins registrados no próprio módulo: eng::math::Transform.
+    template<typename T>
+    [[nodiscard]] static eng::core::Result<void> registerComponentType(
+        std::string_view typeName);
+
+    /// Scene → texto JSON determinístico. EFEITO: atribui SceneEntityId a
+    /// nós que ainda não têm (componente SceneIdentity emplantado).
+    [[nodiscard]] static eng::core::Result<std::string> save(Scene& scene);
+
+    /// Texto JSON → nós/components ANEXADOS à cena. Erros claros (formato,
+    /// uuid, componente desconhecido, parent ausente, ciclo) — nunca throw.
+    [[nodiscard]] static eng::core::Result<void> load(Scene& scene,
+                                                      std::string_view text);
+
+    /// Versão do formato de cena escrito/lido.
+    static constexpr std::uint32_t kFormatVersion = 1;
+};
+
+} // namespace eng::scene
+
+// =============================================================================
+// Template (header) — entradas tipadas sobre a API pública de World
+// =============================================================================
+
+namespace eng::scene::detail {
+
+/// Entrada de componente serializável (type-erased via lambdas tipadas;
+/// a própria entrada é parâmetro das funções — sem capturas, conversível
+/// para function pointer, mesmo padrão de LoaderEntry em eng::assets).
+struct ComponentEntry {
+    const eng::reflect::TypeInfo* info = nullptr;
+    bool (*has)(const eng::ecs::World&, eng::ecs::Entity) = nullptr;
+    eng::core::Result<eng::serial::JsonValue> (*encode)(
+        const ComponentEntry&, const eng::ecs::World&,
+        eng::ecs::Entity) = nullptr;
+    eng::core::Result<void> (*decodeAndEmplace)(
+        const ComponentEntry&, eng::ecs::World&, eng::ecs::Entity,
+        const eng::serial::JsonValue&) = nullptr;
+};
+
+/// Registro global de componentes (não-template, no .cpp).
+void registerComponentEntry(std::string typeName, ComponentEntry entry);
+[[nodiscard]] const std::map<std::string, ComponentEntry>&
+componentEntries();
+
+} // namespace eng::scene::detail
+
+namespace eng::scene {
+
+template<typename T>
+eng::core::Result<void> SceneSerializer::registerComponentType(
+    std::string_view typeName)
+{
+    using eng::core::Error;
+    using eng::core::StatusCode;
+
+    const eng::reflect::TypeInfo* info =
+        eng::reflect::TypeRegistry::global().find(typeName);
+    if (info == nullptr) {
+        return eng::core::makeUnexpected(Error{
+            StatusCode::NotSupported,
+            "SceneSerializer::registerComponentType: tipo '" +
+                std::string(typeName) +
+                "' não está registrado no reflect (ENG_REFLECT?)"});
+    }
+
+    detail::ComponentEntry entry;
+    entry.info = info;
+    entry.has = [](const eng::ecs::World& world, eng::ecs::Entity e) {
+        return world.has<T>(e);
+    };
+    entry.encode = [](const detail::ComponentEntry& self,
+                      const eng::ecs::World& world,
+                      eng::ecs::Entity e)
+        -> eng::core::Result<eng::serial::JsonValue> {
+        const T* component = world.get<T>(e);
+        if (component == nullptr) {
+            return eng::core::makeUnexpected(Error{
+                StatusCode::NotFound,
+                "SceneSerializer: componente sumiu entre has() e get()"});
+        }
+        return eng::serial::encodeStruct(component, *self.info);
+    };
+    entry.decodeAndEmplace = [](const detail::ComponentEntry& self,
+                                eng::ecs::World& world,
+                                eng::ecs::Entity e,
+                                const eng::serial::JsonValue& data)
+        -> eng::core::Result<void> {
+        T component{};
+        const auto decoded =
+            eng::serial::decodeStruct(data, &component, *self.info);
+        if (decoded.isError()) {
+            return decoded;
+        }
+        if (world.emplace<T>(e, std::move(component)) == nullptr) {
+            return eng::core::makeUnexpected(Error{
+                StatusCode::InvalidArgument,
+                "SceneSerializer: emplace falhou (entidade obsoleta?)"});
+        }
+        return {};
+    };
+
+    detail::registerComponentEntry(std::string(typeName), entry);
+    return {};
+}
+
+} // namespace eng::scene

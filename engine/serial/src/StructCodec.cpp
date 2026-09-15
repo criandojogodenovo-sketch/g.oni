@@ -2,6 +2,11 @@
 
 #include <cmath>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+#include <utility>
 
 namespace eng::serial {
 
@@ -14,6 +19,51 @@ using eng::reflect::PropertyInfo;
 using eng::reflect::TypeInfo;
 using eng::reflect::TypeKind;
 using eng::reflect::TypeRegistry;
+
+/// Registro de codecs de campo por typeName. Escrita sob lock exclusivo,
+/// leitura sob lock compartilhado (mesma política do TypeRegistry —
+/// ADR-021). Valores em deque: endereços estáveis.
+class FieldTypeCodecRegistry {
+public:
+    static FieldTypeCodecRegistry& instance() noexcept
+    {
+        static FieldTypeCodecRegistry registry; // magic static
+        return registry;
+    }
+
+    void upsert(std::string_view typeName, FieldTypeCodec codec)
+    {
+        std::unique_lock lock(mutex_);
+        entries_[std::string(typeName)] = codec;
+    }
+
+    [[nodiscard]] const FieldTypeCodec* find(std::string_view typeName)
+    {
+        std::shared_lock lock(mutex_);
+        const auto it = entries_.find(std::string(typeName));
+        return it == entries_.end() ? nullptr : &it->second;
+    }
+
+private:
+    FieldTypeCodecRegistry() = default;
+
+    mutable std::shared_mutex mutex_;
+    std::map<std::string, FieldTypeCodec> entries_;
+};
+
+} // namespace
+
+void registerFieldTypeCodec(std::string_view typeName, FieldTypeCodec codec)
+{
+    FieldTypeCodecRegistry::instance().upsert(typeName, codec);
+}
+
+const FieldTypeCodec* findFieldTypeCodec(std::string_view typeName)
+{
+    return FieldTypeCodecRegistry::instance().find(typeName);
+}
+
+namespace {
 
 [[nodiscard]] const TypeInfo* findType(std::string_view name)
 {
@@ -85,6 +135,12 @@ void writeInteger(void* member, std::size_t size, bool isSigned,
 [[nodiscard]] eng::core::Result<JsonValue> encodeMember(
     const void* member, const PropertyInfo& prop)
 {
+    // Codec de campo por NOME de tipo tem PRECEDÊNCIA (ADR-033): tipos de
+    // identidade (UUID como string) são codificados por quem os conhece.
+    if (const FieldTypeCodec* codec = findFieldTypeCodec(prop.typeName)) {
+        return codec->encode(member);
+    }
+
     const TypeInfo* type = findType(prop.typeName);
     if (type == nullptr) {
         return makeUnexpected(
@@ -160,6 +216,11 @@ void writeInteger(void* member, std::size_t size, bool isSigned,
                                                    void* member,
                                                    const PropertyInfo& prop)
 {
+    // Codec de campo por NOME de tipo tem PRECEDÊNCIA (ADR-033).
+    if (const FieldTypeCodec* codec = findFieldTypeCodec(prop.typeName)) {
+        return codec->decode(field, member);
+    }
+
     const TypeInfo* type = findType(prop.typeName);
     if (type == nullptr) {
         return makeUnexpected(

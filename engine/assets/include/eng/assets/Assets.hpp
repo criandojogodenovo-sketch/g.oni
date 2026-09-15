@@ -12,4 +12,5 @@
 #include "eng/assets/AssetMeta.hpp"
 #include "eng/assets/AssetRegistry.hpp"
 #include "eng/assets/AssetResolver.hpp"
+#include "eng/assets/AssetSerial.hpp"
 #include "eng/assets/AssetType.hpp"
