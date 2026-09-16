@@ -2,8 +2,7 @@
 
 - **Fase:** 4 (missão §4–§15) · ADR-035 (contrato) · ADR-036 (seleção)
 - **Dependências:** `eng::core` (PUBLIC — Result/Error), `eng::log` (PRIVATE)
-- **Backends:** FASE 5 (`backends/vulkan`), FASE 6 (`backends/gles`) — ainda
-  não existem por design (missão §2.6/§2.7)
+- **Backends:** [Vulkan (FASE 5, real)](14-rhi-vulkan.md) · GLES (FASE 6)
 
 ## Objetivo
 

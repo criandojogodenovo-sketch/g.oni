@@ -1,0 +1,11 @@
+# LeakSanitizer — suppressions do backend Vulkan (TESTES).
+#
+# O ICD lavapipe (mesa) e a layer Khronos de validação fazem alocações
+# internas que não são liberadas em vkDestroyInstance (são mantidas até a
+# descarga da biblioteca, em ordem que o LSan não observa). Isso é
+# comportamento CONHECIDO de bibliotecas de terceiros — não código do motor.
+#
+# As suppressions mantêm a detecção de leaks ATIVA para TODO o código do
+# engine; apenas frames originados nestes módulos são ignorados.
+leak:libvulkan_lvp
+leak:libVkLayer_khronos_validation

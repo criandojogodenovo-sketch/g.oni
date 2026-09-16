@@ -76,3 +76,26 @@ No preset de debug, o CTest define `ASAN_OPTIONS=detect_leaks=1` e
 - Bibliotecas do motor compilam com `-fno-exceptions -fno-rtti`
   (ADR-004/005); testes compilam com exceções (Catch2) e sem RTTI — ver
   `docs/architecture/00-overview.md` para a justificativa completa.
+
+## Hardware tests de gráficos (FASE 5+)
+
+Testes do backend Vulkan (`rhi_vulkan`, labels CTest `rhi_hardware`)
+executam GPU REAL quando há loader + ICD; caso contrário SKIPAM com motivo
+— nunca falham por ausência de GPU:
+
+```bash
+# CI/Ubuntu (paths padrão do sistema — sem env):
+sudo apt-get install libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
+ctest --preset linux-debug -L rhi_hardware --output-on-failure
+
+# Sysroot local (ICD lavapipe + layers fora do sistema):
+export LD_LIBRARY_PATH=/caminho/sysroot/usr/lib/x86_64-linux-gnu
+export VK_ICD_FILENAMES=/caminho/sysroot/usr/share/vulkan/icd.d/lvp_icd.json
+export VK_LAYER_PATH=/caminho/sysroot/usr/share/vulkan/explicit_layer.d
+ctest --preset linux-debug -L rhi_hardware --output-on-failure
+```
+
+Notas: lavapipe/llvmpipe é renderização por SOFTWARE — os testes reportam
+`softwareRendering` verdadeiro e nunca declaram suporte de hardware. O
+`LSAN_OPTIONS` com suppressions do ICD já é aplicado pela propriedade do
+teste (ver `engine/rhi/backends/vulkan/tests/lavapipe_lsan.supp`).

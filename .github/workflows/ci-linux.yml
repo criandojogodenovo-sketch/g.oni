@@ -23,6 +23,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake ninja-build
 
+      - name: Instalar Vulkan (backend FASE 5 — hardware tests)
+        # ICD lavapipe + layers Khronos nos paths padrão do sistema; sem
+        # GPU o teste SKIPA (nunca falha — missão §29).
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
+
       - name: Configure (${{ matrix.preset }})
         run: cmake --preset ${{ matrix.preset }}
 

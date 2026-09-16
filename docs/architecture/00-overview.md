@@ -74,6 +74,7 @@ graph TD
 | `eng::assets` | core, fs, serial, reflect, events (declarada — FASE 4) | [028](../adr/ADR-028-asset-identity.md) · [029](../adr/ADR-029-asset-lifecycle.md) |
 | `eng::project` | core, fs, serial, platform, assets/log (declaradas) | [032](../adr/ADR-032-project-structure.md) |
 | `eng::rhi` | core, log | [035](../adr/ADR-035-rhi-abstraction.md) · [036](../adr/ADR-036-rhi-selection.md) |
+| `eng::rhi::vulkan` (backend) | rhi | [037](../adr/ADR-037-vulkan-backend.md) |
 | `tests/` (raiz) | TODOS — integração e2e | — |
 | executáveis de teste | módulo testado + Catch2 (externa) | — |
 
@@ -84,7 +85,7 @@ de `eng::scene` exceto `tests/` (por isso a serialização de cena vive
 DENTRO de scene — ADR-033, desvio D3 da auditoria em
 [phase3_audit.md](../phase3_audit.md)).
 
-Documentação por módulo: [13-rhi](13-rhi.md) · [02-reflect](02-reflect.md) ·
+Documentação por módulo: [13-rhi](13-rhi.md) · [14-rhi-vulkan](14-rhi-vulkan.md) · [02-reflect](02-reflect.md) ·
 [03-events](03-events.md) · [04-jobs](04-jobs.md) ·
 [05-ecs](05-ecs.md) · [06-scene](06-scene.md) · [07-fs](07-fs.md) ·
 [08-platform](08-platform.md) · [09-serial](09-serial.md) ·
@@ -105,7 +106,7 @@ Arestas futuras — **referência de projeto, não código existente**:
 ```mermaid
 graph TD
     core --> rhi["eng::rhi (FASE 4, implementada)"]
-    rhi --> rhi_vulkan["rhi-vulkan (FASE 5)"]
+    rhi --> rhi_vulkan["rhi-vulkan (FASE 5, implementado)"]
     rhi --> rhi_gl["rhi-gles (FASE 6)"]
     physics["eng::physics (FASE 6)"] --> physics_jolt["physics-jolt (FASE 6)"]
     audio["eng::audio (FASE 6)"] --> audio_ma["audio-miniaudio (FASE 6)"]

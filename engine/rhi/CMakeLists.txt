@@ -12,6 +12,14 @@ eng_add_module(rhi
 # dependência gráfica em compile/link — verificável no target abaixo.
 target_link_libraries(eng_rhi PUBLIC eng::core PRIVATE eng::log)
 
+# Backends REAIS (FASES 5/6): targets separados, linkados no executável
+# final. O option controla a construção — o módulo interface (acima) não
+# conhece nenhum deles.
+option(ENG_BUILD_RHI_VULKAN "Backend Vulkan real (FASE 5)" ON)
+if(ENG_BUILD_RHI_VULKAN)
+    add_subdirectory(backends/vulkan)
+endif()
+
 if(ENG_BUILD_TESTS)
     add_executable(eng_rhi_tests
         tests/RhiTests.cpp
