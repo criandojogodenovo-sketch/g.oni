@@ -19,6 +19,10 @@ option(ENG_BUILD_RHI_VULKAN "Backend Vulkan real (FASE 5)" ON)
 if(ENG_BUILD_RHI_VULKAN)
     add_subdirectory(backends/vulkan)
 endif()
+option(ENG_BUILD_RHI_GLES "Backend OpenGL ES real (FASE 6)" ON)
+if(ENG_BUILD_RHI_GLES)
+    add_subdirectory(backends/gles)
+endif()
 
 if(ENG_BUILD_TESTS)
     add_executable(eng_rhi_tests

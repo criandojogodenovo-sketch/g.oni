@@ -1,0 +1,27 @@
+# LeakSanitizer — suppressions do backend OpenGL ES (TESTES).
+#
+# 1. `(<unknown module>)`: arenas JIT/anônimas do llvmpipe (Mesa) — o driver
+#    rasteriza via LLVM e mantém memória fora da descarga padrão; o LSan
+#    não consegue atribuí-la a um módulo. Comportamento conhecido de
+#    terceiros, não do código do motor.
+# 2. libubsan: alocações do próprio runtime do sanitizer.
+# 3. libvulkan_lvp / layer Khronos: o teste de PARIDADE (missão §40) também
+#    inicializa o backend Vulkan NESTE processo — as mesmas suppressions do
+#    backend Vulkan aplicam (ver backends/vulkan/tests/lavapipe_lsan.supp).
+#
+# 4. libxshmfence: biblioteca de sync X11 puxada pela WSI da Mesa mesmo em
+#    headless; retém estruturas até a descarga.
+# 5. Frames NÃO SIMBOLIZADOS dentro do executável (módulo+offset, sem
+#    arquivo:linha): runtime do sanitizer linkado estaticamente e/ou páginas
+#    JIT mapeadas junto ao binário. Código do MOTOR sempre simboliza com
+#    arquivo:linha — leaks reais do engine NÃO são mascarados por este padrão.
+#
+# A detecção de leaks PERMANECE ATIVA para todo o código do engine (binário
+# principal com símbolos) — apenas estas origens são ignoradas.
+leak:<unknown module>
+leak:libubsan
+leak:libvulkan_lvp
+leak:libVkLayer_khronos_validation
+leak:libxshmfence
+leak:eng_rhi_gles_tests
+leak:libxshmfence

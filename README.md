@@ -147,6 +147,7 @@ Auditoria da fase (inclui desvios D1–D5 da especificação):
 | 3.5 | toolchain de shaders (glslang + spirv-val + SPIRV-Cross) |
 | 4 | renderer abstraction `eng::rhi` (ADR-035/036) — concluída |
 | 5 | backend Vulkan real `eng::rhi::vulkan` (ADR-037) — concluída |
+| 6 | backend OpenGL ES real `eng::rhi::gles` + paridade (ADR-038) — concluída |
 | 5 | backend GL/GLES |
 | 6 | física (Jolt), áudio (miniaudio), Android (JNI/APK) |
 | 7+ | scripting (Lua), runtime, editor web |

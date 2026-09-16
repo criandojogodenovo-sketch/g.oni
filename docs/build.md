@@ -92,8 +92,13 @@ ctest --preset linux-debug -L rhi_hardware --output-on-failure
 export LD_LIBRARY_PATH=/caminho/sysroot/usr/lib/x86_64-linux-gnu
 export VK_ICD_FILENAMES=/caminho/sysroot/usr/share/vulkan/icd.d/lvp_icd.json
 export VK_LAYER_PATH=/caminho/sysroot/usr/share/vulkan/explicit_layer.d
+# Para o backend GLES no sysroot (glvnd precisa do vendor json):
+export __EGL_VENDOR_LIBRARY_FILENAMES=/caminho/sysroot/usr/share/glvnd/egl_vendor.d/50_mesa.json
 ctest --preset linux-debug -L rhi_hardware --output-on-failure
 ```
+
+Para rodar TUDO de uma vez (Vulkan + GLES + paridade), exporte as variáveis
+acima e execute `ctest --preset linux-debug` completo (18 suites).
 
 Notas: lavapipe/llvmpipe é renderização por SOFTWARE — os testes reportam
 `softwareRendering` verdadeiro e nunca declaram suporte de hardware. O

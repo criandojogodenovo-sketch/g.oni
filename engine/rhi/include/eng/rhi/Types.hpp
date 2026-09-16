@@ -183,6 +183,8 @@ struct BufferDesc {
 /// preciso — isso garante que a abstraction não é modelada em torno de
 /// nenhuma das duas APIs (paridade, missão §40).
 struct ShaderDesc {
+    /// CONTRATO de lifetime: views/spans precisam estar VÁLIDOS durante a
+    /// chamada de createShader (o backend copia o que precisa).
     std::string_view debugName{};
     std::span<const std::byte> vertexSpirv{};
     std::span<const std::byte> fragmentSpirv{};

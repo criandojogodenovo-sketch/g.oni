@@ -11,7 +11,7 @@
 | 3.5 | Toolchain de shaders (glslang + spirv-val + SPIRV-Cross) | planejada |
 | 4 | renderer abstraction `eng::rhi` — API de alto nível, contrato `RhiBackend`, registro de fábricas, frame lifecycle (ADR-035/036) | **concluída** |
 | 5 | backend Vulkan real — loader dlopen, layers, GPU real, staging, swapchain, triangle submetido (ADR-037) | **concluída** |
-| 6 | backend OpenGL ES real (`engine/rhi/backends/gles`) | planejada |
+| 6 | backend OpenGL ES real — EGL surfaceless + pbuffer, GLSL real, triangle com pixel verificado, paridade Vulkan/GLES (ADR-038) | **concluída** |
 | 7 | Física (Jolt), áudio (miniaudio), Android (JNI/APK) | planejada |
 | 8+ | Scripting (Lua), runtime, editor web | planejada |
 

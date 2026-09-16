@@ -50,10 +50,12 @@ VulkanLibrary& VulkanLibrary::operator=(VulkanLibrary&& other) noexcept {
 }
 
 void VulkanLibrary::close() noexcept {
-    if (library_ != nullptr) {
-        dlclose(library_);
-        library_ = nullptr;
-    }
+    // NÃO dlclose: drivers/loaders gráficos retêm threads e estruturas
+    // internas além da destruição canônica (prática consolidada — volk
+    // idem); o dlclose quebra a atribuição de stacks do LSan e pode
+    // derrubar estados globais do driver. O handle vive até o fim do
+    // processo e o OS recupera a memória. A tabela apenas é zerada.
+    library_ = nullptr;
     functions_ = VulkanFunctions{};
 }
 
