@@ -145,7 +145,7 @@ Auditoria da fase (inclui desvios D1–D5 da especificação):
 | 2 ✅ | reflect, events, jobs, ecs, scene |
 | 3 ✅ | fs, platform, serial, assets, project + serialização de cena |
 | 3.5 | toolchain de shaders (glslang + spirv-val + SPIRV-Cross) |
-| 4 | rhi + backend Vulkan + `assets::loadAsync` (eng::jobs entra) |
+| 4 | renderer abstraction `eng::rhi` (ADR-035/036) — concluída |
 | 5 | backend GL/GLES |
 | 6 | física (Jolt), áudio (miniaudio), Android (JNI/APK) |
 | 7+ | scripting (Lua), runtime, editor web |

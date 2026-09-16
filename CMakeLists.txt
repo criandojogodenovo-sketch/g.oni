@@ -38,5 +38,5 @@ add_subdirectory(engine)
 # FASE 3 (missão §2.8): integração e2e — pode compor scene+assets+project.
 add_subdirectory(tests)
 
-message(STATUS "eng ${PROJECT_VERSION} — FASE 3 (fs, platform, serial, assets, project + serialização de cena)")
+message(STATUS "eng ${PROJECT_VERSION} — FASE 4 (renderer abstraction eng::rhi)")
 message(STATUS "Presets canônicos: linux-debug, linux-release — ver docs/build.md")

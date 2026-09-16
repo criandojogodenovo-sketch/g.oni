@@ -9,12 +9,13 @@
 | 2 | `reflect`, `events`, `jobs`, `ecs`, `scene` | ✅ concluída (`8469f7c`) |
 | 3 | `fs`, `platform`, `serial`, `assets`, `project` + serialização de Scene/ECS | ✅ concluída (ADRs 026–034) |
 | 3.5 | Toolchain de shaders (glslang + spirv-val + SPIRV-Cross) | planejada |
-| 4 | `rhi` + backend Vulkan (validado em dispositivo/emulador) + `assets::loadAsync` (eng::jobs entra) | preparada |
-| 5 | Backend GL/GLES | planejada |
-| 6 | Física (Jolt), áudio (miniaudio), Android (JNI/APK) | planejada |
-| 7+ | Scripting (Lua), runtime, editor web | planejada |
+| 4 | renderer abstraction `eng::rhi` — API de alto nível, contrato `RhiBackend`, registro de fábricas, frame lifecycle (ADR-035/036) | **concluída** |
+| 5 | backend Vulkan real (`engine/rhi/backends/vulkan`) | em andamento |
+| 6 | backend OpenGL ES real (`engine/rhi/backends/gles`) | planejada |
+| 7 | Física (Jolt), áudio (miniaudio), Android (JNI/APK) | planejada |
+| 8+ | Scripting (Lua), runtime, editor web | planejada |
 
-## O que a FASE 4 herda pronto
+## O que a FASE 5 herda pronto
 
 - **Cache assíncrono**: `AssetManager` é single-threaded por DECLARAÇÃO
   (ADR-034), mas a interface (load/getLoaded/unload, handles shared_ptr)
