@@ -58,6 +58,20 @@ campo. `softwareRendering` é veracidade estrutural: suporte de software
 (lavapipe/llvmpipe) nunca é reportado como hardware. `presentation`
 distingue device-utilizável de surface-presentável (missão §13).
 
+## Revisão (FASE 5 — auditoria phase5_audit.md)
+
+- **L2:** o Auto agora tenta a inicialização completa a partir de
+  `Detected` (loader presente). Motivo: `Available` exigiria criar a
+  instance — nenhum probe REAL pode atestar isso barato e honestamente.
+  Apenas `Unavailable` pula a tentativa. Níveis superiores continuam sendo
+  verificados em `initialize`/testes.
+- **L1:** `RenderTargetDesc::colorFormat == Undefined` (novo default)
+  significa "herdar o formato da surface" — o chamador não tem como
+  conhecê-lo antes da pipeline existir; formato explícito é validado pelo
+  backend contra o real.
+- **L3:** `present()` apresenta TODOS os frames submetidos-não-apresentados,
+  em ordem (frame submetido nunca apresentado vaza imagem de swapchain).
+
 ## Consequências
 
 - A FASE 5 (Vulkan) valida a sonda/estado destes contratos contra a

@@ -403,7 +403,6 @@ eng::core::Result<BeginFrameResult> FakeBackend::beginFrame() {
         return BeginFrameResult{status, 0};
     }
     phase_ = Phase::Recording;
-    presentable_ = false;
     pipelineSet_ = false;
     vertexBound_ = false;
     indexBound_ = false;
@@ -558,7 +557,7 @@ eng::core::Result<void> FakeBackend::endFrame(std::uint64_t frameId) {
             err("rhi.fake: endFrame sem sessão ativa (frameId inválido/end duplo)"));
     }
     phase_ = Phase::Ended;
-    presentable_ = true;
+    ++pendingPresents_;  // aguarda present() — auditoria FASE 5 (L3)
     record("end");
     return {};
 }
@@ -567,12 +566,13 @@ eng::core::Result<void> FakeBackend::present() {
     if (auto ready = requireInitialized(); !ready) {
         return eng::core::makeUnexpected(ready.error());
     }
-    if (!presentable_) {
+    if (pendingPresents_ == 0) {
         return eng::core::makeUnexpected(eng::core::Error{
             eng::core::StatusCode::NotSupported,
             "rhi.fake: present sem frame submetido (missão §12)"});
     }
-    presentable_ = false;
+    // L3: apresenta TODOS os submetidos pendentes, em ordem.
+    pendingPresents_ = 0;
     phase_ = Phase::Idle;
     ++presentCount_;
     record("present");

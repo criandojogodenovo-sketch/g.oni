@@ -105,6 +105,9 @@ public:
         std::uint64_t frameId, std::uint32_t indexCount, std::uint32_t firstIndex) = 0;
 
     /// Submete o frame (uma vez por frameId). Depois disso `present()`.
+    /// Auditoria FASE 5 (L3): o frame submetido fica PENDENTE de
+    /// apresentação; `present()` apresenta TODOS os pendentes, em ordem
+    /// (frame submetido nunca apresentado vaza imagem de swapchain).
     [[nodiscard]] virtual eng::core::Result<void> endFrame(std::uint64_t frameId) = 0;
 
     /// Apresenta o frame submetido. Sem frame submetido ou sem surface →

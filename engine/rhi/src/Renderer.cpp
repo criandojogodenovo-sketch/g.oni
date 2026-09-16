@@ -215,8 +215,10 @@ eng::core::Result<Renderer> Renderer::create(const RendererConfig& config) {
             continue;
         }
         const BackendProbe probe = backend->probe();
-        if (static_cast<std::uint8_t>(probe.availability) <
-            static_cast<std::uint8_t>(Availability::Available)) {
+        // Auditoria FASE 5 (L2): probe nunca atesta honestamente acima de
+        // Detected ("Available" exigiria criar a instance). Auto tenta a
+        // inicialização completa a partir de Detected; só Unavailable pula.
+        if (probe.availability == Availability::Unavailable) {
             reasons.push_back(std::string{backendTypeName(type)} + ": " + probe.detail);
             continue;
         }
@@ -366,11 +368,9 @@ eng::core::Result<GraphicsPipelineHandle> Renderer::createGraphicsPipeline(
                               std::to_string(attribute.binding) + " não declarado"));
         }
     }
-    if (desc.renderTarget.colorFormat == Format::Undefined) {
-        return eng::core::makeUnexpected(makeError(
-            eng::core::StatusCode::InvalidArgument,
-            "rhi.pipeline: renderTarget.colorFormat Undefined"));
-    }
+    // Nota (auditoria FASE 5, L1): colorFormat == Undefined significa
+    // "herdar o formato da surface" (default) — válido por contrato; o
+    // backend valida o formato explícito contra o real da surface.
     return state_->backend->createGraphicsPipeline(desc);
 }
 

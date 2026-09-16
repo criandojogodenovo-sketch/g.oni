@@ -405,10 +405,68 @@ TEST_CASE("rhi: validação de descritores no frontend", "[rhi]")
         CHECK(undeclared.error().message.find("binding 7") != std::string::npos);
 
         desc.vertexLayout = layout;
-        desc.renderTarget.colorFormat = eng::rhi::Format::Undefined;
-        auto badFormat = renderer.renderer.createGraphicsPipeline(desc);
-        REQUIRE(badFormat.isError());
-        CHECK(badFormat.error().message.find("Undefined") != std::string::npos);
+        desc.renderTarget.colorFormat = eng::rhi::Format::R8G8B8A8Srgb;
+        auto ok = renderer.renderer.createGraphicsPipeline(desc);
+        REQUIRE(ok.ok());
+    }
+}
+
+TEST_CASE("rhi: ajustes da auditoria FASE 5 (L1/L2/L3)", "[rhi]")
+{
+    resetRhi();
+
+    SECTION("L1: colorFormat Undefined herda a surface (default válido)") {
+        registerFakeBackends();
+        auto renderer = makeRenderer(surfaceConfig());
+        auto shader = renderer.renderer.createShader([] {
+            ShaderDesc desc{};
+            desc.vertexGlsl = "v";
+            desc.fragmentGlsl = "f";
+            return desc;
+        }());
+        REQUIRE(shader.ok());
+        GraphicsPipelineDesc desc{};
+        desc.shader = shader.value();
+        eng::rhi::VertexLayout layout{};
+        layout.bindings.push_back({0, 12});
+        layout.attributes.push_back({0, 0, 0, eng::rhi::Format::R8G8B8A8Unorm});
+        desc.vertexLayout = layout;
+        // colorFormat deixado em Undefined — default = formato da surface.
+        auto created = renderer.renderer.createGraphicsPipeline(desc);
+        REQUIRE(created.ok());
+        CHECK(created.value().isValid());
+    }
+
+    SECTION("L2: probe Detected basta para o Auto tentar initialize") {
+        FakeBackend::Scenario vulkanDetected{};
+        vulkanDetected.probe = {eng::rhi::Availability::Detected,
+                                "loader presente (injetado)"};
+        FakeBackend::queueScenario(vulkanDetected);
+        registerFakeBackends();
+        auto renderer = makeRenderer(RendererConfig{});
+        CHECK(renderer.renderer.activeBackend() == BackendType::Vulkan);
+    }
+
+    SECTION("L3: present drena TODOS os frames submetidos pendentes") {
+        registerFakeBackends();
+        auto renderer = makeRenderer(surfaceConfig());
+        // Frame 1: end sem present
+        auto first = renderer.renderer.beginFrame();
+        REQUIRE(first.ok());
+        REQUIRE(first.value().frame.end().ok());
+        // Frame 2: begin-while-ended + end
+        auto second = renderer.renderer.beginFrame();
+        REQUIRE(second.ok());
+        REQUIRE(second.value().frame.end().ok());
+        // Um único present drena os dois pendentes (em ordem).
+        REQUIRE(renderer.renderer.present().ok());
+        const auto& ops = renderer.fake->ops();
+        CHECK(std::count(ops.begin(), ops.end(), "end") == 2);
+        CHECK(std::count(ops.begin(), ops.end(), "present") == 1);
+        // E o próximo ciclo continua limpo.
+        auto third = renderer.renderer.beginFrame();
+        REQUIRE(third.ok());
+        CHECK(third.value().frame.isValid());
     }
 }
 

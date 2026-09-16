@@ -163,7 +163,8 @@ private:
     enum class Phase { Idle, Recording, Ended };
     Phase phase_{Phase::Idle};
     std::uint64_t activeFrameId_{0};
-    bool presentable_{false};
+    /// Frames submetidos aguardando present (auditoria FASE 5, L3).
+    std::uint32_t pendingPresents_{0};
     bool pipelineSet_{false};
     bool vertexBound_{false};
     bool indexBound_{false};

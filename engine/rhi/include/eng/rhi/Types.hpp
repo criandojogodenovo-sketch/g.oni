@@ -227,7 +227,10 @@ struct BlendState {
 };
 
 struct RenderTargetDesc {
-    Format colorFormat{Format::B8G8R8A8Srgb};
+    /// `Undefined` (default) = HERDAR o formato da surface em uso
+    /// (auditoria FASE 5, L1). Formato explícito deve coincidir com o real
+    /// da surface — o backend valida.
+    Format colorFormat{Format::Undefined};
     Format depthFormat{Format::Undefined};
     std::uint32_t sampleCount{1};
 };
