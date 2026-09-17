@@ -53,7 +53,9 @@ if(ENG_BUILD_TESTS)
     # (missão §29/§41) — sem loader/ICD o teste SKIPA com motivo, nunca
     # falha por ausência de GPU.
     add_test(NAME rhi_vulkan COMMAND eng_rhi_vulkan_tests)
-    set_tests_properties(rhi_vulkan PROPERTIES LABELS "rhi;rhi_hardware"
+    set_tests_properties(rhi_vulkan PROPERTIES
+    SKIP_RETURN_CODE 4
+    LABELS "rhi;rhi_hardware"
         # LSan: alocações internas do ICD lavapipe e da layer Khronos não são
         # liberadas em vkDestroyInstance (comportamento conhecido de
         # terceiros). A detecção de leaks PERMANECE ATIVA para o código do

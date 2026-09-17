@@ -11,11 +11,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "eng/android/AndroidRuntime.hpp"
 #include "eng/log/ConsoleSink.hpp"
 #include "eng/log/Logger.hpp"
 #include "eng/rhi/Renderer.hpp"
+#include "eng/rhi/gles/GlesBackend.hpp"
+#include "eng/rhi/vulkan/VulkanBackend.hpp"
 
 namespace {
 
@@ -33,6 +37,36 @@ using eng::rhi::NativeWindowKind;
 
 constexpr std::uint32_t kWidth = 64;
 constexpr std::uint32_t kHeight = 48;
+
+/// Bug C-17 da auditoria final: este suite FALHAVA (não SKIPava) sem
+/// driver gráfico (sem lavapipe/ICD Vulkan e sem EGL) — degradação
+/// inconsistente com rhi_vulkan/rhi_gles. A fábrica "auto" precisa de PELO
+/// MENOS um backend inicializável; sem nenhum, SKIP com motivo (o CI com
+/// drivers roda o suite completo).
+bool graphicsBackendUnavailable() {
+    // Registra os backends REAIS como AndroidRuntime::create faria (o
+    // AlreadyExists é ignorado — chamadas repetidas são idempotentes).
+    (void)eng::rhi::Renderer::registerBackend(
+        eng::rhi::BackendType::Vulkan, &eng::rhi::vulkan::createBackend);
+    (void)eng::rhi::Renderer::registerBackend(
+        eng::rhi::BackendType::OpenGLES, &eng::rhi::gles::createBackend);
+    // Probe barato via Renderer::create device-only (sem surface): se
+    // QUALQUER backend inicializa, o ambiente suporta o suite.
+    eng::rhi::RendererConfig config;
+    config.backend = eng::rhi::BackendType::Auto;
+    config.enableValidation = false;
+    auto renderer = eng::rhi::Renderer::create(config);
+    return renderer.isError();
+}
+
+/// SKIPa o caso inteiro quando não há driver (o motif entra no output).
+#define ENG_REQUIRE_GRAPHICS()                                                \
+    do {                                                                      \
+        if (graphicsBackendUnavailable()) {                                   \
+            SKIP("sem driver gráfico (lavapipe/EGL) neste ambiente — "        \
+                 "suite completo roda no CI com drivers");                    \
+        }                                                                     \
+    } while (false)
 
 /// Cria runtime com backend auto (herda seleção ADR-036) e surface
 /// headless "de mentira" (ponteiro marker — no Linux não há NDK).
@@ -57,6 +91,7 @@ struct RuntimeWithSurface {
 
 TEST_CASE("android: runtime cria com backends reais registrados", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     auto created = AndroidRuntime::create("auto");
     REQUIRE(created.ok());
     AndroidRuntime* runtime = created.value();
@@ -69,6 +104,7 @@ TEST_CASE("android: runtime cria com backends reais registrados", "[android_runt
 
 TEST_CASE("android: NO_SURFACE nunca renderiza nem crasha", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     auto created = AndroidRuntime::create("auto");
     REQUIRE(created.ok());
     AndroidRuntime* runtime = created.value();
@@ -97,6 +133,7 @@ TEST_CASE("android: NO_SURFACE nunca renderiza nem crasha", "[android_runtime]")
 TEST_CASE("android: surface create → render → destroy → recreate → render",
           "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     RuntimeWithSurface env;
     AndroidRuntime* runtime = env.runtime;
     REQUIRE(runtime->state() == SurfaceState::Available);
@@ -136,6 +173,7 @@ TEST_CASE("android: surface create → render → destroy → recreate → rende
 TEST_CASE("android: surfaceChanged aplica resize no próximo frame (§XXVIII)",
           "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     RuntimeWithSurface env;
     AndroidRuntime* runtime = env.runtime;
     REQUIRE(runtime->renderFrame());
@@ -155,6 +193,7 @@ TEST_CASE("android: surfaceChanged aplica resize no próximo frame (§XXVIII)",
 
 TEST_CASE("android: RUNNING → PAUSE → RESUME → RUNNING", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     RuntimeWithSurface env;
     AndroidRuntime* runtime = env.runtime;
     REQUIRE(runtime->renderFrame());
@@ -179,6 +218,7 @@ TEST_CASE("android: RUNNING → PAUSE → RESUME → RUNNING", "[android_runtime
 
 TEST_CASE("android: pause/resume sem surface e ordens inusuais (§VI)", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     auto created = AndroidRuntime::create("auto");
     REQUIRE(created.ok());
     AndroidRuntime* runtime = created.value();
@@ -215,6 +255,7 @@ TEST_CASE("android: pause/resume sem surface e ordens inusuais (§VI)", "[androi
 
 TEST_CASE("android: seleção auto escolhe Vulkan; setBackend recria AGORA", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     RuntimeWithSurface env;
     AndroidRuntime* runtime = env.runtime;
     REQUIRE(runtime->state() == SurfaceState::Available);
@@ -243,6 +284,7 @@ TEST_CASE("android: seleção auto escolhe Vulkan; setBackend recria AGORA", "[a
 
 TEST_CASE("android: backend explícito indisponível mantém runtime vivo", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     auto created = AndroidRuntime::create("gles");
     REQUIRE(created.ok());
     AndroidRuntime* runtime = created.value();
@@ -268,6 +310,7 @@ TEST_CASE("android: backend explícito indisponível mantém runtime vivo", "[an
 TEST_CASE("android: surfaceCreated sem tamanho cria renderer no primeiro change",
           "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     // Fluxo REAL do Android (missão §VI): surfaceCreated não conhece o
     // tamanho; surfaceChanged entrega w/h antes de qualquer render.
     auto created = AndroidRuntime::create("auto");
@@ -300,6 +343,7 @@ TEST_CASE("android: surfaceCreated sem tamanho cria renderer no primeiro change"
 
 TEST_CASE("android: shutdown com surface viva e recursos em uso", "[android_runtime]")
 {
+    ENG_REQUIRE_GRAPHICS();
     AndroidRuntime* runtime = nullptr;
     {
         RuntimeWithSurface env;

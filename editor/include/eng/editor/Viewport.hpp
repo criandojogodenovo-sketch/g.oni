@@ -37,6 +37,16 @@ struct EntityQuad {
     bool selected{false};
 };
 
+/// Quad de PARTÍCULA viva (marcador de gameplay — FASE 10). Auditoria
+/// final: docs prometiam "o viewport desenha partículas como quads
+/// (mesmo pipeline pos+cor)" e nada lia a ParticlePool — agora é real.
+struct ParticleQuad {
+    float worldX{0.f};
+    float worldY{0.f};
+    float size{0.08f};             ///< tamanho da partícula (mundo)
+    float rotation{0.f};          ///< radianos no plano XY
+};
+
 class Viewport final {
 public:
     /// Câmera 2D do editor (pan + zoom — §8.6).
@@ -80,6 +90,12 @@ public:
     [[nodiscard]] std::vector<EntityQuad> buildQuads(
         const eng::scene::Scene& scene,
         const std::optional<eng::ecs::Entity>& selection) const;
+
+    /// Quads de TODAS as partículas vivas (uma por Particle de cada
+    /// ParticlePool/emitter da cena). Desenhados POR CIMA das entidades —
+    /// marcadores de gameplay, não selecionáveis.
+    [[nodiscard]] std::vector<ParticleQuad> buildParticleQuads(
+        const eng::scene::Scene& scene) const;
 
     /// Hit-test em coordenadas de TELA. Raio de tolerância em pixels
     /// (alvo de toque generoso — touch UX §8.8).

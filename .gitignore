@@ -12,6 +12,9 @@ cmake-build-*/
 cache/
 .goni/
 
+# Workspaces descartáveis dos testes do editor (EditorHost::create no cwd)
+.editor-test-ws-*/
+
 # CMake
 CMakeUserPresets.json
 CMakeCache.txt

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "eng/particles/Particles.hpp"
 #include "eng/scene/Name.hpp"
 
 namespace eng::editor {
@@ -131,6 +132,29 @@ std::vector<EntityQuad> Viewport::buildQuads(
     for (const eng::ecs::Entity root : roots) {
         visit(visit, root, 0);
     }
+    return quads;
+}
+
+std::vector<ParticleQuad> Viewport::buildParticleQuads(
+    const eng::scene::Scene& scene) const
+{
+    // Auditoria final (drift D6 da FASE 10): o viewport prometia desenhar
+    // partículas como quads — nada lia a ParticlePool. Uma por partícula
+    // VIVA (pool é runtime-only; em Play o clone tem as pools ativas).
+    std::vector<ParticleQuad> quads;
+    scene.world().each<eng::particles::ParticlePool>(
+        [&](eng::ecs::Entity /*emitter*/,
+            const eng::particles::ParticlePool& pool) {
+            quads.reserve(quads.size() + pool.particles.size());
+            for (const auto& particle : pool.particles) {
+                ParticleQuad quad;
+                quad.worldX = particle.position.x;
+                quad.worldY = particle.position.y;
+                quad.size = particle.size;
+                quad.rotation = particle.rotation;
+                quads.push_back(quad);
+            }
+        });
     return quads;
 }
 

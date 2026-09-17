@@ -964,16 +964,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             this,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onSingleTapUp(e: MotionEvent): Boolean {
-                    if (gameWantsTouch()) {
-                        // Toque do JOGO: Down+Up no input do runtime.
-                        EditorJni.nativeEditorGameTouch(
-                            handle, 0, 0, e.x, e.y, 1f
-                        )
-                        EditorJni.nativeEditorGameTouch(
-                            handle, 2, 0, e.x, e.y, 1f
-                        )
-                        return true
-                    }
+                    // Toques de JOGO são roteados brutos no listener — aqui
+                    // só a seleção do EDITOR (bugs C-5/C-6 da auditoria).
                     val hit = EditorJni.nativeEditorViewportTap(handle, e.x, e.y)
                     if (hit != 0L) {
                         selectEntity(hit)
@@ -1000,9 +992,59 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
         )
         view.setOnTouchListener { _, event ->
-            scaleDetector.onTouchEvent(event)
-            tapDetector.onTouchEvent(event)
-            true
+            // Bugs C-5/C-6 da auditoria final: em Play SEM ferramenta, os
+            // eventos BRUTOS vão ao input do jogo com fases e pointer IDs
+            // REAIS (como o GoniActivity) — o tap sintético (Down+Up na
+            // mesma janela de update) nunca expunha pressed/down, e o
+            // pointerId fixo 0 descartava o multitouch. Os detectores de
+            // gesto do EDITOR só rodam fora do modo jogo.
+            if (gameWantsTouch()) {
+                dispatchGameTouch(event)
+                true
+            } else {
+                scaleDetector.onTouchEvent(event)
+                tapDetector.onTouchEvent(event)
+                true
+            }
+        }
+    }
+
+    /**
+     * Evento bruto → input canônico do jogo: fases 0-3 com pointer ID real
+     * (multitouch); ACTION_MOVE é enviado para TODOS os dedos ativos.
+     */
+    private fun dispatchGameTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                val i = event.actionIndex
+                EditorJni.nativeEditorGameTouch(
+                    handle, 0, event.getPointerId(i), event.getX(i),
+                    event.getY(i), event.getPressure(i)
+                )
+            }
+            MotionEvent.ACTION_MOVE -> {
+                for (i in 0 until event.pointerCount) {
+                    EditorJni.nativeEditorGameTouch(
+                        handle, 1, event.getPointerId(i), event.getX(i),
+                        event.getY(i), event.getPressure(i)
+                    )
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                val i = event.actionIndex
+                EditorJni.nativeEditorGameTouch(
+                    handle, 2, event.getPointerId(i), event.getX(i),
+                    event.getY(i), event.getPressure(i)
+                )
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                for (i in 0 until event.pointerCount) {
+                    EditorJni.nativeEditorGameTouch(
+                        handle, 3, event.getPointerId(i), event.getX(i),
+                        event.getY(i), event.getPressure(i)
+                    )
+                }
+            }
         }
     }
 
@@ -1017,6 +1059,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (handle != 0L) {
             EditorJni.nativeEditorSurfaceChanged(handle, width, height)
+            // Bug C-4 da auditoria final: o input do JOGO também precisa do
+            // tamanho (zonas de toque em fração da tela — Input.cpp).
+            EditorJni.nativeEditorSetGameViewportSize(handle, width, height)
             surfaceReady = width > 0 && height > 0
         }
     }

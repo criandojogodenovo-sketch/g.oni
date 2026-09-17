@@ -93,46 +93,47 @@ void AnimatorStateMachine::transition(const AnimationBank& bank,
                                      std::string_view next,
                                      float blendDuration)
 {
-    if (state_.current.empty()) {
-        state_.current = animator_.clip; // sincroniza com o componente
-    }
-    if (state_.current == next) {
+    if (animator_.clip == next) {
         return; // já está nele
     }
     if (bank.find(next) == nullptr) {
         return; // clip desconhecido: no-op seguro (documentado)
     }
-    if (blendDuration <= 0.f || state_.current.empty()) {
+    if (blendDuration <= 0.f || animator_.clip.empty()) {
         // Troca seca (sem estado anterior válido).
         animator_.clip = std::string(next);
         animator_.time = 0.f;
         animator_.playing = true;
-        state_.current = std::string(next);
-        state_.previous.clear();
-        state_.blendRemaining = 0.f;
+        animator_.previousClip.clear();
+        animator_.blendDuration = 0.f;
+        animator_.blendRemaining = 0.f;
         return;
     }
-    state_.previous = state_.current;
-    state_.previousTime = animator_.time;
-    state_.blendDuration = blendDuration;
-    state_.blendRemaining = blendDuration;
+    // Bug C-13 da auditoria final: o estado de blend agora vive no
+    // COMPONENTE (serializável) e o AnimationSystem o aplica. Uma
+    // transição durante um fade em andamento assume o clip CORRENTE
+    // como novo "previous" (o fade antigo é descartado — comportamento
+    // padrão de engines).
+    animator_.previousClip = animator_.clip;
+    animator_.previousTime = animator_.time;
+    animator_.blendDuration = blendDuration;
+    animator_.blendRemaining = blendDuration;
     animator_.clip = std::string(next);
     animator_.time = 0.f;
     animator_.playing = true;
-    state_.current = std::string(next);
 }
 
-void AnimatorStateMachine::update(const AnimationBank& bank,
-                                 float deltaSeconds)
+AnimatorState AnimatorStateMachine::state() const noexcept
 {
-    (void)bank; // (validação de clip acontece na transition)
-    if (state_.blendRemaining > 0.f) {
-        state_.blendRemaining =
-            std::max(0.f, state_.blendRemaining - deltaSeconds);
-        if (state_.blendRemaining == 0.f) {
-            state_.previous.clear();
-        }
-    }
+    // Vista por valor do estado de blend do componente (pós C-13: a
+    // fonte da verdade são os campos do Animator).
+    AnimatorState view;
+    view.current = animator_.clip;
+    view.previous = animator_.previousClip;
+    view.previousTime = animator_.previousTime;
+    view.blendDuration = animator_.blendDuration;
+    view.blendRemaining = animator_.blendRemaining;
+    return view;
 }
 
 // =============================================================================
@@ -169,7 +170,11 @@ void AnimationSystem::update(eng::scene::Scene& scene,
     scene.world().each<Animator>([&](eng::ecs::Entity e, Animator& animator) {
         const AnimationClip* clip = bank.find(animator.clip);
         if (clip == nullptr || clip->duration() <= 0.f) {
-            return; // sem clip válido: congela (sem crash)
+            // sem clip válido: congela (sem crash); blend ativo expira
+            // (não há pose nova com que misturar).
+            animator.previousClip.clear();
+            animator.blendRemaining = 0.f;
+            return;
         }
 
         // Avanço com velocidade (§7.9 speed) — APENAS tocando; pausado
@@ -184,7 +189,47 @@ void AnimationSystem::update(eng::scene::Scene& scene,
             }
         }
 
-        const Pose pose = sample(*clip, animator.time);
+        // ---- Cross-fade (bug C-13 da auditoria final) -----------------
+        // O clip que SAI continua tocando durante o fade (mesma
+        // velocidade, clamp no fim — sem loop no fade); o fator t segue o
+        // blendRemaining. previousClip ausente do banco (ou duração zero)
+        // encerra o blend na hora (sem misturar com garbage).
+        bool blending = !animator.previousClip.empty() &&
+                        animator.blendRemaining > 0.f &&
+                        animator.blendDuration > 0.f;
+        const AnimationClip* previous =
+            blending ? bank.find(animator.previousClip) : nullptr;
+        if (blending && (previous == nullptr || previous->duration() <= 0.f)) {
+            animator.previousClip.clear();
+            animator.blendRemaining = 0.f;
+            blending = false;
+        }
+        if (blending && animator.playing) {
+            animator.previousTime += deltaSeconds * animator.speed;
+            if (animator.previousTime >= previous->duration()) {
+                animator.previousTime = previous->duration();
+            }
+        }
+
+        Pose pose = sample(*clip, animator.time);
+        if (blending) {
+            // Consome o dt do fade ANTES do fator: um blend de D segundos
+            // completa em exatamente D de tempo acumulado (frame 1 de um
+            // fade 0.2s com dt 0.1 já está em t=0.5 — sem frame "perdido"
+            // em t=0).
+            animator.blendRemaining =
+                std::max(0.f, animator.blendRemaining - deltaSeconds);
+            const float t = 1.f - (animator.blendRemaining /
+                                   animator.blendDuration);
+            pose = blend(sample(*previous, animator.previousTime), pose, t);
+            if (animator.blendRemaining == 0.f) {
+                animator.previousClip.clear();
+            }
+        } else {
+            animator.previousClip.clear();
+            animator.blendRemaining = 0.f;
+        }
+
         auto* transform = scene.localTransform(e);
         if (transform == nullptr) {
             return;

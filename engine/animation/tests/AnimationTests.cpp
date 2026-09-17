@@ -163,18 +163,18 @@ TEST_CASE("animation: máquina de estados com cross-fade", "[animation]")
     CHECK(machine.state().previous == "idle");
     CHECK(machine.state().blendRemaining == Approx(0.2f));
 
-    // Durante o blend: interpolação entre pose anterior (idle) e nova
-    // (run) — y cresce de 0 para 5 conforme o blend avança.
-    AnimationSystem::update(scene, bank, 0.0f); // aplica pose inicial run
-    machine.update(bank, 0.1f); // blend metade
-    const float yMid =
-        AnimationSystem::blend(AnimationSystem::sample(*bank.find("idle"), 0.f),
-                               AnimationSystem::sample(*bank.find("run"), 0.f),
-                               0.5f)
-            .position.y;
-    CHECK(yMid == Approx(2.5f).margin(1e-4f));
+    // Bug C-13 da auditoria final: o cross-fade agora é APLICADO ao nó
+    // pelo AnimationSystem (antes o estado existia mas a transição
+    // "estalava" — o teste antigo verificava apenas a utilidade blend()).
+    // Metade do fade (0.1s de 0.2s): pose = idle@0.1s (y=0) misturada
+    // com run@0.1s (y=5) em t=0.5 → y=2.5.
+    AnimationSystem::update(scene, bank, 0.1f);
+    CHECK(scene.localTransform(e)->position.y == Approx(2.5f).margin(1e-4f));
+    CHECK(machine.state().previous == "idle");
 
-    machine.update(bank, 0.1f); // blend termina
+    // Fim do fade: pose integral do run (y=5) e previous limpo.
+    AnimationSystem::update(scene, bank, 0.1f);
+    CHECK(scene.localTransform(e)->position.y == Approx(5.f).margin(1e-4f));
     CHECK(machine.state().blendRemaining == Approx(0.f));
     CHECK(machine.state().previous.empty());
 

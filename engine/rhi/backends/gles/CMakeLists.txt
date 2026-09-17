@@ -61,7 +61,9 @@ if(ENG_BUILD_TESTS)
     endif()
     eng_apply_test_policy(eng_rhi_gles_tests)
     add_test(NAME rhi_gles COMMAND eng_rhi_gles_tests)
-    set_tests_properties(rhi_gles PROPERTIES LABELS "rhi;rhi_hardware"
+    set_tests_properties(rhi_gles PROPERTIES
+    SKIP_RETURN_CODE 4
+    LABELS "rhi;rhi_hardware"
         # LSan: arenas JIT do llvmpipe (módulo desconhecido p/ o LSan) e o
         # próprio runtime do UBSan retêm alocações — ver
         # tests/mesa_lsan.supp. Detecção de leaks do MOTOR permanece ativa.

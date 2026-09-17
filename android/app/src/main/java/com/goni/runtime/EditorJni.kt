@@ -103,6 +103,9 @@ object EditorJni {
     external fun nativeEditorGameTouch(handle: Long, phase: Int, pointerId: Int,
                                        x: Float, y: Float, pressure: Float)
 
+    /** Tamanho do viewport do JOGO em Play (zonas de toque em fração da tela). */
+    external fun nativeEditorSetGameViewportSize(handle: Long, width: Int, height: Int)
+
     // --- erro da última operação (toasts/diálogos) ----------------------------------------
 
     external fun nativeEditorLastError(handle: Long): String?

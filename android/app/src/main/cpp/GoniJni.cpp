@@ -41,13 +41,17 @@ constexpr std::size_t kMaxBackendArg = 32;
         out[0] = '\0';
         return true;
     }
-    const jsize length = env->GetStringLength(value);
-    if (length <= 0 || static_cast<std::size_t>(length) >= capacity) {
+    // Limite em BYTES MUTF-8 — é o que GetStringUTFRegion ESCREVE.
+    // GetStringLength devolve unidades UTF-16 (até 3 bytes/unidade em
+    // MUTF-8): usar uma para limitar a outra era overflow de stack
+    // (bug C-1 da auditoria final FASES 4–10).
+    const jsize utfLength = env->GetStringUTFLength(value);
+    if (utfLength <= 0 || static_cast<std::size_t>(utfLength) >= capacity) {
         out[0] = '\0';
         return false;
     }
-    env->GetStringUTFRegion(value, 0, length, out);
-    out[length] = '\0';
+    env->GetStringUTFRegion(value, 0, utfLength, out);
+    out[utfLength] = '\0';
     return true;
 }
 
@@ -85,8 +89,11 @@ Java_com_goni_runtime_GoniRuntime_nativeSurfaceCreated(JNIEnv* env, jobject /*th
     if (runtime == nullptr) {
         return;
     }
-    // ANativeWindow_fromSurface ADQUIRE a referência — ownership passa ao
-    // runtime até surfaceDestroyed (ADR-040: acquire aqui, release lá).
+    // ANativeWindow_fromSurface ADQUIRE a referência. O runtime mantém
+    // a SUA própria referência interna (acquireWindow em surfaceCreated),
+    // portanto a referência da fronteira JNI é liberada em seguida — sem
+    // isso cada ciclo de surface vazava +1 (bug C-2 da auditoria final,
+    // invisível aos testes Linux onde acquire/release são no-ops).
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) {
         return;  // surface inválida: runtime permanece NO_SURFACE
@@ -94,6 +101,7 @@ Java_com_goni_runtime_GoniRuntime_nativeSurfaceCreated(JNIEnv* env, jobject /*th
     // Tamanho desconhecido neste callback (missão §IV/§VI): o renderer é
     // criado no primeiro nativeSurfaceChanged com o tamanho real.
     runtime->surfaceCreated(window, eng::rhi::NativeWindowKind::Android, 0, 0);
+    ANativeWindow_release(window);  // hand-off concluído: o runtime tem a própria
 }
 
 JNIEXPORT void JNICALL

@@ -43,10 +43,11 @@ public:
     /// Redimensiona (surface mudou).
     eng::core::Result<void> resize(std::uint32_t width, std::uint32_t height);
 
-    /// Um frame do viewport: quads + grade + seleção. false = não desenhou
-    /// (minimizado/out-of-date persistente) — NUNCA erro lançar.
+    /// Um frame do viewport: quads + grade + seleção + partículas. false =
+    /// não desenhou (minimizado/out-of-date persistente) — NUNCA erro lançar.
     bool renderFrame(const Viewport& viewport,
-                     const std::vector<EntityQuad>& quads, bool playMode);
+                     const std::vector<EntityQuad>& quads,
+                     const std::vector<ParticleQuad>& particles, bool playMode);
 
     [[nodiscard]] bool isValid() const noexcept { return renderer_.has_value(); }
     [[nodiscard]] eng::rhi::BackendType activeBackend() const noexcept;
@@ -86,6 +87,7 @@ private:
     [[nodiscard]] bool ensureCapacity(std::size_t vertexCount);
     [[nodiscard]] bool buildAndDraw(const Viewport& viewport,
                                     const std::vector<EntityQuad>& quads,
+                                    const std::vector<ParticleQuad>& particles,
                                     bool playMode);
 
     std::optional<eng::rhi::Renderer> renderer_{};

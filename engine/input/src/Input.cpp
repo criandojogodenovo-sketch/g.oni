@@ -26,7 +26,7 @@ using eng::core::makeUnexpected;
 // =============================================================================
 
 void TouchState::onTouch(std::uint32_t id, TouchPhase phase, float x, float y,
-                         float pressure)
+                         float pressure, std::uint64_t frame)
 {
     switch (phase) {
     case TouchPhase::Down:
@@ -48,21 +48,30 @@ void TouchState::onTouch(std::uint32_t id, TouchPhase phase, float x, float y,
             fresh.delta = {0.f, 0.f};
             fresh.pressure = pressure;
             fresh.phase = TouchPhase::Down;
+            fresh.frameStamp = frame;
             points_.push_back(fresh);
             return;
         }
         // Down duplicado = Move (defensivo; sistemas reenviam).
+        // Delta ACUMULA entre updates (bug C-7): beginFrame zera no início
+        // do update e os eventos da janela somam o deslocamento.
+        point->delta.x += x - point->position.x;
+        point->delta.y += y - point->position.y;
         point->position = {x, y};
         point->pressure = pressure;
         point->phase = phase;
+        point->frameStamp = frame; // bug C-8: carimbo da fase
         break;
     }
     case TouchPhase::Up:
     case TouchPhase::Cancelled: {
         for (auto& candidate : points_) {
             if (candidate.id == id) {
+                candidate.delta.x += x - candidate.position.x;
+                candidate.delta.y += y - candidate.position.y;
                 candidate.position = {x, y};
                 candidate.phase = phase;
+                candidate.frameStamp = frame;
                 break;
             }
         }
@@ -324,7 +333,7 @@ void InputSystem::applyEvent(const InputEvent& event)
     switch (event.device) {
     case DeviceKind::Touch:
         touch_.onTouch(event.pointerId, event.touchPhase, event.x, event.y,
-                       event.pressure);
+                       event.pressure, frame_);
         break;
     case DeviceKind::Keyboard: {
         const auto code = static_cast<std::uint16_t>(event.key);
@@ -402,9 +411,17 @@ void InputSystem::update()
                     if (!inside) {
                         continue;
                     }
+                    // Bug C-9 da auditoria final: `pressed` dispara UMA vez
+                    // (frameStamp do Down == frame corrente), igual ao
+                    // teclado; um dedo parado sem eventos mantém apenas
+                    // `down`. Up visível nesta janela necessariamente
+                    // ocorreu nela (purgeEnded no fim do update).
+                    const bool thisFrame = point.frameStamp == frame_;
                     if (point.phase == TouchPhase::Down) {
                         state.down = true;
-                        state.pressed = true;
+                        if (thisFrame) {
+                            state.pressed = true;
+                        }
                     } else if (point.phase == TouchPhase::Move) {
                         state.down = true;
                     } else {

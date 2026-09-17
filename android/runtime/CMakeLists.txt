@@ -31,6 +31,9 @@ target_link_libraries(eng_android_runtime_tests PRIVATE
 eng_apply_test_policy(eng_android_runtime_tests)
 add_test(NAME android_runtime COMMAND eng_android_runtime_tests)
 set_tests_properties(android_runtime PROPERTIES LABELS "rhi_hardware"
+    # Bug C-17: Catch2 devolve exit 4 quando TODOS os casos SKIPam (ex.:
+    # ambiente sem driver) — para o CTest isso é SKIP, não FAIL.
+    SKIP_RETURN_CODE 4
     # LSan: origens de terceiros (ICD/layers/drivers) — ver
     # tests/drivers_lsan.supp; leaks do MOTOR continuam detectáveis.
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/drivers_lsan.supp")

@@ -68,6 +68,14 @@ private:
 struct Animator {
     std::string clip{"idle"};   ///< clip corrente (por nome do banco)
     float time{0.f};            ///< cursor de playback (segundos)
+    /// Cross-fade ATIVO (bug C-13 da auditoria final: o estado de blend
+    /// vivia FORA do componente e o AnimationSystem nunca o aplicava —
+    /// a transição "estalava"). `previousClip` vazio = sem blend ativo;
+    /// o Sistema consome esses campos e limpa previousClip ao fim do fade.
+    std::string previousClip{};
+    float previousTime{0.f};    ///< cursor do clip que sai (durante o fade)
+    float blendDuration{0.f};
+    float blendRemaining{0.f};
     float speed{1.f};          ///< 0.5 = metade, 2 = dobro
     bool loop{true};
     bool playing{false};
@@ -79,6 +87,10 @@ struct Animator {
 ENG_REFLECT_BEGIN(eng::animation::Animator)
     ENG_REFLECT_FIELD(clip)
     ENG_REFLECT_FIELD(time)
+    ENG_REFLECT_FIELD(previousClip)
+    ENG_REFLECT_FIELD(previousTime)
+    ENG_REFLECT_FIELD(blendDuration)
+    ENG_REFLECT_FIELD(blendRemaining)
     ENG_REFLECT_FIELD(speed)
     ENG_REFLECT_FIELD(loop)
     ENG_REFLECT_FIELD(playing)
@@ -97,7 +109,8 @@ struct AnimationTransition {
     float blendDuration{0.15f};
 };
 
-/// Estado do Animator além do clip: transição ativa (cross-fade).
+/// Leitura do estado de cross-fade do Animator (vista por valor — a
+/// fonte da verdade são os campos previousClip/blend* do COMPONENTE).
 struct AnimatorState {
     std::string current;
     std::string previous;
@@ -109,6 +122,12 @@ struct AnimatorState {
 /// Máquina de estados mínima (§7.10): Idle→Run→Jump→Attack são NOMES —
 /// as REGRAS ficam no gameplay (C++/script — §9); a engine fornece a
 /// transição com cross-fade.
+///
+/// Pós C-13 (auditoria final): o estado de blend vive no COMPONENTE
+/// Animator (serializável) e é APLICADO pelo AnimationSystem::update —
+/// a máquina é o gatilho (`transition`) + vista (`state`). O avanço por
+/// frame é responsabilidade do Sistema (um único condutor por frame:
+/// não chame a máquina E o sistema para o mesmo animator no mesmo tick).
 class AnimatorStateMachine final {
 public:
     explicit AnimatorStateMachine(Animator& animator) noexcept
@@ -118,21 +137,15 @@ public:
 
     /// Dispara uma transição para o estado/clip `next` (trocando o clip do
     /// Animator e iniciando o cross-fade com o anterior). Transição para o
-    /// estado atual: no-op.
+    /// estado atual: no-op. Clip desconhecido: no-op seguro.
     void transition(const AnimationBank& bank, std::string_view next,
                     float blendDuration = 0.15f);
 
-    /// Avança o estado (blend) e o playback do Animator.
-    void update(const AnimationBank& bank, float deltaSeconds);
-
-    [[nodiscard]] const AnimatorState& state() const noexcept
-    {
-        return state_;
-    }
+    /// Vista do estado de blend (lida do componente).
+    [[nodiscard]] AnimatorState state() const noexcept;
 
 private:
     Animator& animator_;
-    AnimatorState state_{};
 };
 
 // =============================================================================

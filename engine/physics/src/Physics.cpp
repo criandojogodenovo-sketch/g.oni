@@ -479,10 +479,32 @@ Vec3 PhysicsWorld::moveAndSlide(const eng::scene::Scene& scene,
         }
     });
 
-    if (!collided) {
-        return target;
+    Vec3 resolved =
+        collided ? target + pushNormal * (deepest * 1.001f + 0.001f) : target;
+
+    // Bug C-18 da auditoria final: snapToGround era serializado e nunca
+    // aplicado. Semântica: com o movimento (quase) horizontal e chão a até
+    // meio raio abaixo, PROJETA a esfera para pousar — personagem desce
+    // rampas/degraus sem "flutuar" nos frames de queda.
+    if (character->snapToGround) {
+        const bool mostlyHorizontal = std::abs(motion.y) <= radius * 0.5f;
+        if (mostlyHorizontal && radius > 0.f) {
+            // O raio parte do CENTRO: alcance = raio (até a superfície da
+            // esfera) + meio raio de folga de snap.
+            const float snapDistance = radius * 1.5f;
+            const auto snap = raycast(scene, resolved,
+                                      Vec3{0.f, -1.f, 0.f}, snapDistance);
+            if (snap.ok() && snap.value().hit) {
+                const auto& hit = snap.value();
+                // Só gruda em superfícies razoavelmente horizontais.
+                if (hit.normal.y > 0.5f) {
+                    resolved = hit.point +
+                               hit.normal * (radius * 1.001f + 0.001f);
+                }
+            }
+        }
     }
-    return target + pushNormal * (deepest * 1.001f + 0.001f);
+    return resolved;
 }
 
 // =============================================================================

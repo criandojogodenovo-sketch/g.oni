@@ -311,3 +311,47 @@ TEST_CASE("physics: character body move livre sem obstáculo", "[physics]")
     CHECK(finalPos.y == Catch::Approx(2.f).margin(1e-5f));
     CHECK(finalPos.z == Catch::Approx(3.f).margin(1e-5f));
 }
+
+// =============================================================================
+// Correções da auditoria final FASES 4–10 (remediação)
+// =============================================================================
+
+TEST_CASE("physics: snapToGround projeta o personagem ao chão (C-18)", "[physics]")
+{
+    WorldFixture f;
+    // Chão logo abaixo do alcance de snap (0.25 = meio raio do personagem).
+    f.addStaticBox({0.f, -1.f, 0.f}, {10.f, 0.5f, 10.f});
+
+    auto character = f.scene.createNode();
+    (void)f.scene.world().emplace<CharacterBody>(
+        character, CharacterBody{{0.f, 0.f, 0.f}, 0.5f, /*snapToGround=*/true});
+    f.scene.localTransform(character)->position = {0.f, 0.1f, 0.f};
+
+    // Movimento horizontal: sem snap ficaria em y=0.1 (flutuando);
+    // com snap (chão a 0.1 < 0.25 abaixo) pousa sobre a caixa:
+    // topo do chão em y=-0.5; centro = topo + raio (0.5) = 0.
+    const Vec3 landed = PhysicsWorld::moveAndSlide(f.scene, character,
+                                                    Vec3{1.f, 0.f, 0.f});
+    CHECK(landed.x == Catch::Approx(1.f).margin(1e-4f));
+    // Pousa a raio*1.001 + 0.001 acima do chão (epsilon de despene-
+    // tração, idêntico ao push do moveAndSlide) → ~0.0015, não 0 exato.
+    CHECK(landed.y == Catch::Approx(0.f).margin(5e-3f));
+
+    // Sem snapToGround: mantém a altura de origem (comportamento anterior).
+    auto floater = f.scene.createNode();
+    (void)f.scene.world().emplace<CharacterBody>(
+        floater, CharacterBody{{0.f, 0.f, 0.f}, 0.5f, /*snapToGround=*/false});
+    f.scene.localTransform(floater)->position = {0.f, 0.1f, 0.f};
+    const Vec3 floated = PhysicsWorld::moveAndSlide(f.scene, floater,
+                                                    Vec3{1.f, 0.f, 0.f});
+    CHECK(floated.y == Catch::Approx(0.1f).margin(1e-5f));
+
+    // Movimento VERTICAL (subindo): snap não se aplica.
+    auto jumper = f.scene.createNode();
+    (void)f.scene.world().emplace<CharacterBody>(
+        jumper, CharacterBody{{0.f, 0.f, 0.f}, 0.5f, true});
+    f.scene.localTransform(jumper)->position = {0.f, 0.1f, 0.f};
+    const Vec3 jumped = PhysicsWorld::moveAndSlide(f.scene, jumper,
+                                                  Vec3{0.f, 2.f, 0.f});
+    CHECK(jumped.y > 1.f);
+}

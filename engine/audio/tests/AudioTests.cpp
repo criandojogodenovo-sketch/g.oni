@@ -24,7 +24,8 @@ using namespace eng::audio;
 std::vector<std::byte> makeWav16(std::uint32_t sampleRate,
                                  std::uint16_t channels,
                                  const std::vector<std::int16_t>& samples,
-                                 bool withListChunk = false)
+                                 bool withListChunk = false,
+                                 std::uint16_t bitsOverride = 16)
 {
     std::vector<std::byte> out;
     const auto push = [&out](const void* data, std::size_t size) {
@@ -58,7 +59,7 @@ std::vector<std::byte> makeWav16(std::uint32_t sampleRate,
     const std::uint16_t format = 1;
     const std::uint16_t blockAlign = channels * 2;
     const std::uint32_t byteRate = sampleRate * blockAlign;
-    const std::uint16_t bits = 16;
+    const std::uint16_t bits = bitsOverride;
     push(&format, 2);
     push(&channels, 2);
     push(&sampleRate, 4);
@@ -386,4 +387,25 @@ TEST_CASE("audio: NullBackend conta start/stop", "[audio]")
     CHECK(backend->isRunning());
     backend->stop();
     CHECK_FALSE(backend->isRunning());
+}
+
+// =============================================================================
+// Correção da auditoria final FASES 4–10 (remediação C-10)
+// =============================================================================
+
+TEST_CASE("audio: bits não suportados produzem mensagem válida (C-10)", "[audio]")
+{
+    // Antes: `bits + " literal"` fazia aritmética de ponteiro — mensagem
+    // garbage e leitura OOB p/ bits >= 20 (UB capturável pelo ASan).
+    const std::vector<std::int16_t> samples{0, 16384, -16384};
+    auto parsed = Wav::parse(makeWav16(44100, 1, samples, false,
+                                       /*bitsOverride=*/64));
+    REQUIRE(parsed.isError());
+    CHECK(parsed.error().message.find("64 bits") != std::string::npos);
+    CHECK(parsed.error().message.find("não suportado") != std::string::npos);
+
+    auto parsed12 = Wav::parse(makeWav16(44100, 1, samples, false,
+                                         /*bitsOverride=*/12));
+    REQUIRE(parsed12.isError());
+    CHECK(parsed12.error().message.find("12 bits") != std::string::npos);
 }

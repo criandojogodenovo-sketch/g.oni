@@ -62,7 +62,9 @@ target_link_libraries(eng_editor_tests PRIVATE
     Catch2::Catch2WithMain)
 eng_apply_test_policy(eng_editor_tests)
 add_test(NAME editor COMMAND eng_editor_tests)
-set_tests_properties(editor PROPERTIES LABELS "rhi_hardware"
+set_tests_properties(editor PROPERTIES
+    SKIP_RETURN_CODE 4
+    LABELS "rhi_hardware"
     # LSan: origens de terceiros (ICD/layers/drivers) — ver
     # tests/drivers_lsan.supp; leaks do MOTOR continuam detectáveis.
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tests/drivers_lsan.supp")

@@ -2,6 +2,7 @@
 /// plataforma: eventos sintéticos exercitam o MESMO pipeline que o TU JNI
 /// alimenta no Android.
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "eng/input/Input.hpp"
@@ -264,4 +265,89 @@ TEST_CASE("input: reset limpa tudo (pause/primeiro frame)", "[input]")
     CHECK(input.touch().count() == 0);
     CHECK_FALSE(input.keyDown(Key::A));
     CHECK(input.queuedEvents() == 0);
+}
+
+// =============================================================================
+// Correções da auditoria final FASES 4–10 (remediação C-7/C-8/C-9)
+// =============================================================================
+
+TEST_CASE("input: delta acumula entre updates e zera na janela (C-7)",
+          "[input]")
+{
+    InputSystem input;
+    input.setScreenSize(200.f, 100.f);
+
+    input.queueEvent(touchEvent(1, TouchPhase::Down, 10.f, 10.f));
+    input.update();
+    // Down: delta nasce zero (não há posição anterior).
+    CHECK(input.touch().active().at(0).delta.x == 0.f);
+
+    // Dois moves na MESMA janela acumulam o deslocamento total.
+    input.queueEvent(touchEvent(1, TouchPhase::Move, 30.f, 10.f));
+    input.queueEvent(touchEvent(1, TouchPhase::Move, 45.f, 10.f));
+    input.update();
+    CHECK(input.touch().active().at(0).delta.x == Catch::Approx(35.f));
+
+    // Próxima janela SEM eventos: delta zera (consumido).
+    input.update();
+    CHECK(input.touch().active().at(0).delta.x == 0.f);
+    CHECK(input.touch().active().at(0).position.x == Catch::Approx(45.f));
+}
+
+TEST_CASE("input: frameStamp carimba o update da fase (C-8)", "[input]")
+{
+    InputSystem input;
+    input.setScreenSize(200.f, 100.f);
+
+    input.queueEvent(touchEvent(7, TouchPhase::Down, 10.f, 10.f));
+    input.update(); // frame 1: Down carimbado
+    CHECK(input.touch().active().at(0).frameStamp == 1u);
+
+    input.update(); // frame 2: sem eventos, carimbo PRESERVA
+    CHECK(input.touch().active().at(0).frameStamp == 1u);
+
+    input.queueEvent(touchEvent(7, TouchPhase::Move, 20.f, 10.f));
+    input.update(); // frame 3: Move re-carimba
+    CHECK(input.touch().active().at(0).frameStamp == 3u);
+}
+
+TEST_CASE("input: pressed de zona dispara UMA vez com dedo parado (C-9)",
+          "[input]")
+{
+    InputSystem input;
+    ActionBindings bindings;
+    ActionSource hold;
+    hold.kind = ActionSource::Kind::TouchZone;
+    hold.zoneX0 = 0.f;
+    hold.zoneY0 = 0.f;
+    hold.zoneX1 = 1.f;
+    hold.zoneY1 = 1.f;
+    bindings.bind("hold", hold);
+    input.setBindings(std::move(bindings));
+    input.setScreenSize(200.f, 100.f);
+
+    // Down na zona: pressed UMA vez.
+    input.queueEvent(touchEvent(1, TouchPhase::Down, 100.f, 50.f));
+    input.update();
+    CHECK(input.action("hold").down);
+    CHECK(input.action("hold").pressed);
+
+    // Dedo MANTIDO sem novos eventos: down continua, pressed NÃO repete
+    // (antes: disparava a cada frame — inconsistente com o teclado).
+    input.update();
+    input.update();
+    CHECK(input.action("hold").down);
+    CHECK_FALSE(input.action("hold").pressed);
+
+    // Move na zona: continua down (sem pressed).
+    input.queueEvent(touchEvent(1, TouchPhase::Move, 110.f, 50.f));
+    input.update();
+    CHECK(input.action("hold").down);
+    CHECK_FALSE(input.action("hold").pressed);
+
+    // Up: released.
+    input.queueEvent(touchEvent(1, TouchPhase::Up, 110.f, 50.f));
+    input.update();
+    CHECK(input.action("hold").released);
+    CHECK_FALSE(input.action("hold").down);
 }

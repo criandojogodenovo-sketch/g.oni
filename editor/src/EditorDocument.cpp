@@ -123,6 +123,11 @@ Result<std::unique_ptr<EditorDocument>> EditorDocument::create(
     auto document = std::unique_ptr<EditorDocument>(new EditorDocument{});
     document->fs_ = &fs;
     document->workspaceRoot_ = workspaceRoot;
+    // Contrato do header: "cena vazia PRONTA PARA EDIÇÃO" — o optional é
+    // emitido aqui (bug C-3 da auditoria final: acessores como
+    // sceneInFocus() faziam &*scene_ vazio → UB latente no estado
+    // pré-projeto, mascarado pelo ensureProjectOnFirstRun da Activity).
+    document->scene_.emplace();  // Scene não é movível — ADR-025
     return document;
 }
 

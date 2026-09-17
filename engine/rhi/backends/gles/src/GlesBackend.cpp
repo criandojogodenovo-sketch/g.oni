@@ -377,7 +377,7 @@ void GlesBackend::configureVertexAttributes(const GlesFunctions& fn) {
         fn.glEnableVertexAttribArray(attribute.location);
         fn.glVertexAttribPointer(
             attribute.location, static_cast<GLint>(formatComponents(attribute.format)),
-            toGlVertexType(attribute.format), GL_FALSE,
+            toGlVertexType(attribute.format), isGlNormalizedFormat(attribute.format),
             static_cast<GLsizei>(
                 bindingStrideOf(activePipelineDesc_.vertexLayout, attribute.binding)),
             reinterpret_cast<const void*>(static_cast<std::uintptr_t>(attribute.offset)));

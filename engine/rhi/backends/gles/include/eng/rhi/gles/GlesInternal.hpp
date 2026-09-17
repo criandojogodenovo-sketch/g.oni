@@ -44,7 +44,7 @@ namespace eng::rhi::gles {
     using F = eng::rhi::Format;
     switch (format) {
     case F::R8G8B8A8Unorm:
-    case F::B8G8R8A8Unorm: return GL_UNSIGNED_BYTE;  // normalizado via GL_FALSE
+    case F::B8G8R8A8Unorm: return GL_UNSIGNED_BYTE;
     case F::R8G8B8A8Srgb:
     case F::B8G8R8A8Srgb: return GL_UNSIGNED_BYTE;
     case F::R32G32B32A32Sfloat: return GL_FLOAT;
@@ -54,6 +54,23 @@ namespace eng::rhi::gles {
     case F::Undefined: return 0;
     }
     return 0;
+}
+
+/// Formatos inteiros SEM SINAL mapeiam para [0,1] em GLSL (`normalized`
+/// do glVertexAttribPointer). Bug C-15 da auditoria final: Unorm era lido
+/// como 0-255 bruto (GL_FALSE), violando a semântica do formato da
+/// abstraction. Srgb também é byte sem sinal normalizado (a conversão
+/// gama é função do formato, não do atributo).
+[[nodiscard]] constexpr GLboolean isGlNormalizedFormat(
+    eng::rhi::Format format) noexcept {
+    using F = eng::rhi::Format;
+    switch (format) {
+    case F::R8G8B8A8Unorm:
+    case F::B8G8R8A8Unorm:
+    case F::R8G8B8A8Srgb:
+    case F::B8G8R8A8Srgb: return GL_TRUE;
+    default: return GL_FALSE;
+    }
 }
 
 /// Tamanho por componente dos formatos de vértice (em bytes).

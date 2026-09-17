@@ -290,8 +290,9 @@ bool EditorHost::renderFrame(float deltaSeconds)
     const eng::scene::Scene* scene = document_->sceneInFocus();
     const auto quads = document_->viewport().buildQuads(
         *scene, document_->selection());
+    const auto particles = document_->viewport().buildParticleQuads(*scene);
     const bool drew = viewportRenderer_->renderFrame(
-        document_->viewport(), quads, document_->isPlaying());
+        document_->viewport(), quads, particles, document_->isPlaying());
 
     if (drew) {
         ++stats_.framesSubmitted;

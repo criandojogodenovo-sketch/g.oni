@@ -136,8 +136,11 @@ Result<WavData> Wav::parse(std::span<const std::byte> bytes)
                                            " (só PCM e float)"));
     }
     if (bits != 8 && bits != 16 && bits != 24 && bits != 32) {
+        // Bug C-10 da auditoria final: `bits + " literal"` somava uint16_t a
+        // ponteiro (aritmética + leitura OOB p/ bits >= 20). std::to_string.
         return makeUnexpected(wavError(StatusCode::NotSupported,
-                                       bits + " bits não suportado"));
+                                       std::to_string(bits) +
+                                           " bits não suportado"));
     }
 
     WavData out;

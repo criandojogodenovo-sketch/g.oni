@@ -248,6 +248,7 @@ bool ViewportRenderer::ensureCapacity(std::size_t vertexCount)
 
 bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                                     const std::vector<EntityQuad>& quads,
+                                    const std::vector<ParticleQuad>& particles,
                                     bool playMode)
 {
     frameVertices_.clear();
@@ -320,6 +321,19 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         pushQuad(frameVertices_, cx, cy, halfW, halfH, quad.rotation, r, g, b);
     }
 
+    // --- partículas (drift D6 da FASE 10 — auditoria final) ------------------
+    // Quads pequenos branco-âmbar POR CIMA das entidades: marcadores de
+    // gameplay do estado de Play (pools só existem em runtime/clone). Tamanho
+    // mínimo de 2px para permanecerem visíveis em zoom baixo.
+    for (const ParticleQuad& particle : particles) {
+        const float cx = worldToClipX(particle.worldX);
+        const float cy = worldToClipY(particle.worldY);
+        const float half = std::max(particle.size * zoom * 0.5f, 2.f) / w;
+        const float halfY = std::max(particle.size * zoom * 0.5f, 2.f) / h;
+        pushQuad(frameVertices_, cx, cy, half, halfY, particle.rotation,
+                 1.f, 0.86f, 0.55f);
+    }
+
     if (!ensureCapacity(frameVertices_.size())) {
         return false;
     }
@@ -369,6 +383,7 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
 
 bool ViewportRenderer::renderFrame(const Viewport& viewport,
                                    const std::vector<EntityQuad>& quads,
+                                   const std::vector<ParticleQuad>& particles,
                                    bool playMode)
 {
     // VBO nasce sob demanda no buildAndDraw (ensureCapacity) — validar
@@ -376,7 +391,7 @@ bool ViewportRenderer::renderFrame(const Viewport& viewport,
     if (!renderer_.has_value() || !pipeline_.isValid()) {
         return false;
     }
-    return buildAndDraw(viewport, quads, playMode);
+    return buildAndDraw(viewport, quads, particles, playMode);
 }
 
 eng::rhi::BackendType ViewportRenderer::activeBackend() const noexcept

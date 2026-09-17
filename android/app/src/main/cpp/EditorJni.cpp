@@ -67,13 +67,18 @@ bool record(jlong handle, const ResultT& result)
         out[0] = '\0';
         return true;
     }
-    const jsize length = env->GetStringLength(value);
-    if (length < 0 || static_cast<std::size_t>(length) >= capacity) {
+    // Limite em BYTES MUTF-8 — é o que GetStringUTFRegion ESCREVE.
+    // GetStringLength devolve unidades UTF-16 (até 3 bytes/unidade em
+    // MUTF-8): usar uma para limitar a outra era overflow de stack
+    // (bug C-1 da auditoria final FASES 4–10; strings CJK de nome no
+    // editor digitavam além do buffer de 512 bytes).
+    const jsize utfLength = env->GetStringUTFLength(value);
+    if (utfLength < 0 || static_cast<std::size_t>(utfLength) >= capacity) {
         out[0] = '\0';
         return false;
     }
-    env->GetStringUTFRegion(value, 0, length, out);
-    out[length] = '\0';
+    env->GetStringUTFRegion(value, 0, utfLength, out);
+    out[utfLength] = '\0';
     return true;
 }
 
@@ -132,13 +137,16 @@ Java_com_goni_runtime_EditorJni_nativeEditorSurfaceCreated(JNIEnv* env,
     if (host == nullptr) {
         return;
     }
-    // ANativeWindow_fromSurface ADQUIRE — ownership vai ao host até
-    // surfaceDestroyed (ADR-040).
+    // ANativeWindow_fromSurface ADQUIRE. O host mantém a SUA própria
+    // referência (acquireWindow em surfaceCreated), portanto a da fronteira
+    // JNI é liberada em seguida (bug C-2 da auditoria final — sem isso cada
+    // ciclo de surface vazava +1 referência até a morte do processo).
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) {
         return;
     }
     host->surfaceCreated(window, eng::rhi::NativeWindowKind::Android, 0, 0);
+    ANativeWindow_release(window);  // hand-off concluído: o host tem a própria
 }
 
 JNIEXPORT void JNICALL
@@ -1014,6 +1022,20 @@ Java_com_goni_runtime_EditorJni_nativeEditorGameTouch(JNIEnv* /*env*/,
         host->document().gameTouch(static_cast<int>(phase),
                                     static_cast<std::uint32_t>(pointerId), x,
                                     y, pressure);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetGameViewportSize(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jint width, jint height)
+{
+    // Bug C-4 da auditoria final: sem este sizing, o InputSystem do jogo em
+    // Play ficava em 1x1 — zonas de toque (frações da tela) nunca
+    // disparavam no dispositivo. O runtime demo (GoniActivity) já o fazia.
+    EditorHost* host = fromHandle(handle);
+    if (host != nullptr) {
+        host->document().setGameViewportSize(static_cast<float>(width),
+                                              static_cast<float>(height));
     }
 }
 

@@ -60,9 +60,12 @@ struct TouchPoint {
 /// Estado corrente dos toques (por pointer id).
 class TouchState final {
 public:
-    /// Aplica um evento de toque (chamado pelo InputSystem::update).
+    /// Aplica um evento de toque (chamado pelo InputSystem::update). O
+    /// `frame` carimba TouchPoint::frameStamp — update em que a fase
+    /// ocorreu (semântica de janela: `pressed`/`released` de zona disparam
+    /// UMA vez, no update do evento — bug C-7/C-8/C-9 da auditoria final).
     void onTouch(std::uint32_t id, TouchPhase phase, float x, float y,
-                 float pressure);
+                 float pressure, std::uint64_t frame);
 
     /// Início de update: computa deltas (toques encerrados na janela
     /// ANTERIOR já saíram no fim do update anterior).

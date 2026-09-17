@@ -26,6 +26,9 @@
 #include "eng/log/Logger.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
+#include "eng/rhi/Renderer.hpp"
+#include "eng/rhi/gles/GlesBackend.hpp"
+#include "eng/rhi/vulkan/VulkanBackend.hpp"
 #include "eng/scene/Name.hpp"
 
 namespace {
@@ -711,12 +714,37 @@ TEST_CASE("editor: arquivo não catalogado aparece como unregistered", "[editor]
 }
 
 // =============================================================================
+// 8.5 Guarda de ambiente (bug C-17 da auditoria final)
+// =============================================================================
+
+namespace {
+
+/// EditorHost::create com backend real exige driver (lavapipe/EGL). Sem
+/// driver o caso SKIPA com motivo — o mesmo protocolo de degradação de
+/// rhi_vulkan/rhi_gles (antes: 3 casos FALHAVAM neste ambiente).
+bool editorGraphicsUnavailable() {
+    (void)eng::rhi::Renderer::registerBackend(
+        eng::rhi::BackendType::Vulkan, &eng::rhi::vulkan::createBackend);
+    (void)eng::rhi::Renderer::registerBackend(
+        eng::rhi::BackendType::OpenGLES, &eng::rhi::gles::createBackend);
+    eng::rhi::RendererConfig config; // device-only probe
+    config.enableValidation = false;
+    auto renderer = eng::rhi::Renderer::create(config);
+    return renderer.isError();
+}
+
+}  // namespace
+
+// =============================================================================
 // 9. ViewportRenderer + EditorHost — backends reais (rhi_hardware)
 // =============================================================================
 
 TEST_CASE("editor: viewport renderer desenha quads (GLES/llvmpipe)",
           "[editor][rhi_hardware]")
 {
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
     auto host = eng::editor::EditorHost::create("gles",
                                                 ".editor-test-ws-gles");
     REQUIRE(host.ok());
@@ -763,6 +791,9 @@ TEST_CASE("editor: viewport renderer desenha quads (GLES/llvmpipe)",
 TEST_CASE("editor: viewport renderer Vulkan/lavapipe submete frames",
           "[editor][rhi_hardware]")
 {
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
     auto host =
         eng::editor::EditorHost::create("vulkan", ".editor-test-ws-vk");
     REQUIRE(host.ok());
@@ -786,6 +817,9 @@ TEST_CASE("editor: viewport renderer Vulkan/lavapipe submete frames",
 
 TEST_CASE("editor: play/stop alterna conteúdo do viewport no host", "[editor]")
 {
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
     auto host = eng::editor::EditorHost::create("auto", ".editor-test-ws-auto");
     REQUIRE(host.ok());
     std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
@@ -982,4 +1016,70 @@ TEST_CASE("editor: pack/unpack entity é bijetivo exceto 0", "[editor]")
     const eng::ecs::Entity back = unpack(packed);
     CHECK(back == e);
     CHECK(unpack(0ull) == eng::scene::kNoEntity);
+}
+
+// =============================================================================
+// Correções da auditoria final FASES 4–10 (remediação)
+// =============================================================================
+
+TEST_CASE("editor: documento pré-projeto é editável sem UB (C-3)", "[editor]")
+{
+    // Antes: create() não emitia a cena — sceneInFocus() fazia &*scene_
+    // vazio (UB). Agora o contrato do header ("cena vazia PRONTA PARA
+    // EDIÇÃO") é real.
+    eng::fs::MemoryFileSystem fs;
+    auto docResult = EditorDocument::create(fs, eng::fs::Path{".ws-pre"});
+    REQUIRE(docResult.ok());
+    auto doc = std::move(docResult.value());
+
+    REQUIRE(doc->sceneInFocus() != nullptr);          // sem UB
+    const auto before = doc->sceneInFocus()->nodeCount();
+    CHECK(before == 0);
+
+    // Comandos de cena funcionam ANTES de qualquer newProject.
+    auto entity = doc->createEntity("Solto", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    CHECK(doc->sceneInFocus()->nodeCount() == 1);
+    CHECK(doc->hierarchySnapshot().size() == 1);
+
+    // Comandos que exigem projeto continuam rejeitando com erro preciso.
+    auto saved = doc->saveProject();
+    CHECK(saved.isError());
+}
+
+TEST_CASE("editor: viewport desenha partículas vivas como quads (drift D6)",
+          "[editor]")
+{
+    // A auditoria final mostrou que NADA lia a ParticlePool — agora o
+    // Viewport gera um quad por partícula viva (clone em Play tem pools).
+    eng::fs::MemoryFileSystem fs;
+    auto docResult = EditorDocument::create(fs, eng::fs::Path{".ws-part"});
+    REQUIRE(docResult.ok());
+    auto doc = std::move(docResult.value());
+    ensureProject(*doc, "ParticleQuads");
+
+    auto emitter = doc->createEntity("Emitter", eng::scene::kNoEntity);
+    REQUIRE(emitter.ok());
+    REQUIRE(doc->addComponent(emitter.value(),
+                              "eng::particles::ParticleEmitter")
+                .ok());
+    // rate 10/s (default é 5) via inspector de reflexão.
+    REQUIRE(doc->setInspectorField(emitter.value(),
+                                   "eng::particles::ParticleEmitter", "rate",
+                                   "10")
+                .ok());
+
+    // Em Edit: sem pool → zero quads de partícula.
+    const auto& viewport = doc->viewport();
+    const eng::scene::Scene* editScene = doc->sceneInFocus();
+    CHECK(viewport.buildParticleQuads(*editScene).empty());
+
+    // Em Play: o clone ganha pools após o primeiro tick (spawn por
+    // acumulador) → quads de partícula existem.
+    REQUIRE(doc->play().ok());
+    doc->tick(0.5f); // 10/s * 0.5s = 5 vivas
+    const auto quads = viewport.buildParticleQuads(*doc->sceneInFocus());
+    CHECK(quads.size() == 5);
+    doc->stop();
+    CHECK(viewport.buildParticleQuads(*doc->sceneInFocus()).empty());
 }
