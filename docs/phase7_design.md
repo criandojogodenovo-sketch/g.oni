@@ -1,3 +1,10 @@
+> **CORREÇÃO (auditoria final 4–10):** os arquivos são
+> `LogcatSink.hpp`/`TriangleDemoShaders.hpp` (header-only) — não
+> `LogcatSink.cpp`/`TriangleDemo.hpp`; ambas as activities estão
+> `exported="true"` no manifest (LAUNCHER exige). Bugs C-1 (overflow JNI
+> de string MUTF-8) e C-2 (vazamento de referência ANativeWindow por
+> ciclo) corrigidos na remediação. Ver `docs/final_phase4_10_audit.md`.
+
 # Design FASE 7 — Android runtime
 
 - **Base:** `35ac978` + auditoria `docs/phase7_audit.md`

@@ -62,9 +62,13 @@ Um executável por módulo, registrados no CTest (FASE 10: **26 suites**):
 | `fs`/`platform`/`serial`/`assets`/`project` | FASE 3 |
 | `rhi`/`rhi_vulkan`/`rhi_gles`/`integration` | FASES 4–6 |
 | `android_runtime` | FASE 7 (runtime Android no Linux) |
-| `editor` | FASE 8 (editor: 28 casos/~290 asserções, `rhi_hardware`) |
-| `input`/`ui`/`audio` | FASE 9 (9/61 · 8/40 · 13/70 asserções) |
-| `physics`/`animation`/`particles` | FASE 10 (14/55 · 6/30 · 6/33) |
+| `editor` | FASE 8 (editor: 33 casos/325 asserções, `rhi_hardware`) |
+| `input`/`ui`/`audio` | FASE 9 (12/76 · 8/40 · 14/75 asserções) |
+| `physics`/`animation`/`particles` | FASE 10 (15/59 · 6/32 · 6/33) |
+
+Contagens pós-remediação da auditoria final 4–10
+(`docs/final_phase4_10_audit.md`). Suites `rhi_hardware` SKIPam com
+motivo em ambientes sem driver (lavapipe/EGL) — o CI executa completo.
 
 Rodar um módulo isolado com saída verbosa:
 

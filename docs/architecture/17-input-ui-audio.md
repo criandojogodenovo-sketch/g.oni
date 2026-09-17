@@ -60,11 +60,15 @@ WAV: RIFF PCM8/16/24/32f → f32 normalizado; chunks extras pulados
 
 ## Testes (Linux — estado puro, mesmos binários do APK)
 
-- `input`: 9 casos/61 asserções — down/move/up, 3 dedos concorrentes,
-  identidade por id, delta, pressão, janela por update, teclado
-  pressed/released, ações tecla+zona, JSON round-trip, reset.
+- `input`: 12 casos/76 asserções — down/move/up, 3 dedos concorrentes,
+  identidade por id, pressão, janela por update, teclado
+  pressed/released, ações tecla+zona, JSON round-trip, reset + testes da
+  remediação da auditoria final 4–10 (delta acumula por janela e zera,
+  frameStamp carimba o update da fase, `pressed` de zona dispara UMA vez
+  com dedo parado).
 - `ui`: 8 casos/40 asserções — hierarquia, anchors/escala, hit-test
   top-most, click/cancel de botão, slider/progress, fonte, resoluções.
-- `audio`: 13 casos/70 asserções — WAV PCM16/LIST/erros, play/stop/
+- `audio`: 14 casos/75 asserções — WAV PCM16/LIST/erros, play/stop/
   pause/resume/volume/bus/loop, mono→estéreo, lifecycle, streaming com
-  fim e loop, stress concorrente (pull × play/stop), NullBackend.
+  fim e loop, stress concorrente (pull × play/stop), NullBackend + teste
+  da remediação (mensagem de bits não suportados sem UB).

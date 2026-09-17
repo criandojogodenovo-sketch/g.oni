@@ -11,7 +11,10 @@ namespace {
 
 using eng::math::Vec3;
 
-/// Direção de spawn: feixe em cone de `spread` graus ao redor da direção;
+/// Direção de spawn: LEQUE PLANAR de `spread` graus ao redor da direção
+/// (rotação em um plano pela sequência van der Corput — não um cone 3D
+/// completo; limitação documentada, "cone" era drift de comentário da
+/// auditoria final);
 /// o ângulo é escolhido DETERMINÍSTICAMENTE pelo índice (sequência de van
 /// der Corput bit-reversal — uniforme sem RNG; testes reprodutíveis).
 [[nodiscard]] Vec3 spawnDirection(const ParticleEmitter& emitter,

@@ -58,8 +58,10 @@ file /tmp/apkx/lib/arm64-v8a/libgoni.so               # ELF ARM aarch64
 
 Esperado: ELF `ARM aarch64 ... for Android 24, built by NDK r27`;
 `NEEDED` apenas libandroid/liblog/libdl/libm/libc++_shared/libc (Vulkan e
-EGL são `dlopen` em runtime — nunca linkados); 57 símbolos
-`Java_com_goni_*` (9 de `GoniRuntime` + 48 de `EditorJni`); package
+EGL são `dlopen` em runtime — nunca linkado); 60 símbolos
+`Java_com_goni_*` (10 de `GoniRuntime` + 50 de `EditorJni` — atualizado
+pela auditoria final 4–10: `nativeOnTouch` da FASE 9 e
+`nativeEditorSetGameViewportSize` da remediação); package
 `com.goni.runtime`; launchable `com.goni.runtime.EditorActivity`;
 nenhuma permissão.
 

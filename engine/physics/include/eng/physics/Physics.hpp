@@ -55,7 +55,8 @@ struct Collider {
 struct CharacterBody {
     eng::math::Vec3 velocity{0.f, 0.f, 0.f};
     float radius{0.5f};
-    bool snapToGround{false}; ///< projeta para o chão quando no chão
+    bool snapToGround{false}; ///< projeta para o chão (remediação C-18:
+                              ///< movimento horizontal + chão a meio raio)
 };
 
 // Registro reflect (nomes estáveis — ADR-021/033).
@@ -130,7 +131,9 @@ public:
         std::uint32_t mask = 0xFFFFFFFFu);
 
     /// Movimento + deslize do CharacterBody contra estáticos/dinâmicos
-    /// (retorna a posição final; velocity é consumida).
+    /// (retorna a posição FINAL em mundo — o chamador aplica ao
+    /// transform; `motion` é o deslocamento proposto, NÃO consumido de
+    /// CharacterBody::velocity; com snapToGround, projeta ao chão).
     [[nodiscard]] static eng::math::Vec3 moveAndSlide(
         const eng::scene::Scene& scene, eng::ecs::Entity body,
         eng::math::Vec3 motion);

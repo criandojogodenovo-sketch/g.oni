@@ -21,9 +21,15 @@ moveAndSlide(scene, body, motion) — character body (§7.5)
 ```text
 AnimationClip{position/rotation/scale keys}  → AnimationBank (por nome)
 Animator{clip,time,speed,loop,playing,apply*}  → componente ECS
-AnimatorStateMachine — transições com cross-fade (regras no gameplay)
+AnimatorStateMachine — GATILHO de transição + vista do estado (regras no
+  gameplay; blendDuration, default 0.15s; troca seca quando <= 0)
+Animator{previousClip,previousTime,blendDuration,blendRemaining} — o
+  estado de cross-fade vive NO COMPONENTE (serializável — correção C-13
+  da auditoria final 4–10; antes a transição "estalava")
 AnimationSystem::update(scene, bank, dt) — aplica TRS interpolado
-  (position/scale lerp · rotation SLERP; pausado APLICA o cursor)
+  (position/scale lerp · rotation SLERP; pausado APLICA o cursor) e
+  COMPÕE as poses do previous e do current durante o fade (o clip que
+  sai continua tocando, clamp no fim; t = 1 - blendRemaining/duration)
 Skeletal: hierarquia de nós É a preparação (§7.11); skinning = extensão.
 ```
 
@@ -38,7 +44,10 @@ ParticleSystem::update(scene, dt):
   direção determinística (van der Corput por índice — sem RNG)
 burst(scene, emitter, count) — API de gameplay
 ```
-CPU v1 (§7.13 — decisão ADR-048); o host renderiza como quads.
+CPU v1 (§7.13 — decisão ADR-048); o viewport do editor renderiza as
+partículas como quads (`Viewport::buildParticleQuads` → ViewportRenderer,
+correção do drift D6 da auditoria final 4–10 — antes o emitter simulava
+mas nada era desenhado).
 
 ## Integração (§8 FASE 10)
 
@@ -51,15 +60,18 @@ CPU v1 (§7.13 — decisão ADR-048); o host renderiza como quads.
 
 ## Testes (Linux — estado puro)
 
-- `physics`: 14 casos/55 asserções — gravidade/estático/velocity/força/
+- `physics`: 15 casos/59 asserções — gravidade/estático/velocity/força/
   impulso; esfera-esfera (contato+normal+depth), trigger sem resolução,
   layers/masks, repouso em AABB, esfera-AABB/AABB-AABB, raycast
-  (próximo/ponto/normal/miss/mask/erros/origem-dentro), determinismo do
+  (próximo/ponto/normal/miss/mask/erros), determinismo do
   timestep entre fatiamentos, acumulador anti-espiral, character
-  slide/livre.
-- `animation`: 6 casos/30 — interpolação lerp/slerp/bordas, playback com
+  slide/livre + snapToGround (remediação C-18: projeta ao chão quando o
+  movimento é horizontal e há chão a meio raio; vertical não snapa).
+- `animation`: 6 casos/32 — interpolação lerp/slerp/bordas, playback com
   speed/loop, fim sem loop, pausa+seek, flags de aplicação, máquina de
-  estados com cross-fade/no-ops seguros.
+  estados com cross-fade APLICADO AO NÓ (remediação C-13: a pose do nó é
+  a mistura verificável — antes só a utilidade blend() era testada)/no-ops
+  seguros.
 - `particles`: 6 casos/33 — spawn por rate com dt arbitrário, integração
   com gravidade (semi-implícita), morte por lifetime, burst + pool cheia,
   emitter parado, determinismo bit-a-bit (mesma sequência) + invariância

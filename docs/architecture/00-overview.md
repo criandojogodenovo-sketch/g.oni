@@ -101,26 +101,33 @@ de memória, não o contrário) e um risco de ciclo quando `eng::log` adotar
 alocadores de `eng::mem` em fases futuras. A API expõe `hasLeaks()`/`stats()`
 para que o runtime reporte via logger quando existir.
 
-## Módulos planejados (grafo alvo, por fase)
+## Módulos por fase (grafo real)
 
-Arestas futuras — **referência de projeto, não código existente**:
+Implementações PRÓPRIAS — sem jolt, sem miniaudio, sem Lua (decisões
+registradas em ADR-048 e na missão da FASE 11):
 
 ```mermaid
 graph TD
-    core --> rhi["eng::rhi (FASE 4, implementada)"]
-    rhi --> rhi_vulkan["rhi-vulkan (FASE 5, implementado)"]
-    rhi --> rhi_gl["rhi-gles (FASE 6, implementado)"]
-    physics["eng::physics (FASE 6)"] --> physics_jolt["physics-jolt (FASE 6)"]
-    audio["eng::audio (FASE 6)"] --> audio_ma["audio-miniaudio (FASE 6)"]
-    script["eng::script (FASE 7)"] --> script_lua["script-lua (FASE 7)"]
-    runtime["eng::runtime (FASE 8)"] --> core & math & scene & rhi & physics & audio & script
+    core --> rhi["eng::rhi (FASE 4)"]
+    rhi --> rhi_vulkan["rhi-vulkan (FASE 5)"]
+    rhi --> rhi_gl["rhi-gles (FASE 6)"]
+    android["android/ runtime (FASE 7)"] --> rhi & input
+    editor["editor/ (FASE 8)"] --> rhi & scene & input & physics & animation & particles
+    input["eng::input (FASE 9)"] --> core
+    ui["eng::ui (FASE 9)"] --> core & math & input
+    audio["eng::audio (FASE 9)"] --> core & fs & serial
+    physics["eng::physics (FASE 10)"] --> scene & math & reflect
+    animation["eng::animation (FASE 10)"] --> scene & math & reflect
+    particles["eng::particles (FASE 10)"] --> scene & math & reflect
+    script["eng::script — NI-Script (FASE 11, PLANEJADO)"] --> reflect & scene & ecs
+    build["eng::build — build/export (FASE 12, PLANEJADO)"] --> project & assets & serial
 ```
 
 Regras que mantêm o grafo acíclico conforme os módulos entram:
 
 1. Módulos de **interface** (`eng::rhi`, `eng::physics`, ...) nunca incluem
-   headers de **backends** (`rhi-vulkan`, `physics-jolt`, ...). Backends
-   implementam interfaces e são linkados no executável final.
+   headers de **backends** (`rhi-vulkan`, ...). Backends implementam
+   interfaces e são linkados no executável final.
 2. Fundações (`core`, `math`, `mem`, `log`) nunca ganham dependências para
    módulos de nível superior.
 3. `android/`, `editor/` são consumidores de `engine/` — nunca o contrário. (FASE 7: `android/` — runtime + APK; `jni.h` em exatamente DOIS arquivos, `GoniJni.cpp` e `EditorJni.cpp`. FASE 8: `editor/` — núcleo C++ do editor, testado no Linux e embutido no APK; ver `docs/architecture/16-editor.md`.)

@@ -8,8 +8,10 @@
 ///     (inter-stage por NOME — ES 3.00, lição FASE 6);
 ///   - SPIR-V: tests/shaders/triangle_vk_{vert,frag}_spirv.hpp
 ///     (glslangValidator 15.1 --target-env vulkan1.1 -V + spirv-val).
-/// Regeneração: python3 /home/z/my-project/scripts/gen_editor_shaders.py.
-/// NÃO editar à mão.
+/// PROCEDÊNCIA dos dados: cópias EXATAS dos fixtures acima (tests/shaders)
+/// — este header é a fonte única no repositório. NOTA (auditoria final
+/// 4–10): o script `gen_editor_shaders.py` citado antes NÃO existe no
+/// repositório; a referência de regeneração era falsa e foi removida.
 
 #include <array>
 #include <cstddef>

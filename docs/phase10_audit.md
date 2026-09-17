@@ -1,3 +1,11 @@
+> **CORREÇÃO (auditoria final 4–10):** os itens D4/D6 deste documento
+> foram corrigidos na remediação — o viewport AGORA desenha partículas
+> como quads (`buildParticleQuads`, drift D6) e o cross-fade AGORA é
+> aplicado ao nó (C-13: estado de blend no componente Animator, o
+> `AnimationSystem` compõe as poses); `snapToGround` implementado (C-18);
+> o teste de raycast "origem-dentro" referia-se apenas a origem externa.
+> Ver `docs/final_phase4_10_audit.md`.
+
 # Auditoria + Design — FASE 10: Physics · Animation · Particles
 
 - **Base:** `969ac2d` (HEAD FASE 9), tree limpa, 23/23 suites nos dois

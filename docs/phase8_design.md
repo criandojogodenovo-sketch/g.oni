@@ -1,3 +1,11 @@
+> **CORREÇÃO (auditoria final 4–10):** a prova de conteúdo do GLES
+> NÃO usa `readCenterPixel` (não existe no editor — os contadores e o
+> backend são a evidência); o EditorJni expõe 49 funções (não ~35);
+> `EditorActivity` é `exported="true"` (launcher); cores são hue
+> determinístico por entidade. A integração de input do jogo em Play foi
+> corrigida (C-4/C-5/C-6: viewport do jogo + eventos brutos com pointer
+> ID). Ver `docs/final_phase4_10_audit.md`.
+
 # Design FASE 8 — Native Mobile Editor
 
 - **Base:** `f1bd4ce` + auditoria `docs/phase8_audit.md` (decisões D1–D7).

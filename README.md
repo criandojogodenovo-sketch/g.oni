@@ -1,15 +1,20 @@
 # eng — Engine de Jogos
 
 [![CI Linux](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-linux.yml)
+[![CI Android](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-android.yml/badge.svg)](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-android.yml)
 
 Engine de jogos **mobile-first** escrita em **C++20**, com alvo principal
-**Android** (Vulkan 1.3, GLES 3.2 como compatibilidade).
-Projeto conduzido por fases com contrato técnico formal; este repositório
-está na **FASE 8** — fases 1–7 concluídas (core/math/mem/log →
-reflect/events/jobs/ecs/scene → fs/platform/serial/assets/project →
-`eng::rhi` → backends Vulkan/GLES reais → runtime Android com APK) e a
-FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
-`EditorActivity`/`EditorJni` no APK).
+**Android** (Vulkan 1.3, GLES 3.2 como compatibilidade). Projeto conduzido
+por fases com contrato técnico formal; as **FASES 1–10 estão concluídas** —
+a **FASE 11 (NI-Script)** e a **FASE 12 (Build & Export)** seguem no
+roadmap.
+
+Pilha: **C++20** (engine), **Kotlin** (integração Android), **JNI**
+(ponte nativa), **Vulkan/GLES** (rendering), **CMake** (build nativo),
+**Gradle** (build Android), **GLSL** (shaders). O editor é o **Native
+Mobile Editor** no APK — não há Web Editor, Flutter, Electron ou browser
+no escopo, e o scripting será a linguagem própria **NI-Script** (não Lua,
+não Python).
 
 ## Estado — FASE 1 (concluída)
 
@@ -25,10 +30,7 @@ FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
 
 ## Estado — FASE 2 (concluída)
 
-- [x] `eng::reflect` — `TypeRegistry` + macros `ENG_REFLECT` (ADR-021):
-      nome canônico/size/align/propriedades (offset+tipo)/enums com
-      enumeradores; TypeId FNV-1a 64 determinístico; registro idempotente;
-      leituras concorrentes testadas; lookup ausente → nullptr
+- [x] `eng::reflect` — `TypeRegistry` + macros `ENG_REFLECT` (ADR-021)
 - [x] `eng::events` — `EventBus` + `Subscription` RAII (ADR-022)
 - [x] `eng::jobs` — `JobSystem` work-stealing (ADR-023); TSan limpo
 - [x] `eng::ecs` — `World` sparse-set com handles geracionais (ADR-024)
@@ -36,38 +38,20 @@ FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
 
 ## Estado — FASE 3 (concluída)
 
-- [x] `eng::fs` — `Path` (wrapper de std::filesystem com anti-traversal
-      `isWithin`), `File` RAII, `FileSystem` abstrato com `NativeFileSystem`
-      (error_code, sem exceções) e `MemoryFileSystem` paritário para testes
+- [x] `eng::fs` — `Path` (anti-traversal `isWithin`), `File` RAII,
+      `FileSystem` abstrato com `NativeFileSystem`/`MemoryFileSystem`
       (ADR-027)
 - [x] `eng::platform` — `PlatformInfo`/`PlatformPaths` (XDG)/`Environment`/
-      `ProcessInfo`; único módulo com `#ifdef` por SO; depende de fs, nunca
-      o contrário (ADR-026)
-- [x] `eng::serial` — JSON puro via nlohmann/json v3.11.3 confinado às vias
-      sem exceções (wrapper `JsonValue`), envelope binário `GONI` com
-      CRC-32, infraestrutura de migrations (nenhuma ativa) e `StructCodec`
-      reflect-driven com codecs de campo por nome de tipo (ADR-030/031)
-- [x] `eng::assets` — `AssetId` UUIDv4 de 128 bits (100k gerações sem
-      colisão — teste real), `AssetRegistry` determinístico,
-      `AssetResolver` com rejeição de path traversal/absoluto,
-      `AssetManager` single-threaded com handles shared_ptr e loaders
-      type-erased sem RTTI; tipos reservados declarados sem loader
-      (ADR-028/029). **Sem async** — FASE 4 via eng::jobs
-- [x] `eng::project` — `project.goni.json` com validação ativa de paths
-      relativos (absoluto → rejeitado); `ProjectPaths` computa raízes do
-      diretório do arquivo (mover o projeto não invalida nada) (ADR-032)
-- [x] Serialização de Scene/ECS (dentro de eng::scene — ADR-033):
-      `SceneEntityId` UUIDv4 persistente (handles de runtime nunca
-      atravessam o disco), componentes via reflect por NOME, ordem
-      determinística, round-trip byte-a-byte, referência de asset quebrada
-      não impede o load
-- [x] Testes: **15 executáveis** (14 unitários + 1 integração e2e em
-      `tests/`), 100% verdes com ASan+UBSan+LSan e `-Werror` (debug e
-      release/LTO)
-- [x] ADRs 026–034 + auditoria e design da fase
-      (`docs/phase3_audit.md`, `docs/phase3_design.md`)
+      `ProcessInfo`; único módulo com `#ifdef` por SO (ADR-026)
+- [x] `eng::serial` — JSON via nlohmann/json confinado às vias sem
+      exceções, envelope binário `GONI` com CRC-32, migrations,
+      `StructCodec` reflect-driven (ADR-030/031)
+- [x] `eng::assets` — `AssetId` UUIDv4, `AssetRegistry` determinístico,
+      `AssetResolver`/`AssetManager` (ADR-028/029)
+- [x] `eng::project` — `project.goni.json` com paths relativos validados
+      (ADR-032); serialização de Scene/ECS por nome estável (ADR-033)
 
-## Estado — FASE 4 a 7 (concluídas; resumo)
+## Estado — FASES 4–7 (concluídas; resumo)
 
 - [x] **FASE 4** — `eng::rhi`: abstraction de hardware (~25 ops por
       `RhiBackend`), `Renderer` com seleção/validação completa
@@ -76,54 +60,11 @@ FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
       swapchain, staging, 2-in-flight; ADR-037)
 - [x] **FASE 6** — backend OpenGL ES real (EGL surfaceless/pbuffer,
       GLSL compilado em runtime, pixel verificado; ADR-038)
-- [x] **FASE 7** — runtime Android: JNI mínima (`GoniJni.cpp`), Activity
-      + lifecycle + surface/ANativeWindow com ownership auditado, APK
-      arm64-v8a zero permissões (ADRs 039–041); triangle REAL no Linux
-      com backends reais; emulador/dispositivo UNAVAILABLE no ambiente
-
-## Estado — FASE 10 (concluída) — Physics + Animation + Particles
-
-- [x] `eng::physics` (ADR-048): RigidBody (massa/velocidade/gravidade/
-      damping; mass=0 estático), Collider esfera/AABB com layers/masks/
-      triggers, CharacterBody com move-and-slide, raycast estruturado
-      (hit/entity/point/normal/distance, mask), TIMESTEP FIXO por
-      acumulador (determinismo testado), contatos expostos ao gameplay
-- [x] `eng::animation`: AnimationClip TRS (lerp/SLERP), Animator
-      componente (play/pause/stop natural/loop/speed/seek), máquina de
-      estados com cross-fade; skeletal = extensão documentada (a
-      hierarquia de nós é a preparação — §7.11)
-- [x] `eng::particles`: emitter CPU determinístico (spawn por acumulador,
-      direção van der Corput sem RNG, gravidade/lifetime/size/rotation,
-      burst, pool limitada) — decisão CPU registrada com gatilho GPU
-- [x] Integração: componentes refletidos + registrados no catálogo do
-      serializer (inspector os edita, cena os persiste); em PLAY o tick
-      avança física/animação/partículas sobre o CLONE (edição intacta)
-- [x] Testes: **26 suites** (physics 14/55, animation 6/30, particles
-      6/33, editor +3 de integração), zero warnings nos dois presets;
-      APK BUILT+INSPECTED
-
-## Estado — FASE 9 (concluída) — Input + UI + Audio
-
-- [x] `eng::input` (ADR-045): TouchState por pointer ID (down/move/up/
-      multitouch/pressão/delta), teclado CANÔNICO (KeyCodes Android ficam
-      no Kotlin/JNI), `InputSystem` com janela por frame, AÇÕES por
-      combinação de fontes (tecla/zona de toque em frações/botão gamepad
-      declarado), bindings de/para JSON (asset `input.json`)
-- [x] `eng::ui` (ADR-046): widgets Panel/Button/Label/Image/Slider/
-      ProgressBar/Container, layout por rect relativo + anchors +
-      design-resolution (resolução-independente), hit-test top-most,
-      eventos fn-ptr sem captura, draw-list de quads (SEM RHI — o host
-      desenha), fonte 5×7 pontilhada (script-regenerável)
-- [x] `eng::audio` (ADR-047): WAV PCM8/16/24/32f, Sound/Music (streaming
-      real por janelas de 16k frames)/Voice/AudioBus, mixer software f32
-      com padrão PULL, backend AAudio no Android via dlopen (API<26 →
-      erro preciso) + Null p/ testes, handles geracionais, pauseAll/
-      resumeAll/stopAll
-- [x] Integração: GoniActivity→JNI→InputSystem (toques canônicos);
-      editor em PLAY alimenta o input do runtime (§6.4 separação)
-- [x] Testes: **23 suites** (input 9/61, ui 8/40, audio 13/70), zero
-      warnings nos dois presets; APK com os 3 módulos BUILT+INSPECTED
-      (59 símbolos JNI; AAudio dlopen, não linkado)
+- [x] **FASE 7** — runtime Android: JNI mínima, Activity + lifecycle +
+      surface/ANativeWindow com ownership auditado, APK arm64-v8a zero
+      permissões (ADRs 039–041); render no Choreographer/UI-thread como
+      decisão documentada (ADR-039); triangle REAL no Linux com backends
+      reais; emulador/dispositivo UNAVAILABLE no ambiente
 
 ## Estado — FASE 8 (concluída) — Native Mobile Editor
 
@@ -133,20 +74,64 @@ FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
       (registry×disco), `Viewport` (câmera 2D/hit-test),
       `ViewportRenderer` (RHI, VBO dinâmico CPU→clip),
       `EditorHost` (surface/lifecycle FASE 7)
-- [x] Separção editor×runtime por clone de serialização (ADR-044):
+- [x] Separação editor×runtime por clone de serialização (ADR-044):
       edição rejeitada em Play; mutação em Play não vaza para a edição
 - [x] `EditorActivity.kt` + `EditorJni.kt`/`EditorJni.cpp` — editor
       touch-first (Views nativos, painéis hierarchy/inspector/assets,
       gestos tap/drag/pinch, SAF import, PLAY/STOP) — launcher do APK
-- [x] Mudanças aditivas engine: `eng::scene::Name` (componente de
-      domínio persistido), catálogo de componentes com
-      `emplaceDefault`/`get`/`getMutable`/`removeFrom`, `eachChild`
-      const, `StatusCode::{InvalidState,Internal}`
-- [x] Testes: **20 suites** no Linux (19 anteriores + `editor` —
-      26 casos/278 asserções contra backends reais), zero warnings;
-      APK arm64-v8a BUILT+INSPECTED (launcher `EditorActivity`, 57
-      símbolos JNI, zero permissões); sem execução em dispositivo
-      (evidência por estágio — §13)
+- [x] Auditoria final 4–10 corrigiu a integração de input do jogo em
+      Play: eventos brutos com pointer ID real + viewport do jogo com
+      tamanho real (zonas de toque funcionais no dispositivo)
+
+## Estado — FASE 9 (concluída) — Input + UI + Audio
+
+- [x] `eng::input` (ADR-045): TouchState por pointer ID (down/move/up/
+      multitouch/pressão/delta por janela — corrigido na auditoria
+      final), teclado canônico, `InputSystem` com janela por frame,
+      ações por combinação de fontes, bindings de/para JSON
+- [x] `eng::ui` (ADR-046): widgets, layout por anchors +
+      design-resolution, hit-test top-most, draw-list de quads (SEM
+      RHI — o host desenha), fonte 5×7 pontilhada
+- [x] `eng::audio` (ADR-047): WAV PCM8/16/24/32f, mixer software f32
+      pull, vozes geracionais, Music por janelas de 16k frames sobre o
+      arquivo em memória (decode por janela), backend AAudio via dlopen
+      (API<26 → erro preciso) + Null para testes
+- [x] Integração: `GoniActivity`→JNI→InputSystem (toques canônicos com
+      pointer ID); editor em Play roteia os toques brutos ao input do
+      jogo (§6.4); `eng::ui`/`eng::audio` são bibliotecas testadas à
+      espera do consumidor de runtime (o runtime de jogo/NI-Script —
+      limitação registrada na auditoria final)
+
+## Estado — FASE 10 (concluída) — Physics + Animation + Particles
+
+- [x] `eng::physics` (ADR-048): RigidBody (massa 0 = estático), Collider
+      esfera/AABB com layers/masks/triggers, CharacterBody com
+      move-and-slide + snapToGround (implementado na remediação da
+      auditoria final), raycast estruturado, TIMESTEP FIXO por
+      acumulador (determinismo testado), contatos expostos
+- [x] `eng::animation`: clips TRS (lerp/SLERP), Animator componente
+      (play/pause/stop natural/loop/speed/seek), transições com
+      cross-fade linear APLICADO (o estado de blend vive no componente
+      serializável e o `AnimationSystem` compõe as poses — correção
+      C-13 da auditoria final); skeletal = extensão documentada
+- [x] `eng::particles`: emitter CPU determinístico (spawn por
+      acumulador, direção van der Corput sem RNG, burst, pool
+      limitada); o viewport do editor DESENHA as partículas como quads
+      (correção do drift D6 da auditoria final)
+- [x] Integração: componentes refletidos + registrados no catálogo do
+      serializer; em PLAY o tick avança física/animação/partículas sobre
+      o CLONE (edição intacta)
+
+## Testes (estado pós-auditoria final 4–10)
+
+**26 suites** — 100% verdes em `linux-debug` (ASan+UBSan+LSan, `-Werror`)
+e `linux-release` (LTO), zero warnings; CI Linux executa os 26 com drivers
+(lavapipe/EGL), CI Android monta e inspeciona o APK arm64-v8a. Contagens:
+core 74 casos, rhi 16/410 (FakeBackend), vulkan 6, gles 5, android_runtime
+10 (86 asserções com driver), **editor 33 casos/325 asserções**, input
+12/76, ui 8/40, audio 14/75, physics 15/59, animation 6/32, particles
+6/33, + demais suites de fase. Auditoria completa com classificação
+[A]–[F], 18 bugs e remediação: `docs/final_phase4_10_audit.md`.
 
 ## Pré-requisitos
 
@@ -168,21 +153,21 @@ ctest --preset linux-release --output-on-failure  # release com LTO
 
 Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-android.md](docs/build-android.md).
 
-## Estrutura (FASE 3)
+## Estrutura (FASE 10)
 
 ```
 ├── .devcontainer/         # camadas base/graphics/android + verify.sh
-├── .github/workflows/     # ci-linux.yml (linux-debug + linux-release)
+├── .github/workflows/     # ci-linux.yml + ci-android.yml
 ├── cmake/                 # EngineOptions/Warnings/Sanitizers/Dependencies
 ├── CMakeLists.txt         # raiz (C++20, módulos de política, tests/)
 ├── CMakePresets.json      # linux-debug | linux-release
 ├── docs/
-│   ├── adr/               # ADR-021…034 (decisões FASE 2+3)
-│   ├── architecture/      # 00-overview + 02…12 por módulo
-│   ├── phase3_audit.md    # auditoria bloqueante do repo real
-│   ├── phase3_design.md   # design por módulo
-│   ├── project-layout.md  # layout de projeto esperado (exemplo mínimo)
-│   └── roadmap.md         # fases e o que a FASE 4 herda pronto
+│   ├── adr/               # ADR-021…048 (FASES 2–10)
+│   ├── architecture/      # 00-overview + 02…18 por módulo
+│   ├── phaseN_audit.md    # auditorias bloqueantes das fases
+│   ├── final_phase4_10_audit.md  # auditoria final independente 4–10
+│   ├── project-layout.md  # layout de projeto esperado
+│   └── roadmap.md         # fases e estados
 ├── engine/
 │   ├── core/              # Result, Error, Span, Version, Uuid128
 │   ├── math/              # Vec2/3/4, Mat4, Quat, Transform
@@ -198,9 +183,15 @@ Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-andro
 │   ├── serial/            # JsonValue/envelope/migrations/StructCodec
 │   ├── assets/            # AssetId/Registry/Resolver/Manager/Loaders
 │   ├── project/           # ProjectId/Config/Paths/File
-│   └── rhi/               # Renderer/Frame + backends vulkan/ e gles/
+│   ├── rhi/               # Renderer/Frame + backends vulkan/ e gles/
+│   ├── input/             # InputSystem canônico + ações (FASE 9)
+│   ├── ui/                # widgets/draw-list/fonte 5×7 (FASE 9)
+│   ├── audio/             # WAV/mixer/AAudio (FASE 9)
+│   ├── physics/           # RigidBody/Collider/CharacterBody (FASE 10)
+│   ├── animation/         # clips/animator/cross-fade (FASE 10)
+│   └── particles/         # emitter CPU determinístico (FASE 10)
 ├── editor/                # FASE 8: núcleo C++ do editor (consumidor)
-├── android/               # FASE 7/8: runtime + editor Android (Gradle/APK)
+├── android/               # FASES 7/8: runtime + editor Android (Gradle/APK)
 └── tests/                 # integração e2e (compõe scene+assets+project)
 ```
 
@@ -220,25 +211,24 @@ persistido em arquivo algum (ADR-032).
 
 Grafo de dependências e regras de camadas:
 [docs/architecture/00-overview.md](docs/architecture/00-overview.md).
-Auditoria da fase (inclui desvios D1–D5 da especificação):
-[docs/phase3_audit.md](docs/phase3_audit.md).
+Auditoria final independente das FASES 4–10 (bugs encontrados e
+remediados): [docs/final_phase4_10_audit.md](docs/final_phase4_10_audit.md).
 
 ## Roadmap
 
-| Fase | Escopo |
-|---|---|
-| 1 ✅ | core, math, mem, log + build/CI/devcontainer |
-| 2 ✅ | reflect, events, jobs, ecs, scene |
-| 3 ✅ | fs, platform, serial, assets, project + serialização de cena |
-| 3.5 | toolchain de shaders (glslang + spirv-val + SPIRV-Cross) |
-| 4 | renderer abstraction `eng::rhi` (ADR-035/036) — concluída |
-| 5 | backend Vulkan real `eng::rhi::vulkan` (ADR-037) — concluída |
-| 6 | backend OpenGL ES real `eng::rhi::gles` + paridade (ADR-038) — concluída |
-| 7 | runtime Android: JNI mínima, Activity+lifecycle, surface/ANativeWindow, APK arm64-v8a (ADRs 039–041) — concluída |
-| 8 | Native Mobile Editor: `editor/` C++ + EditorActivity/EditorJni (ADRs 042–044) — concluída |
-| 9 | eng::input + eng::ui + eng::audio (ADRs 045–047) — concluída |
-| 10 | physics+animation+particles (ADR-048) — concluída |
-| 11 | NI-Script — lexer/parser/AST/tipos/VM/bindings |
-| 11 | NI-Script (lexer/parser/VM/bindings) |
+| Fase | Escopo | Estado |
+|---|---|---|
+| 1 | core, math, mem, log + build/CI/devcontainer | ✅ concluída (`d9b2d9d`) |
+| 2 | reflect, events, jobs, ecs, scene | ✅ concluída (`8469f7c`) |
+| 3 | fs, platform, serial, assets, project + serialização de cena | ✅ concluída |
+| 4 | renderer abstraction `eng::rhi` (ADR-035/036) | ✅ concluída |
+| 5 | backend Vulkan real (ADR-037) | ✅ concluída |
+| 6 | backend OpenGL ES real + paridade (ADR-038) | ✅ concluída |
+| 7 | runtime Android: JNI, Activity, surface, APK arm64-v8a (ADRs 039–041) | ✅ concluída |
+| 8 | Native Mobile Editor (ADRs 042–044) | ✅ concluída |
+| 9 | eng::input + eng::ui + eng::audio (ADRs 045–047) | ✅ concluída |
+| 10 | physics + animation + particles (ADR-048) | ✅ concluída |
+| 11 | **NI-Script** — linguagem própria: lexer/parser/AST/sema/bytecode/VM/bindings ECS/debugger | planejada |
+| 12 | **Build & Export Pipeline** — config/manifest/deps/cook/cache/validação/Android+Linux | planejada |
 
-Detalhes do que a FASE 4 herda pronto: [docs/roadmap.md](docs/roadmap.md).
+Detalhes por fase: [docs/roadmap.md](docs/roadmap.md).

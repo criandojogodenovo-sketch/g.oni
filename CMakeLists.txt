@@ -50,5 +50,5 @@ if(ENG_BUILD_TESTS)
     add_subdirectory(editor)
 endif()
 
-message(STATUS "eng ${PROJECT_VERSION} — FASE 4 (renderer abstraction eng::rhi)")
+message(STATUS "eng ${PROJECT_VERSION} — FASES 1-10 completas (fim do núcleo; 11-12 no roadmap)")
 message(STATUS "Presets canônicos: linux-debug, linux-release — ver docs/build.md")

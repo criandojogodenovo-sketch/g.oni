@@ -1,8 +1,10 @@
 #include "eng/ui/Ui.hpp"
 
-/// Font 5×7 pontilhada (FASE 9, ADR-046) — GERADO por
-/// /home/z/my-project/scripts/gen_ui_font.py (fonte única; NÃO editar à
-/// mão). Domínio público (matriz clássica de pontos estilo LCD 5×7).
+/// Font 5×7 pontilhada (FASE 9, ADR-046). Matriz clássica de pontos
+/// estilo LCD 5×7 (domínio público), 95 glifos ASCII 32..126 — dados
+/// originais do TU, mantidos aqui como fonte única. NOTA (auditoria
+/// final 4–10): o script `gen_ui_font.py` citado antes NÃO existe no
+/// repositório — a referência de "geração" era falsa e foi removida.
 
 #include <cstring>
 

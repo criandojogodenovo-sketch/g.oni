@@ -34,7 +34,9 @@ struct WorldShape {
     shape.center = {world.at(3, 0), world.at(3, 1), world.at(3, 2)};
     shape.isSphere = collider.shape == ColliderShape::Sphere;
     if (shape.isSphere) {
-        // Escala média das colunas aproxima o raio (uniforme na prática).
+        // Escala da COLUNA X aproxima o raio (correta para escala
+        // uniforme; anisotrópica é limitação documentada — AABB ignora
+        // rotação do nó, idem).
         const float sx = std::sqrt(world.at(0, 0) * world.at(0, 0) +
                                   world.at(0, 1) * world.at(0, 1) +
                                   world.at(0, 2) * world.at(0, 2));

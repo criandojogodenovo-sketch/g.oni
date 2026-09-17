@@ -1,3 +1,11 @@
+> **CORREÇÃO (auditoria final 4–10):** NÃO existe buffer SPSC entre o
+> callback AAudio e o mixer (o callback chama `mix()` sob o mutex único
+> — o design original foi simplificado); `TouchPoint::delta`/`frameStamp`
+> agora são implementados e testados (C-7/C-8/C-9); "streaming real"
+> = janelas de 16k frames sobre o arquivo integralmente em memória (o
+> decoder de janela é que é progressivo); deps de áudio: core/fs/serial
+> (sem assets). Ver `docs/final_phase4_10_audit.md`.
+
 # Design FASE 9 — Input + UI + Audio
 
 - **Base:** `9a144e4` + `docs/phase9_audit.md` (decisões D1–D7).

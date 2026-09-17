@@ -46,7 +46,8 @@ arraste muta o clone (debug), stop preserva a edição intacta (ADR-044).
 
 ## Testes (Linux, backends reais)
 
-26 casos / 278 asserções: projeto, entidades, hierarquia, componentes,
+33 casos / 325 asserções (pós-auditoria final 4–10: + pré-projeto sem UB,
++ quads de partículas em Play): projeto, entidades, hierarquia, componentes,
 inspector (get/set/erros/protegidos), Euler round-trip (tolerância perto
 do gimbal — limitação de f32 documentada), save/load de cena, PLAY/STOP
 (clone/rejeição/não-vazamento/re-clone), câmera/hit-test/world matrix,

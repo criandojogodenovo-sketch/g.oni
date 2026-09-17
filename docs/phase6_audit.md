@@ -1,3 +1,8 @@
+> **CORREÇÃO (auditoria final 4–10):** `frameSetViewport` NÃO configura
+> scissor (apenas `glViewport`) — removida a menção; o loader expõe 57
+> funções (não ~55); atributos UNORM agora são normalizados
+> (`GL_TRUE`, bug C-15). Ver `docs/final_phase4_10_audit.md`.
+
 # Auditoria FASE 6 — Backend OpenGL ES real (pré-implementação)
 
 - **Base:** `24d3950` (phase5: vulkan backend)
