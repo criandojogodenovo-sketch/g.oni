@@ -76,6 +76,7 @@ graph TD
 | `eng::rhi` | core, log | [035](../adr/ADR-035-rhi-abstraction.md) · [036](../adr/ADR-036-rhi-selection.md) |
 | `eng::rhi::vulkan` (backend) | rhi | [037](../adr/ADR-037-vulkan-backend.md) |
 | `eng::rhi::gles` (backend) | rhi | [038](../adr/ADR-038-gles-backend.md) |
+| `android/runtime` (consumidor) | rhi, rhi::vulkan, rhi::gles, log | [039](../adr/ADR-039-android-activity-jni-renderthread.md) · [040](../adr/ADR-040-android-surface-ownership.md) |
 | `tests/` (raiz) | TODOS — integração e2e | — |
 | executáveis de teste | módulo testado + Catch2 (externa) | — |
 
@@ -122,7 +123,7 @@ Regras que mantêm o grafo acíclico conforme os módulos entram:
    implementam interfaces e são linkados no executável final.
 2. Fundações (`core`, `math`, `mem`, `log`) nunca ganham dependências para
    módulos de nível superior.
-3. `android/`, `editor/` são consumidores de `engine/` — nunca o contrário.
+3. `android/`, `editor/` são consumidores de `engine/` — nunca o contrário. (FASE 7: `android/` existe — runtime + APK; `jni.h` em exatamente UM arquivo, `GoniJni.cpp`.)
 4. (FASE 3) Nenhum módulo depende de `eng::scene` exceto `tests/` — a
    serialização de cena vive DENTRO de scene (ADR-033).
 

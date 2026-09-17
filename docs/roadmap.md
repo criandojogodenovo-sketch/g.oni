@@ -12,8 +12,8 @@
 | 4 | renderer abstraction `eng::rhi` — API de alto nível, contrato `RhiBackend`, registro de fábricas, frame lifecycle (ADR-035/036) | **concluída** |
 | 5 | backend Vulkan real — loader dlopen, layers, GPU real, staging, swapchain, triangle submetido (ADR-037) | **concluída** |
 | 6 | backend OpenGL ES real — EGL surfaceless + pbuffer, GLSL real, triangle com pixel verificado, paridade Vulkan/GLES (ADR-038) | **concluída** |
-| 7 | Física (Jolt), áudio (miniaudio), Android (JNI/APK) | planejada |
-| 8+ | Scripting (Lua), runtime, editor web | planejada |
+| 7 | runtime Android — JNI/lifecycle/surface/APK arm64-v8a (ADRs 039–041; runtime TESTADO no Linux, APK BUILT+INSPECTED; emulador/dispositivo UNAVAILABLE) | **concluída** |
+| 8+ | Física (Jolt), áudio (miniaudio), Scripting (Lua), runtime/editor web | planejada |
 
 ## O que a FASE 5 herda pronto
 
