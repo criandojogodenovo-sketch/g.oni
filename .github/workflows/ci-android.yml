@@ -21,14 +21,16 @@ jobs:
           java-version: '17'
 
       - name: Instalar NDK + CMake + platform (SDK oficial — §XXXI)
+        env:
+          SDKMANAGER: ${{ env.ANDROID_HOME }}/cmdline-tools/latest/bin/sdkmanager
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install \
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install \
             "ndk;27.0.12077973" \
             "cmake;3.31.6" \
             "platforms;android-34" \
             "build-tools;34.0.0" > /dev/null
-          sdkmanager --list_installed | head -20
+          ls "$ANDROID_HOME/ndk" && "$ANDROID_HOME/cmake/3.31.6/bin/cmake" --version | head -1
 
       - name: Gradle assembleDebug
         working-directory: android
