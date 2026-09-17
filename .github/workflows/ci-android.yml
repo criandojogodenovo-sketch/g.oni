@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Caminho padrão do SDK no runner-image (variáveis do runner não são
+# visíveis em expressões de env: — usar constante do workflow).
+env:
+  ANDROID_SDK: /usr/local/lib/android/sdk
+
 jobs:
   apk:
     name: assembleDebug (arm64-v8a)
@@ -22,7 +27,7 @@ jobs:
 
       - name: Instalar NDK + CMake + platform (SDK oficial — §XXXI)
         env:
-          SDKMANAGER: ${{ env.ANDROID_HOME }}/cmdline-tools/latest/bin/sdkmanager
+          SDKMANAGER: ${{ env.ANDROID_SDK }}/cmdline-tools/latest/bin/sdkmanager
         run: |
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" --install \
@@ -30,7 +35,7 @@ jobs:
             "cmake;3.31.6" \
             "platforms;android-34" \
             "build-tools;34.0.0" > /dev/null
-          ls "$ANDROID_HOME/ndk" && "$ANDROID_HOME/cmake/3.31.6/bin/cmake" --version | head -1
+          ls "$ANDROID_SDK/ndk" && "$ANDROID_SDK/cmake/3.31.6/bin/cmake" --version | head -1
 
       - name: Gradle assembleDebug
         working-directory: android
@@ -42,14 +47,14 @@ jobs:
           test -f "$APK" || { echo "APK ausente"; exit 1; }
           ls -la "$APK"
           unzip -l "$APK" | grep -E 'lib/arm64-v8a/libgoni.so|AndroidManifest'
-          NDK_LLVM="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          NDK_LLVM="$ANDROID_SDK/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin"
           TMP=$(mktemp -d)
           unzip -q "$APK" lib/arm64-v8a/libgoni.so -d "$TMP"
           file "$TMP/lib/arm64-v8a/libgoni.so"
           "$NDK_LLVM/llvm-readelf" -d "$TMP/lib/arm64-v8a/libgoni.so" | grep NEEDED
           # Símbolos JNI obrigatórios (missão §XXV.7)
           "$NDK_LLVM/llvm-nm" -D "$TMP/lib/arm64-v8a/libgoni.so" | grep Java_com_goni
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | head -6
+          "$ANDROID_SDK/build-tools/34.0.0/aapt" dump badging "$APK" | head -6
 
       - name: Upload do APK (artefato)
         uses: actions/upload-artifact@v4
