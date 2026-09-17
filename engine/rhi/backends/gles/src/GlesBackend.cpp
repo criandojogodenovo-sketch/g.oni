@@ -10,6 +10,11 @@
 
 #include "eng/log/Macros.hpp"
 
+// FASE 7: surface Android (NDK API — NÃO é JNI; missão §II.4/§XII).
+#ifdef __ANDROID__
+#include <android/native_window.h>
+#endif
+
 ENG_LOG_CATEGORY("rhi.gles")
 
 namespace eng::rhi::gles {
@@ -115,6 +120,16 @@ Result<void> GlesBackend::makeContextCurrent(bool withSurface) {
 
 Result<void> GlesBackend::createSurface(std::uint32_t width, std::uint32_t height) {
     const auto& fn = library_.functions();
+#ifdef __ANDROID__
+    // Surface de JANELA REAL a partir do ANativeWindow entregue pela camada
+    // Android (missão §XII). O membro window_ é setado no initialize.
+    EGLSurface surface =
+        fn.eglCreateWindowSurface(display_, config_, window_, nullptr);
+    if (surface == EGL_NO_SURFACE) {
+        return eng::core::makeUnexpected(
+            eglErr("rhi.gles: eglCreateWindowSurface", fn.eglGetError()));
+    }
+#else
     const EGLint attributes[] = {EGL_WIDTH, static_cast<EGLint>(width),
                                  EGL_HEIGHT, static_cast<EGLint>(height), EGL_NONE};
     EGLSurface surface = fn.eglCreatePbufferSurface(display_, config_, attributes);
@@ -122,6 +137,7 @@ Result<void> GlesBackend::createSurface(std::uint32_t width, std::uint32_t heigh
         return eng::core::makeUnexpected(
             eglErr("rhi.gles: eglCreatePbufferSurface", fn.eglGetError()));
     }
+#endif
     if (surface_ != EGL_NO_SURFACE) {
         fn.eglDestroySurface(display_, surface_);
     }
@@ -147,7 +163,15 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
     }
     const auto& fn = library_.functions();
 
-    // --- display (plataforma surfaceless — headless real, missão §13/§33) -------
+    // --- display (missão §13/§33): Android usa o display padrão do sistema;
+    // Linux headless usa a plataforma surfaceless da Mesa. ---------------
+#ifdef __ANDROID__
+    display_ = fn.eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display_ == EGL_NO_DISPLAY) {
+        return eng::core::makeUnexpected(
+            eglErr("rhi.gles: eglGetDisplay(EGL_DEFAULT_DISPLAY)", fn.eglGetError()));
+    }
+#else
     display_ = fn.eglGetPlatformDisplay(kEglPlatformSurfacelessMesa, EGL_DEFAULT_DISPLAY,
                                         nullptr);
     if (display_ == EGL_NO_DISPLAY) {
@@ -156,13 +180,21 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
             "rhi.gles: plataforma surfaceless indisponível neste ambiente "
             "(kinds Xcb/Wayland/Android vêm com as fases de plataforma)"));
     }
+#endif
     if (!fn.eglInitialize(display_, nullptr, nullptr)) {
         return eng::core::makeUnexpected(eglErr("rhi.gles: eglInitialize", fn.eglGetError()));
     }
 
-    // --- config ES3 (pbuffer quando houver surface) ------------------------------
+    // --- config ES3 (surface type por plataforma — missão §XII) -----------------
+    // Android com janela: EGL_WINDOW_BIT; Linux headless: pbuffer.
+    const EGLint windowSurfaceBit =
+#ifdef __ANDROID__
+        EGL_WINDOW_BIT;
+#else
+        EGL_PBUFFER_BIT;
+#endif
     const EGLint configAttributes[] = {
-        EGL_SURFACE_TYPE, config.surface.isValid() ? EGL_PBUFFER_BIT : 0,
+        EGL_SURFACE_TYPE, config.surface.isValid() ? windowSurfaceBit : 0,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
         EGL_NONE};
@@ -193,16 +225,27 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
 
     // --- surface (pbuffer) quando pedida (missão §38) --------------------------------
     if (config.surface.isValid()) {
-        if (config.surface.window.kind != eng::rhi::NativeWindowKind::Headless) {
+        const bool kindSupported =
+#ifdef __ANDROID__
+            config.surface.window.kind == eng::rhi::NativeWindowKind::Android;
+#else
+            config.surface.window.kind == eng::rhi::NativeWindowKind::Headless;
+#endif
+        if (!kindSupported) {
             fn.eglDestroyContext(display_, context_);
             context_ = EGL_NO_CONTEXT;
             fn.eglTerminate(display_);
             display_ = EGL_NO_DISPLAY;
             return eng::core::makeUnexpected(makeError(
                 StatusCode::NotSupported,
-                "rhi.gles: apenas surface Headless é criável nesta fase "
-                "(Xcb/Wayland/Android vêm com as fases de plataforma)"));
+                "rhi.gles: surface kind não suportada neste build "
+                "(Linux usa Headless; Android usa Android — demais kinds vêm "
+                "com as fases de plataforma)"));
         }
+#ifdef __ANDROID__
+        window_ = static_cast<EGLNativeWindowType>(
+            const_cast<void*>(config.surface.window.handle));
+#endif
         const auto created = createSurface(config.surface.width, config.surface.height);
         if (!created) {
             fn.eglDestroyContext(display_, context_);

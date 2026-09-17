@@ -8,6 +8,11 @@
 
 #include "eng/log/Macros.hpp"
 
+// FASE 7: surface Android (NDK API — NÃO é JNI; missão §II.4/§IX).
+#ifdef __ANDROID__
+#include <android/native_window.h>
+#endif
+
 ENG_LOG_CATEGORY("rhi.vulkan")
 
 namespace eng::rhi::vulkan {
@@ -264,7 +269,7 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
         }
     }
 
-    // --- surface (Headless nesta fase — auditoria F5 §3) -------------------------------------
+    // --- surface (Headless no Linux — auditoria F5 §3; Android na FASE 7) --------------------
     if (wantSurface) {
         switch (config.surface.window.kind) {
         case eng::rhi::NativeWindowKind::Headless: {
@@ -278,11 +283,30 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
             }
             break;
         }
+#ifdef __ANDROID__
+        case eng::rhi::NativeWindowKind::Android: {
+            // Surface REAL a partir da janela nativa entregue pela camada
+            // Android (missão §IX). O handle é opaco na abstraction — aqui
+            // é o ANativeWindow* adquirido pelo runtime (ADR-040).
+            VkAndroidSurfaceCreateInfoKHR surfaceInfo{};
+            surfaceInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+            surfaceInfo.window =
+                static_cast<ANativeWindow*>(const_cast<void*>(config.surface.window.handle));
+            result = library_.functions().vkCreateAndroidSurfaceKHR(instance_, &surfaceInfo,
+                                                                     nullptr, &surface_);
+            if (result != VK_SUCCESS) {
+                return eng::core::makeUnexpected(vkErr(StatusCode::NotSupported,
+                                                       "rhi.vulkan: vkCreateAndroidSurfaceKHR",
+                                                       result));
+            }
+            break;
+        }
+#endif
         default:
             return eng::core::makeUnexpected(makeError(
                 StatusCode::NotSupported,
-                "rhi.vulkan: apenas surface Headless é criável nesta fase "
-                "(Xcb/Wayland/Win32/Android vêm com a plataforma — FASE 7/8)"));
+                "rhi.vulkan: surface kind não suportada neste build "
+                "(Xcb/Wayland/Win32 vêm com as fases de desktop)"));
         }
         hasSurface_ = true;
     }

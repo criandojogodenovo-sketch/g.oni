@@ -76,12 +76,14 @@ bool GlesLibrary::open(std::string& outError) {
 
     ENG_GL_LOAD(eglLibrary_, eglGetError, EglGetErrorFn);
     ENG_GL_LOAD(eglLibrary_, eglQueryString, EglQueryStringFn);
+    ENG_GL_LOAD(eglLibrary_, eglGetDisplay, EglGetDisplayFn);
     ENG_GL_LOAD(eglLibrary_, eglGetPlatformDisplay, EglGetPlatformDisplayFn);
     ENG_GL_LOAD(eglLibrary_, eglInitialize, EglInitializeFn);
     ENG_GL_LOAD(eglLibrary_, eglTerminate, EglTerminateFn);
     ENG_GL_LOAD(eglLibrary_, eglChooseConfig, EglChooseConfigFn);
     ENG_GL_LOAD(eglLibrary_, eglGetConfigAttrib, EglGetConfigAttribFn);
     ENG_GL_LOAD(eglLibrary_, eglCreatePbufferSurface, EglCreatePbufferSurfaceFn);
+    ENG_GL_LOAD(eglLibrary_, eglCreateWindowSurface, EglCreateWindowSurfaceFn);
     ENG_GL_LOAD(eglLibrary_, eglDestroySurface, EglDestroySurfaceFn);
     ENG_GL_LOAD(eglLibrary_, eglCreateContext, EglCreateContextFn);
     ENG_GL_LOAD(eglLibrary_, eglDestroyContext, EglDestroyContextFn);

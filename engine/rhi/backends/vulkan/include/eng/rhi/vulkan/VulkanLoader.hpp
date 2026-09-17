@@ -13,6 +13,13 @@
 #include <cstdint>
 #include <string>
 
+// FASE 7: surface Android real (VkAndroidSurfaceCreateInfoKHR exige a
+// platform-macro; apenas no NDK — o Linux não a define nem a usa). Sem
+// qualquer header de JNI aqui (missão §II.4: NDK API, fronteira rhi).
+#ifdef __ANDROID__
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+#endif
+
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
@@ -47,6 +54,9 @@ struct VulkanFunctions {
     PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT{nullptr};
     // Surface por plataforma — apenas Headless na FASE 5 (auditoria F5 §3).
     PFN_vkCreateHeadlessSurfaceEXT vkCreateHeadlessSurfaceEXT{nullptr};
+#ifdef __ANDROID__
+    PFN_vkCreateAndroidSurfaceKHR vkCreateAndroidSurfaceKHR{nullptr};
+#endif
 
     // --- device-level ---------------------------------------------------------
     PFN_vkDestroyDevice vkDestroyDevice{nullptr};

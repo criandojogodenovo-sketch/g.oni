@@ -21,6 +21,7 @@ namespace eng::rhi::gles {
 // PFN_* (diferente de vulkan.h) — assinaturas canônicas declaradas aqui.
 using EglGetErrorFn = EGLint (*)();
 using EglQueryStringFn = const char* (*)(EGLDisplay, EGLint);
+using EglGetDisplayFn = EGLDisplay (*)(EGLNativeDisplayType);
 using EglGetPlatformDisplayFn = EGLDisplay (*)(EGLenum, void*, const EGLAttrib*);
 using EglInitializeFn = EGLBoolean (*)(EGLDisplay, EGLint*, EGLint*);
 using EglTerminateFn = EGLBoolean (*)(EGLDisplay);
@@ -28,6 +29,8 @@ using EglChooseConfigFn = EGLBoolean (*)(EGLDisplay, const EGLint*, EGLConfig*, 
                                          EGLint*);
 using EglGetConfigAttribFn = EGLBoolean (*)(EGLDisplay, EGLConfig, EGLint, EGLint*);
 using EglCreatePbufferSurfaceFn = EGLSurface (*)(EGLDisplay, EGLConfig, const EGLint*);
+using EglCreateWindowSurfaceFn = EGLSurface (*)(EGLDisplay, EGLConfig, EGLNativeWindowType,
+                                                const EGLint*);
 using EglDestroySurfaceFn = EGLBoolean (*)(EGLDisplay, EGLSurface);
 using EglCreateContextFn = EGLContext (*)(EGLDisplay, EGLConfig, EGLContext,
                                             const EGLint*);
@@ -84,12 +87,14 @@ struct GlesFunctions {
     // --- EGL ---------------------------------------------------------------
     EglGetErrorFn eglGetError{nullptr};
     EglQueryStringFn eglQueryString{nullptr};
+    EglGetDisplayFn eglGetDisplay{nullptr};
     EglGetPlatformDisplayFn eglGetPlatformDisplay{nullptr};
     EglInitializeFn eglInitialize{nullptr};
     EglTerminateFn eglTerminate{nullptr};
     EglChooseConfigFn eglChooseConfig{nullptr};
     EglGetConfigAttribFn eglGetConfigAttrib{nullptr};
     EglCreatePbufferSurfaceFn eglCreatePbufferSurface{nullptr};
+    EglCreateWindowSurfaceFn eglCreateWindowSurface{nullptr};
     EglDestroySurfaceFn eglDestroySurface{nullptr};
     EglCreateContextFn eglCreateContext{nullptr};
     EglDestroyContextFn eglDestroyContext{nullptr};

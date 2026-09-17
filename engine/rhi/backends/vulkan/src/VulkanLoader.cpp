@@ -165,6 +165,10 @@ void VulkanLibrary::loadInstanceFunctions(VkInstance instance) {
             fn, instance, "vkDestroyDebugUtilsMessengerEXT");
     fn.vkCreateHeadlessSurfaceEXT = instanceProc<PFN_vkCreateHeadlessSurfaceEXT>(
         fn, instance, "vkCreateHeadlessSurfaceEXT");
+#ifdef __ANDROID__
+    fn.vkCreateAndroidSurfaceKHR = instanceProc<PFN_vkCreateAndroidSurfaceKHR>(
+        fn, instance, "vkCreateAndroidSurfaceKHR");
+#endif
 }
 
 void VulkanLibrary::loadDeviceFunctions(VkDevice device) {

@@ -110,6 +110,9 @@ private:
     EGLConfig config_{nullptr};
     EGLContext context_{EGL_NO_CONTEXT};
     EGLSurface surface_{EGL_NO_SURFACE};
+#ifdef __ANDROID__
+    EGLNativeWindowType window_{nullptr};  ///< ANativeWindow* (borrowed — ADR-040)
+#endif
     std::uint32_t surfaceWidth_{0};
     std::uint32_t surfaceHeight_{0};
 
