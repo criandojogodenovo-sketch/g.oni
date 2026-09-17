@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "eng/core/Result.hpp"
+#include "eng/animation/Animation.hpp"
 #include "eng/ecs/Ecs.hpp"
 #include "eng/editor/AssetBrowser.hpp"
 #include "eng/editor/Inspector.hpp"
@@ -37,10 +38,18 @@
 #include "eng/fs/Path.hpp"
 #include "eng/input/Input.hpp"
 #include "eng/math/Vec3.hpp"
+#include "eng/particles/Particles.hpp"
+#include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectFile.hpp"
 #include "eng/scene/Scene.hpp"
 
 namespace eng::editor {
+
+/// Registra os componentes de gameplay (physics/animation/particles) no
+/// catálogo do serializer — efeito colateral da inicialização estática de
+/// ComponentRegistration.cpp; a chamada garante que o TU entre no link
+/// (libs estáticas descartam objetos não referenciados).
+void ensureEditorComponentsRegistered() noexcept;
 
 /// TRS do editor com rotação em GRAUS Euler XYZ (convenção do usuário; a
 /// cena guarda Quat — conversão interna testada).
@@ -143,9 +152,22 @@ public:
     [[nodiscard]] eng::core::Result<void> play();
     void stop() noexcept;
     [[nodiscard]] bool isPlaying() const noexcept { return mode_ == Mode::Play; }
-    /// Avanço do runtime por frame (Choreographer). FASE 9: input do jogo
-    /// processado por frame em Play (§6.1); FASE 10 adiciona física/etc.
+    /// Avanço do runtime por frame (Choreographer). Play: input (§6.1) +
+    /// física com timestep fixo (§7.6) + animação (§7.9) + partículas
+    /// (§7.12) sobre o CLONE. Edit: parado (gestos não vazam — §6.4).
     void tick(float deltaSeconds) noexcept;
+
+    /// Física do runtime (contatos do último passo — gameplay/debug).
+    [[nodiscard]] const eng::physics::PhysicsWorld& runtimePhysics() const
+        noexcept
+    {
+        return physicsWorld_;
+    }
+    /// Banco de animações do runtime (clips por nome — API C++ §9).
+    eng::animation::AnimationBank& runtimeAnimations() noexcept
+    {
+        return runtimeAnimations_;
+    }
 
     /// INPUT DO JOGO (FASE 9, §6.4 — separado dos gestos do editor): os
     /// toques do viewport em Play alimentam ESTE sistema; bindings são
@@ -229,6 +251,9 @@ private:
     std::optional<eng::ecs::Entity> selection_{};
 
     eng::input::InputSystem runtimeInput_{}; ///< input do JOGO (§6.4)
+    eng::physics::PhysicsWorld physicsWorld_{};      ///< §7.1–§7.6
+    eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
+    eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
     Viewport viewport_{};
     std::unique_ptr<AssetBrowser> assets_{};
 };

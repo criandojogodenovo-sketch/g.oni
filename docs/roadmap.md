@@ -15,8 +15,8 @@
 | 7 | runtime Android — JNI/lifecycle/surface/APK arm64-v8a (ADRs 039–041; runtime TESTADO no Linux, APK BUILT+INSPECTED; emulador/dispositivo UNAVAILABLE) | **concluída** |
 | 8 | Native Mobile Editor — `editor/` C++ (documento/inspector reflect/assets/viewport RHI) + `EditorActivity`/`EditorJni` (ADRs 042–044; runtime TESTADO no Linux c/ backends reais, APK BUILT+INSPECTED) | **concluída** |
 | 9 | input+ui+audio — `eng::input` canônico/ações, `eng::ui` draw-list/fonte pontilhada, `eng::audio` mixer pull/AAudio dlopen (ADRs 045–047) | **concluída** |
-| 10 | eng::physics (rigidbody/collider/trigger/raycast, timestep fixo) + eng::animation (clips/animator/states) + eng::particles (emitter CPU) | planejada |
-| 11+ | NI-Script — lexer/parser/AST/tipos/VM/bindings | planejada |
+| 10 | physics+animation+particles — esfera/AABB+timestep fixo+raycast; clips TRS/estados; emitter CPU determinístico (ADR-048) | **concluída** |
+| 11 | NI-Script — lexer/parser/AST/análise semântica/tipos/compiler/IR/VM/bindings ECS/bibliotecas/debugger/editor | planejada |
 
 ## O que a FASE 5 herda pronto
 

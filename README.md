@@ -81,6 +81,27 @@ FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
       arm64-v8a zero permissões (ADRs 039–041); triangle REAL no Linux
       com backends reais; emulador/dispositivo UNAVAILABLE no ambiente
 
+## Estado — FASE 10 (concluída) — Physics + Animation + Particles
+
+- [x] `eng::physics` (ADR-048): RigidBody (massa/velocidade/gravidade/
+      damping; mass=0 estático), Collider esfera/AABB com layers/masks/
+      triggers, CharacterBody com move-and-slide, raycast estruturado
+      (hit/entity/point/normal/distance, mask), TIMESTEP FIXO por
+      acumulador (determinismo testado), contatos expostos ao gameplay
+- [x] `eng::animation`: AnimationClip TRS (lerp/SLERP), Animator
+      componente (play/pause/stop natural/loop/speed/seek), máquina de
+      estados com cross-fade; skeletal = extensão documentada (a
+      hierarquia de nós é a preparação — §7.11)
+- [x] `eng::particles`: emitter CPU determinístico (spawn por acumulador,
+      direção van der Corput sem RNG, gravidade/lifetime/size/rotation,
+      burst, pool limitada) — decisão CPU registrada com gatilho GPU
+- [x] Integração: componentes refletidos + registrados no catálogo do
+      serializer (inspector os edita, cena os persiste); em PLAY o tick
+      avança física/animação/partículas sobre o CLONE (edição intacta)
+- [x] Testes: **26 suites** (physics 14/55, animation 6/30, particles
+      6/33, editor +3 de integração), zero warnings nos dois presets;
+      APK BUILT+INSPECTED
+
 ## Estado — FASE 9 (concluída) — Input + UI + Audio
 
 - [x] `eng::input` (ADR-045): TouchState por pointer ID (down/move/up/
@@ -216,7 +237,8 @@ Auditoria da fase (inclui desvios D1–D5 da especificação):
 | 7 | runtime Android: JNI mínima, Activity+lifecycle, surface/ANativeWindow, APK arm64-v8a (ADRs 039–041) — concluída |
 | 8 | Native Mobile Editor: `editor/` C++ + EditorActivity/EditorJni (ADRs 042–044) — concluída |
 | 9 | eng::input + eng::ui + eng::audio (ADRs 045–047) — concluída |
-| 10 | eng::physics + eng::animation + eng::particles |
+| 10 | physics+animation+particles (ADR-048) — concluída |
+| 11 | NI-Script — lexer/parser/AST/tipos/VM/bindings |
 | 11 | NI-Script (lexer/parser/VM/bindings) |
 
 Detalhes do que a FASE 4 herda pronto: [docs/roadmap.md](docs/roadmap.md).

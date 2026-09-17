@@ -8,9 +8,12 @@
 #include <unordered_map>
 #include <utility>
 
+#include "eng/animation/Animation.hpp"
 #include "eng/log/Macros.hpp"
 #include "eng/math/Mat4.hpp"
 #include "eng/math/Quat.hpp"
+#include "eng/particles/Particles.hpp"
+#include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectPaths.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneSerializer.hpp"
@@ -116,6 +119,7 @@ ENG_LOG_CATEGORY("editor");
 Result<std::unique_ptr<EditorDocument>> EditorDocument::create(
     eng::fs::FileSystem& fs, const eng::fs::Path& workspaceRoot)
 {
+    ensureEditorComponentsRegistered(); // FASE 10: catálogo de gameplay
     auto document = std::unique_ptr<EditorDocument>(new EditorDocument{});
     document->fs_ = &fs;
     document->workspaceRoot_ = workspaceRoot;
@@ -723,14 +727,27 @@ void EditorDocument::stop() noexcept
 
 void EditorDocument::tick(float deltaSeconds) noexcept
 {
-    (void)deltaSeconds;
-    // FASE 9: input do jogo processa por frame EM PLAY (§6.1 — janela de
-    // um update por frame; os eventos chegam via gameTouch do viewport).
-    // Em Edit o input do jogo fica PARADO (gestos do editor não vazam —
-    // §6.4). FASE 10 adiciona física/animação/partículas aqui.
-    if (mode_ == Mode::Play) {
-        runtimeInput_.update();
+    // Em Edit o runtime fica PARADO (gestos do editor não vazam — §6.4).
+    if (mode_ != Mode::Play) {
+        return;
     }
+    // FASE 9 (§6.1): input com janela de um update por frame.
+    runtimeInput_.update();
+
+    // FASE 10 (§7.6): física com TIMESTEP FIXO por acumulador — o dt do
+    // frame NÃO vaza para a simulação (determinismo testado).
+    const auto steps = physicsAccumulator_.advance(deltaSeconds);
+    for (std::uint32_t step = 0; step < steps; ++step) {
+        physicsWorld_.step(*runtimeScene_, physicsAccumulator_.fixedDt());
+    }
+
+    // FASE 10 (§7.7): animação (dt do frame — interpolação, não física).
+    eng::animation::AnimationSystem::update(*runtimeScene_,
+                                            runtimeAnimations_,
+                                            deltaSeconds);
+
+    // FASE 10 (§7.12): partículas CPU (dt do frame; spawn por acumulador).
+    eng::particles::ParticleSystem::update(*runtimeScene_, deltaSeconds);
 }
 
 void EditorDocument::gameTouch(int canonicalPhase, std::uint32_t pointerId,

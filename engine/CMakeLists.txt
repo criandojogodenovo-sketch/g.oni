@@ -32,3 +32,7 @@ add_subdirectory(rhi)     # Renderer/Frame/RhiBackend — sobre core/log (ADR-03
 add_subdirectory(input)   # TouchState/InputSystem/Ações — sobre core/math/serial
 add_subdirectory(ui)      # Widgets/layout/draw-list — sobre input (eventos)
 add_subdirectory(audio)    # Wav/voices/buses/mixer — sobre core/fs/serial
+# FASE 10 (missão §7): gameplay físico/visual — sobre ECS, sem RHI/Android.
+add_subdirectory(physics)  # RigidBody/Collider/Raycast/timestep fixo
+add_subdirectory(animation) # Clips/Animator/estados — sobre math/scene
+add_subdirectory(particles) # Emitter/pool CPU determinística — sobre scene

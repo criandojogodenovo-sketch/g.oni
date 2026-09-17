@@ -20,6 +20,7 @@ add_library(eng_editor STATIC
     src/Viewport.cpp
     src/ViewportRenderer.cpp
     src/EditorHost.cpp
+    src/ComponentRegistration.cpp
 )
 add_library(eng::editor ALIAS eng_editor)
 
@@ -39,6 +40,9 @@ target_link_libraries(eng_editor PUBLIC
     eng::assets
     eng::reflect
     eng::input
+    eng::physics
+    eng::animation
+    eng::particles
     eng::log
     eng::core
     eng::rhi

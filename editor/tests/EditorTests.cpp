@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 
+#include "eng/animation/Animation.hpp"
 #include "eng/editor/EditorDocument.hpp"
 #include "eng/editor/EditorHost.hpp"
 #include "eng/editor/Inspector.hpp"
@@ -23,6 +24,8 @@
 #include "eng/fs/NativeFileSystem.hpp"
 #include "eng/log/ConsoleSink.hpp"
 #include "eng/log/Logger.hpp"
+#include "eng/particles/Particles.hpp"
+#include "eng/physics/Physics.hpp"
 #include "eng/scene/Name.hpp"
 
 namespace {
@@ -832,7 +835,143 @@ TEST_CASE("editor: reabre projeto de execução anterior via workspace", "[edito
 }
 
 // =============================================================================
-// 11. Pack/unpack JNI
+// 11. FASE 10 — física/animação/partículas em PLAY (§8 integração)
+// =============================================================================
+
+TEST_CASE("editor: componentes de gameplay no catálogo/serialização",
+          "[editor]")
+{
+    const auto catalog = eng::editor::Inspector::catalog();
+    for (const char* name :
+         {"eng::physics::RigidBody", "eng::physics::Collider",
+          "eng::physics::CharacterBody", "eng::animation::Animator",
+          "eng::particles::ParticleEmitter"}) {
+        CAPTURE(name);
+        CHECK(std::find(catalog.begin(), catalog.end(), name) !=
+              catalog.end());
+    }
+
+    // Round-trip pela cena: cria com physics/animation/particles, salva,
+    // recarrega — componentes persistem (ADR-033).
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Gameplay", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::physics::RigidBody")
+                .ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::physics::Collider")
+                .ok());
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                 "eng::animation::Animator")
+                .ok());
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                 "eng::particles::ParticleEmitter")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::physics::RigidBody", "mass", "2.5")
+                .ok());
+
+    REQUIRE(f.doc->saveScene("gp.json").ok());
+    REQUIRE(f.doc->loadScene("gp.json").ok());
+    auto snapshot = f.doc->hierarchySnapshot();
+    REQUIRE(snapshot.size() == 1);
+    auto got = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), snapshot[0].entity,
+        "eng::physics::RigidBody", "mass");
+    REQUIRE(got.ok());
+    CHECK(got.value() == "2.5");
+}
+
+TEST_CASE("editor: PLAY avança física (timestep fixo) sobre o CLONE",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto ball = f.doc->createEntity("Ball", eng::scene::kNoEntity);
+    REQUIRE(ball.ok());
+    REQUIRE(f.doc->addComponent(ball.value(), "eng::physics::RigidBody")
+                .ok());
+    // Gravidade padrão -9.81; posição y=10.
+    eng::editor::TransformDesc tr;
+    tr.position = {0.f, 10.f, 0.f};
+    REQUIRE(f.doc->setTransform(ball.value(), tr).ok());
+
+    REQUIRE(f.doc->play().ok());
+    // 0.5s em frames de ~8ms: física avança por passos FIXOS de 1/60.
+    for (int i = 0; i < 61; ++i) {
+        f.doc->tick(1.f / 120.f);
+    }
+    auto runtimeY = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), ball.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(runtimeY.ok());
+    const float fallen = 10.f - std::stof(runtimeY.value());
+    CHECK(fallen > 0.5f); // caiu de verdade
+    CHECK(fallen < 1.3f); // ~0.5s de queda (1.22m)
+
+    f.doc->stop();
+    // Edição INTACTA (§8.7): y continua 10.
+    auto editY = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), ball.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(editY.ok());
+    CHECK(editY.value() == "10");
+}
+
+TEST_CASE("editor: PLAY avança animação e partículas sobre o CLONE",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto node = f.doc->createEntity("Fx", eng::scene::kNoEntity);
+    REQUIRE(node.ok());
+    REQUIRE(f.doc->addComponent(node.value(),
+                                 "eng::animation::Animator")
+                .ok());
+    REQUIRE(f.doc->addComponent(node.value(),
+                                 "eng::particles::ParticleEmitter")
+                .ok());
+    // Animator: clip "rise", tocando.
+    eng::animation::AnimationClip rise;
+    rise.name = "rise";
+    rise.position = {{0.f, {0.f, 0.f, 0.f}}, {1.f, {0.f, 2.f, 0.f}}};
+    f.doc->runtimeAnimations().add(rise);
+    REQUIRE(f.doc->setInspectorField(node.value(), "eng::animation::Animator",
+                                     "clip", "rise")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(node.value(), "eng::animation::Animator",
+                                     "playing", "true")
+                .ok());
+
+    REQUIRE(f.doc->play().ok());
+    for (int i = 0; i < 30; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    // Animação aplicada ao CLONE: y ≈ 1.0 (0.5s de 1s de clip).
+    auto y = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), node.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(y.ok());
+    CHECK(std::stof(y.value()) > 0.9f);
+
+    // Partículas vivas no clone (emitter padrão 20/s).
+    CHECK(eng::particles::ParticleSystem::aliveCount(*f.doc->sceneInFocus()) >
+          0);
+
+    f.doc->stop();
+    // Edição intacta: sem animação aplicada.
+    auto editY = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), node.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(editY.ok());
+    CHECK(std::stof(editY.value()) == 0.f);
+    // E as partículas morreram com o clone.
+    CHECK(eng::particles::ParticleSystem::aliveCount(
+              *f.doc->sceneInFocus()) == 0);
+}
+
+// =============================================================================
+// 12. Pack/unpack JNI
 // =============================================================================
 
 TEST_CASE("editor: pack/unpack entity é bijetivo exceto 0", "[editor]")
