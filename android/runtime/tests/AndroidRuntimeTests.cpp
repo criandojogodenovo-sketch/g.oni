@@ -265,6 +265,39 @@ TEST_CASE("android: backend explícito indisponível mantém runtime vivo", "[an
 // Shutdown (§XX)
 // =============================================================================
 
+TEST_CASE("android: surfaceCreated sem tamanho cria renderer no primeiro change",
+          "[android_runtime]")
+{
+    // Fluxo REAL do Android (missão §VI): surfaceCreated não conhece o
+    // tamanho; surfaceChanged entrega w/h antes de qualquer render.
+    auto created = AndroidRuntime::create("auto");
+    REQUIRE(created.ok());
+    AndroidRuntime* runtime = created.value();
+
+    int marker = 0;
+    runtime->surfaceCreated(&marker, NativeWindowKind::Headless, 0, 0);
+    CHECK(runtime->state() == SurfaceState::Available);
+    CHECK(runtime->capabilities() == nullptr);  // renderer adiado
+    CHECK_FALSE(runtime->renderFrame());  // sem renderer: no-op seguro
+
+    runtime->surfaceChanged(kWidth, kHeight);
+    CHECK(runtime->state() == SurfaceState::Available);
+    REQUIRE(runtime->capabilities() != nullptr);
+    REQUIRE(runtime->renderFrame());
+    CHECK(runtime->stats().firstFramePresented);
+
+    // Troca subsequente de tamanho segue o caminho ChangedPending normal.
+    runtime->surfaceChanged(32, 32);
+    CHECK(runtime->state() == SurfaceState::ChangedPending);
+    REQUIRE(runtime->renderFrame());
+    CHECK(runtime->state() == SurfaceState::Available);
+
+    // Destroy com renderer vivo encerra limpo.
+    runtime->surfaceDestroyed();
+    CHECK(runtime->state() == SurfaceState::Destroyed);
+    delete runtime;
+}
+
 TEST_CASE("android: shutdown com surface viva e recursos em uso", "[android_runtime]")
 {
     AndroidRuntime* runtime = nullptr;

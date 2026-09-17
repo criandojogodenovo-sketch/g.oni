@@ -1,0 +1,6 @@
+# Build Android (FASE 7): artefatos locais não são commitados.
+.gradle/
+build/
+local.properties
+*.iml
+.cxx/

@@ -14,6 +14,15 @@
 #include "eng/core/Error.hpp"
 #include "eng/rhi/Types.hpp"
 
+// FASE 7: idem VulkanLoader.hpp — a macro precisa estar definida ANTES do
+// PRIMEIRO include de vulkan.h em QUALQUER TU (guards tornam os demais
+// includes no-ops).
+#ifdef __ANDROID__
+#ifndef VK_USE_PLATFORM_ANDROID_KHR
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+#endif
+#endif
+
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 

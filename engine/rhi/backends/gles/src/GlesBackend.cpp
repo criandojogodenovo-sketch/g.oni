@@ -25,8 +25,10 @@ using eng::core::StatusCode;
 
 /// Platform surfaceless da MESA — headless REAL (missão §13: ausência de
 /// janela ≠ ausência de GLES). Definido manualmente para não depender de
-/// versão do eglext.h.
+/// versão do eglext.h. Apenas no Linux (Android usa eglGetDisplay padrão).
+#ifndef __ANDROID__
 constexpr EGLenum kEglPlatformSurfacelessMesa = 0x31DD;
+#endif
 
 [[nodiscard]] eng::core::Error eglErr(std::string_view what, EGLint error) {
     return eng::core::Error{StatusCode::NotSupported,

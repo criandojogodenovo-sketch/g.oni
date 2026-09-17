@@ -4,10 +4,10 @@
 #include <cstring>
 #include <utility>
 
-#include "eng/log/Macros.hpp"
 #include "eng/rhi/vulkan/VulkanBackend.hpp"
-
-ENG_LOG_CATEGORY("rhi.vulkan")
+// (Sem ENG_LOG_CATEGORY: este TU não loga — declará-lo sem uso é warning
+// no clang [-Wunused-const-variable]; a política de zero-warnings manda
+// declarar a categoria apenas onde ela é usada.)
 
 namespace eng::rhi::vulkan {
 namespace {

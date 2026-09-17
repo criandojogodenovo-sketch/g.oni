@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Manifest mínimo (FASE 7, missão §XXI): launcher + fullscreen escuro.
+     ZERO permissões — renderização não exige armazenamento nem rede. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="G.ONI Runtime"
+        android:hasCode="true"
+        android:theme="@style/GoniTheme">
+        <activity
+            android:name=".GoniActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

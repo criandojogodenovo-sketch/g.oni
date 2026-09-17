@@ -16,6 +16,8 @@
 #include "TriangleDemoShaders.hpp"
 
 #ifdef __ANDROID__
+#include <android/native_window.h>
+
 #include "LogcatSink.hpp"
 #endif
 
@@ -240,14 +242,28 @@ void AndroidRuntime::surfaceCreated(void* window, eng::rhi::NativeWindowKind kin
     state_ = SurfaceState::Available;
     ENG_INFO("[G.ONI] Surface created ({}x{})", width, height);
 
-    if (!createRendererForWindow(width, height)) {
-        // Renderer não pôde nascer: janela fica liberada, estado volta a
-        // NO_SURFACE — a próxima surfaceCreated tenta de novo (§XXVIII).
-        destroyRendererAndWindow();
+    if (width > 0 && height > 0) {
+        if (!createRendererForWindow(width, height)) {
+            // Renderer não pôde nascer: janela liberada, estado volta a
+            // NO_SURFACE — a próxima surfaceCreated tenta de novo (§XXVIII).
+            destroyRendererAndWindow();
+        }
     }
+    // width/height == 0 (Android: tamanho ainda desconhecido em
+    // surfaceCreated): renderer é criado no primeiro surfaceChanged, que
+    // SEMPRE precede qualquer render (missão §VI/VIII).
 }
 
 void AndroidRuntime::surfaceChanged(std::uint32_t width, std::uint32_t height) {
+    // Renderer adiado (surfaceCreated sem tamanho — Android): cria AGORA
+    // com o tamanho real do primeiro surfaceChanged.
+    if (window_ != nullptr && !demo_.renderer.has_value()) {
+        ENG_INFO("[G.ONI] Surface changed ({}x{}) — criando renderer", width, height);
+        if (!createRendererForWindow(width, height)) {
+            destroyRendererAndWindow();
+        }
+        return;
+    }
     if (state_ == SurfaceState::Available || state_ == SurfaceState::ChangedPending) {
         pendingWidth_ = width;
         pendingHeight_ = height;
@@ -321,9 +337,10 @@ bool AndroidRuntime::renderFrame() {
         ++stats_.framesSkippedPaused;
         return false;  // sem trabalho gráfico em pause (§VIII)
     }
-    if (state_ != SurfaceState::Available && state_ != SurfaceState::ChangedPending) {
+    if ((state_ != SurfaceState::Available && state_ != SurfaceState::ChangedPending) ||
+        !demo_.renderer.has_value()) {
         ++stats_.framesSkippedNoSurface;
-        return false;  // NO_SURFACE/DESTROYED: nunca renderiza (§VIII)
+        return false;  // NO_SURFACE/DESTROYED/sem renderer: nunca renderiza (§VIII)
     }
 
     // Resize pendente: backend recria swapchain/pbuffer (missão §XXVIII).
