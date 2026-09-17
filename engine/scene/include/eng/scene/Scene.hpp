@@ -103,6 +103,25 @@ public:
         }
     }
 
+    /// Versão CONST (FASE 8: caminhos de leitura do editor — viewport e
+    /// snapshot de hierarquia — não podem mutar a cena). Mesma semântica.
+    template<typename Fn>
+    void eachChild(eng::ecs::Entity parent, Fn&& fn) const
+    {
+        static_assert(std::is_invocable_v<Fn&, eng::ecs::Entity>,
+                      "fn deve ser invocável como fn(eng::ecs::Entity)");
+        const Hierarchy* hierarchy = hierarchyOf(parent);
+        if (hierarchy == nullptr) {
+            return;
+        }
+        const std::vector<eng::ecs::Entity> snapshot = hierarchy->children;
+        for (const eng::ecs::Entity child : snapshot) {
+            if (isNode(child)) {
+                fn(child);
+            }
+        }
+    }
+
     /// Transform TRS local do nó (mutável). nullptr: handle obsoleto.
     [[nodiscard]] eng::math::Transform* localTransform(eng::ecs::Entity node);
 

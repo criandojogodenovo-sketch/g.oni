@@ -32,9 +32,13 @@ set(ENG_BUILD_TESTS OFF CACHE BOOL "Sem testes no APK" FORCE)
 
 # Módulos do engine (mesmos CMakeLists do Linux — sem cópias).
 add_subdirectory("${GONI_ROOT}/engine" engine)
+# FASE 8: núcleo C++ do editor — MESMA biblioteca testada no Linux
+# (eng::editor + suite Catch2); fontes JAMAIS duplicadas.
+add_subdirectory("${GONI_ROOT}/editor" editor)
 
 add_library(goni SHARED
     GoniJni.cpp
+    EditorJni.cpp
     "${GONI_ROOT}/android/runtime/src/AndroidRuntime.cpp"
 )
 target_include_directories(goni PRIVATE
@@ -44,7 +48,8 @@ target_link_libraries(goni PRIVATE
     eng::rhi
     eng::rhi::vulkan
     eng::rhi::gles
+    eng::editor
     eng::log
     eng::core
-    android   # ANativeWindow (runtime)
+    android   # ANativeWindow (runtime/editor)
     log)      # __android_log_print (LogcatSink)

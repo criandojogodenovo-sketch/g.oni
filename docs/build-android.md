@@ -3,11 +3,13 @@
 ## Visão
 
 ```text
-android/app (Gradle: Kotlin Activity + JNI)
+android/app (Gradle: Kotlin Activities + JNI)
         ↓ externalNativeBuild (CMake do NDK)
-libgoni.so = GoniJni.cpp + android/runtime + engine/ (targets reusados)
+libgoni.so = GoniJni.cpp + EditorJni.cpp + android/runtime + engine/ (targets
+             reusados) + editor/ (eng::editor — núcleo do editor FASE 8)
         = eng::rhi + backends Vulkan/GLES (dlopen em runtime) + eng::log
 APK: arm64-v8a, minSdk 24, zero permissões, zero dependências de terceiros
+LAUNCHER: EditorActivity (editor) · GoniActivity (runtime-demo, sem launcher)
 ```
 
 Versões pinadas: AGP 8.5.2 · Kotlin 1.9.24 · Gradle 8.10.2 · NDK
@@ -56,9 +58,10 @@ file /tmp/apkx/lib/arm64-v8a/libgoni.so               # ELF ARM aarch64
 
 Esperado: ELF `ARM aarch64 ... for Android 24, built by NDK r27`;
 `NEEDED` apenas libandroid/liblog/libdl/libm/libc++_shared/libc (Vulkan e
-EGL são `dlopen` em runtime — nunca linkados); 9 símbolos
-`Java_com_goni_runtime_GoniRuntime_*`; package `com.goni.runtime`;
-launchable `com.goni.runtime.GoniActivity`; nenhuma permissão.
+EGL são `dlopen` em runtime — nunca linkados); 57 símbolos
+`Java_com_goni_*` (9 de `GoniRuntime` + 48 de `EditorJni`); package
+`com.goni.runtime`; launchable `com.goni.runtime.EditorActivity`;
+nenhuma permissão.
 
 ## Instalar/executar (quando houver adb/dispositivo)
 
@@ -70,6 +73,13 @@ adb shell am start -n com.goni.runtime/.GoniActivity --es backend auto
 adb shell am start -n com.goni.runtime/.GoniActivity --es backend vulkan
 adb shell am start -n com.goni.runtime/.GoniActivity --es backend gles
 ```
+
+O EDITOR abre pelo ícone (launcher `EditorActivity`, FASE 8): painéis de
+hierarquia/inspector/assets, viewport com gestos (tap=seleção,
+drag=mover/pan, pinch=zoom), PLAY/STOP com separação editor×runtime e
+import de assets via SAF. Logcat `adb logcat -s GONI` mostra os eventos
+do editor (`Editor host criado`, `Editor surface created`, `Backend
+selected`, `PLAY: runtime clone pronto`, `STOP: runtime descartado`).
 
 Eventos esperados no logcat: `Android runtime started` → `Surface
 created` → `Surface changed` → `Backend requested` → `Backend selected` →

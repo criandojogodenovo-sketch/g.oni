@@ -43,6 +43,12 @@ add_subdirectory(tests)
 if(ENG_BUILD_TESTS)
     add_subdirectory(android/runtime)
 endif()
+# FASE 8: núcleo C++ do editor (CONSUMIDOR de engine/) — biblioteca
+# eng::editor + suite no Linux; o APK reusa ESTA biblioteca via
+# add_subdirectory (android/app/src/main/cpp), sem duplicar fontes.
+if(ENG_BUILD_TESTS)
+    add_subdirectory(editor)
+endif()
 
 message(STATUS "eng ${PROJECT_VERSION} — FASE 4 (renderer abstraction eng::rhi)")
 message(STATUS "Presets canônicos: linux-debug, linux-release — ver docs/build.md")

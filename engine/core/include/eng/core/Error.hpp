@@ -19,6 +19,10 @@ enum class StatusCode : std::uint32_t {
     ParseError,
     NotSupported,
     IOError,
+    // FASE 8 (editor): estados de máquina/contrato distintos de argumento
+    // inválido — a fronteira do editor precisa classificá-los separadamente.
+    InvalidState,
+    Internal,
 };
 
 /// Erro leve carregado por Result<T, E> (ADR-004: sem exceções no runtime).

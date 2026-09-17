@@ -123,7 +123,7 @@ Regras que mantêm o grafo acíclico conforme os módulos entram:
    implementam interfaces e são linkados no executável final.
 2. Fundações (`core`, `math`, `mem`, `log`) nunca ganham dependências para
    módulos de nível superior.
-3. `android/`, `editor/` são consumidores de `engine/` — nunca o contrário. (FASE 7: `android/` existe — runtime + APK; `jni.h` em exatamente UM arquivo, `GoniJni.cpp`.)
+3. `android/`, `editor/` são consumidores de `engine/` — nunca o contrário. (FASE 7: `android/` — runtime + APK; `jni.h` em exatamente DOIS arquivos, `GoniJni.cpp` e `EditorJni.cpp`. FASE 8: `editor/` — núcleo C++ do editor, testado no Linux e embutido no APK; ver `docs/architecture/16-editor.md`.)
 4. (FASE 3) Nenhum módulo depende de `eng::scene` exceto `tests/` — a
    serialização de cena vive DENTRO de scene (ADR-033).
 

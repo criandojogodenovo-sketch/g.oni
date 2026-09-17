@@ -2,12 +2,14 @@
 
 [![CI Linux](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/criandojogodenovo-sketch/g.oni/actions/workflows/ci-linux.yml)
 
-Engine de jogos 3D escrita em **C++20**, com alvo principal **Android**
-(Vulkan 1.3, GLES 3.2 como compatibilidade).
+Engine de jogos **mobile-first** escrita em **C++20**, com alvo principal
+**Android** (Vulkan 1.3, GLES 3.2 como compatibilidade).
 Projeto conduzido por fases com contrato técnico formal; este repositório
-está na **FASE 3** (fundações + metadados/eventos/jobs/ECS/cena +
-persistência: fs, platform, serial, assets, project e serialização de
-cena concluídos).
+está na **FASE 8** — fases 1–7 concluídas (core/math/mem/log →
+reflect/events/jobs/ecs/scene → fs/platform/serial/assets/project →
+`eng::rhi` → backends Vulkan/GLES reais → runtime Android com APK) e a
+FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
+`EditorActivity`/`EditorJni` no APK).
 
 ## Estado — FASE 1 (concluída)
 
@@ -65,6 +67,43 @@ cena concluídos).
 - [x] ADRs 026–034 + auditoria e design da fase
       (`docs/phase3_audit.md`, `docs/phase3_design.md`)
 
+## Estado — FASE 4 a 7 (concluídas; resumo)
+
+- [x] **FASE 4** — `eng::rhi`: abstraction de hardware (~25 ops por
+      `RhiBackend`), `Renderer` com seleção/validação completa
+      (ADR-035/036), `Frame` RAII move-only, handles opacos geracionais
+- [x] **FASE 5** — backend Vulkan real (loader dlopen, layers Khronos,
+      swapchain, staging, 2-in-flight; ADR-037)
+- [x] **FASE 6** — backend OpenGL ES real (EGL surfaceless/pbuffer,
+      GLSL compilado em runtime, pixel verificado; ADR-038)
+- [x] **FASE 7** — runtime Android: JNI mínima (`GoniJni.cpp`), Activity
+      + lifecycle + surface/ANativeWindow com ownership auditado, APK
+      arm64-v8a zero permissões (ADRs 039–041); triangle REAL no Linux
+      com backends reais; emulador/dispositivo UNAVAILABLE no ambiente
+
+## Estado — FASE 8 (concluída) — Native Mobile Editor
+
+- [x] `editor/` — núcleo C++ do editor (ADR-042):
+      `EditorDocument` (projeto/cena/entidades/seleção/play-stop),
+      `Inspector` reflect-driven (ADR-043), `AssetBrowser`
+      (registry×disco), `Viewport` (câmera 2D/hit-test),
+      `ViewportRenderer` (RHI, VBO dinâmico CPU→clip),
+      `EditorHost` (surface/lifecycle FASE 7)
+- [x] Separção editor×runtime por clone de serialização (ADR-044):
+      edição rejeitada em Play; mutação em Play não vaza para a edição
+- [x] `EditorActivity.kt` + `EditorJni.kt`/`EditorJni.cpp` — editor
+      touch-first (Views nativos, painéis hierarchy/inspector/assets,
+      gestos tap/drag/pinch, SAF import, PLAY/STOP) — launcher do APK
+- [x] Mudanças aditivas engine: `eng::scene::Name` (componente de
+      domínio persistido), catálogo de componentes com
+      `emplaceDefault`/`get`/`getMutable`/`removeFrom`, `eachChild`
+      const, `StatusCode::{InvalidState,Internal}`
+- [x] Testes: **20 suites** no Linux (19 anteriores + `editor` —
+      26 casos/278 asserções contra backends reais), zero warnings;
+      APK arm64-v8a BUILT+INSPECTED (launcher `EditorActivity`, 57
+      símbolos JNI, zero permissões); sem execução em dispositivo
+      (evidência por estágio — §13)
+
 ## Pré-requisitos
 
 CMake ≥ 3.28, Ninja, GCC ≥ 13 e acesso à rede (FetchContent baixa Catch2 e
@@ -114,7 +153,10 @@ Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-andro
 │   ├── platform/          # Info/Paths/Environment/ProcessInfo
 │   ├── serial/            # JsonValue/envelope/migrations/StructCodec
 │   ├── assets/            # AssetId/Registry/Resolver/Manager/Loaders
-│   └── project/           # ProjectId/Config/Paths/File
+│   ├── project/           # ProjectId/Config/Paths/File
+│   └── rhi/               # Renderer/Frame + backends vulkan/ e gles/
+├── editor/                # FASE 8: núcleo C++ do editor (consumidor)
+├── android/               # FASE 7/8: runtime + editor Android (Gradle/APK)
 └── tests/                 # integração e2e (compõe scene+assets+project)
 ```
 
@@ -149,8 +191,9 @@ Auditoria da fase (inclui desvios D1–D5 da especificação):
 | 5 | backend Vulkan real `eng::rhi::vulkan` (ADR-037) — concluída |
 | 6 | backend OpenGL ES real `eng::rhi::gles` + paridade (ADR-038) — concluída |
 | 7 | runtime Android: JNI mínima, Activity+lifecycle, surface/ANativeWindow, APK arm64-v8a (ADRs 039–041) — concluída |
-| 5 | backend GL/GLES |
-| 6 | física (Jolt), áudio (miniaudio), Android (JNI/APK) |
-| 7+ | scripting (Lua), runtime, editor web |
+| 8 | Native Mobile Editor: `editor/` C++ + EditorActivity/EditorJni (ADRs 042–044) — concluída |
+| 9 | eng::input (touch/actions) + eng::ui + eng::audio |
+| 10 | eng::physics + eng::animation + eng::particles |
+| 11 | NI-Script (lexer/parser/VM/bindings) |
 
 Detalhes do que a FASE 4 herda pronto: [docs/roadmap.md](docs/roadmap.md).

@@ -1,22 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Manifest mínimo (FASE 7, missão §XXI): launcher + fullscreen escuro.
-     ZERO permissões — renderização não exige armazenamento nem rede. -->
+<!-- Manifest mínimo (FASE 7/8): zero permissões — fullscreen escuro.
+     FASE 8: o EDITOR é o launcher do produto; o runtime-demo (GoniActivity)
+     permanece exportado para testes via adb (§XV da FASE 7). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
-        android:label="G.ONI Runtime"
+        android:label="G.ONI Editor"
         android:hasCode="true"
         android:theme="@style/GoniTheme">
         <activity
-            android:name=".GoniActivity"
+            android:name=".EditorActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
-            android:screenOrientation="landscape">
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".GoniActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:screenOrientation="landscape" />
     </application>
 
 </manifest>

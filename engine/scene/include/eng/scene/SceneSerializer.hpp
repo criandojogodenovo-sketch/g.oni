@@ -87,6 +87,18 @@ namespace eng::scene::detail {
 struct ComponentEntry {
     const eng::reflect::TypeInfo* info = nullptr;
     bool (*has)(const eng::ecs::World&, eng::ecs::Entity) = nullptr;
+    /// Constrói T{} no world (FASE 8, auditoria D2: "Add Component" do
+    /// editor sem segundo registry — o catálogo continua ÚNICO aqui).
+    eng::core::Result<void> (*emplaceDefault)(
+        const ComponentEntry&, eng::ecs::World&, eng::ecs::Entity) = nullptr;
+    /// Ponteiro do componente (leitura — Inspector do editor; FASE 8 D2).
+    /// nullptr se a entidade não o possui.
+    const void* (*get)(const eng::ecs::World&, eng::ecs::Entity) = nullptr;
+    /// Ponteiro mutável (escrita de campos por offset — Inspector).
+    void* (*getMutable)(eng::ecs::World&, eng::ecs::Entity) = nullptr;
+    /// Remove o componente da entidade (type-erased — Inspector/"Remove").
+    /// false se a entidade não o possui.
+    bool (*removeFrom)(eng::ecs::World&, eng::ecs::Entity) = nullptr;
     eng::core::Result<eng::serial::JsonValue> (*encode)(
         const ComponentEntry&, const eng::ecs::World&,
         eng::ecs::Entity) = nullptr;
@@ -125,6 +137,26 @@ eng::core::Result<void> SceneSerializer::registerComponentType(
     entry.info = info;
     entry.has = [](const eng::ecs::World& world, eng::ecs::Entity e) {
         return world.has<T>(e);
+    };
+    entry.emplaceDefault = [](const detail::ComponentEntry& /*self*/,
+                               eng::ecs::World& world,
+                               eng::ecs::Entity e)
+        -> eng::core::Result<void> {
+        if (world.emplace<T>(e, T{}) == nullptr) {
+            return eng::core::makeUnexpected(Error{
+                StatusCode::InvalidArgument,
+                "SceneSerializer: emplaceDefault falhou (entidade obsoleta?)"});
+        }
+        return {};
+    };
+    entry.get = [](const eng::ecs::World& world, eng::ecs::Entity e) {
+        return static_cast<const void*>(world.get<T>(e));
+    };
+    entry.getMutable = [](eng::ecs::World& world, eng::ecs::Entity e) {
+        return static_cast<void*>(world.get<T>(e));
+    };
+    entry.removeFrom = [](eng::ecs::World& world, eng::ecs::Entity e) {
+        return world.remove<T>(e);
     };
     entry.encode = [](const detail::ComponentEntry& self,
                       const eng::ecs::World& world,

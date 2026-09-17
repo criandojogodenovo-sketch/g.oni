@@ -10,6 +10,7 @@
 #include "eng/math/Transform.hpp"
 #include "eng/math/Vec3.hpp"
 #include "eng/reflect/Reflect.hpp"
+#include "eng/scene/Name.hpp"
 #include "eng/scene/Scene.hpp"
 #include "eng/serial/Json.hpp"
 
@@ -88,6 +89,8 @@ namespace {
 const bool eng_scene_builtin_components_registered = [] {
     (void)SceneSerializer::registerComponentType<eng::math::Transform>(
         "eng::math::Transform");
+    (void)SceneSerializer::registerComponentType<eng::scene::Name>(
+        "eng::scene::Name");
     return true;
 }();
 

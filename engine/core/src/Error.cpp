@@ -13,6 +13,8 @@ std::string_view Error::codeName() const noexcept {
     case StatusCode::ParseError:      return "ParseError";
     case StatusCode::NotSupported:    return "NotSupported";
     case StatusCode::IOError:         return "IOError";
+    case StatusCode::InvalidState:    return "InvalidState";
+    case StatusCode::Internal:        return "Internal";
     }
     return "InvalidCode";
 }

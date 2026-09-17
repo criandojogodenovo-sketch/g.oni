@@ -50,14 +50,19 @@ Os binários ficam em `build/<preset>/` (ignorado pelo git), com
 
 ## Testes
 
-Quatro executáveis, um por módulo, registrados no CTest:
+Um executável por módulo, registrados no CTest (FASE 8: **20 suites**):
 
 | Teste | Módulo coberto |
 |---|---|
-| `core` | Result/Error/Span/Version |
+| `core` | Result/Error/Span/Version/Uuid128 |
 | `math` | Vec2/3/4, Mat4, Quat, Transform |
 | `mem` | HeapAllocator, ArenaAllocator |
 | `log` | Format, Logger, ConsoleSink, macros |
+| `reflect`/`events`/`jobs`/`ecs`/`scene` | FASE 2 |
+| `fs`/`platform`/`serial`/`assets`/`project` | FASE 3 |
+| `rhi`/`rhi_vulkan`/`rhi_gles`/`integration` | FASES 4–6 |
+| `android_runtime` | FASE 7 (runtime Android no Linux) |
+| `editor` | FASE 8 (editor: 26 casos/278 asserções, `rhi_hardware`) |
 
 Rodar um módulo isolado com saída verbosa:
 
@@ -98,7 +103,7 @@ ctest --preset linux-debug -L rhi_hardware --output-on-failure
 ```
 
 Para rodar TUDO de uma vez (Vulkan + GLES + paridade), exporte as variáveis
-acima e execute `ctest --preset linux-debug` completo (18 suites).
+acima e execute `ctest --preset linux-debug` completo (20 suites).
 
 Notas: lavapipe/llvmpipe é renderização por SOFTWARE — os testes reportam
 `softwareRendering` verdadeiro e nunca declaram suporte de hardware. O
