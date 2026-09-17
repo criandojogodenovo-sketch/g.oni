@@ -494,6 +494,53 @@ TEST_CASE("editor: play duplicado e stop sem play são tratados", "[editor]")
     f.doc->stop();
 }
 
+TEST_CASE("editor: input do JOGO em Play (FASE 9 §6.4 — separação)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Bindings por JSON asset (mesma API que input.json configuraria).
+    using eng::serial::JsonValue;
+    JsonValue root = JsonValue::array();
+    JsonValue jump = JsonValue::object();
+    jump.set("name", JsonValue::string("jump"));
+    JsonValue sources = JsonValue::array();
+    JsonValue zone = JsonValue::object();
+    JsonValue rect = JsonValue::array();
+    rect.append(JsonValue::real(0.0));
+    rect.append(JsonValue::real(0.0));
+    rect.append(JsonValue::real(1.0));
+    rect.append(JsonValue::real(0.5));
+    zone.set("touchZone", std::move(rect));
+    sources.append(std::move(zone));
+    jump.set("sources", std::move(sources));
+    root.append(std::move(jump));
+    auto bindings = eng::input::ActionBindings::fromJson(root);
+    REQUIRE(bindings.ok());
+    f.doc->setRuntimeBindings(std::move(bindings.value()));
+    f.doc->setGameViewportSize(200.f, 100.f);
+
+    // Em EDIT: input do jogo NÃO processa (gestos do editor não vazam).
+    f.doc->gameTouch(0, 0, 100.f, 25.f, 1.f);
+    f.doc->tick(1.f / 60.f);
+    CHECK_FALSE(f.doc->runtimeInput().action("jump").down);
+
+    // PLAY: toques alimentam o input do runtime.
+    REQUIRE(f.doc->play().ok());
+    f.doc->gameTouch(0, 0, 100.f, 25.f, 1.f);
+    f.doc->tick(1.f / 60.f);
+    CHECK(f.doc->runtimeInput().action("jump").down);
+    CHECK(f.doc->runtimeInput().action("jump").pressed);
+    f.doc->gameTouch(2, 0, 100.f, 25.f, 1.f);
+    f.doc->tick(1.f / 60.f);
+    CHECK(f.doc->runtimeInput().action("jump").released);
+
+    // STOP: input do jogo congela com a sessão.
+    f.doc->stop();
+    CHECK_FALSE(f.doc->runtimeInput().action("jump").down);
+}
+
 // =============================================================================
 // 7. Viewport (câmera + hit-test)
 // =============================================================================

@@ -938,6 +938,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     // --- gestos do viewport (§8.6/§8.8 — eventos do EDITOR, não do jogo) ------------------
 
+    /**
+     * Em PLAY (sem ferramenta ativa), os toques do viewport vão ao INPUT DO
+     * JOGO (§6.4); a câmera do editor exige a ferramenta PAN/MOVER —
+     * separação explícita editor×jogo.
+     */
+    private fun gameWantsTouch(): Boolean =
+        handle != 0L && EditorJni.nativeEditorIsPlaying(handle) &&
+            !moveToolActive
+
     private fun attachGestures(view: SurfaceView) {
         val scaleDetector = ScaleGestureDetector(
             this,
@@ -955,6 +964,16 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             this,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onSingleTapUp(e: MotionEvent): Boolean {
+                    if (gameWantsTouch()) {
+                        // Toque do JOGO: Down+Up no input do runtime.
+                        EditorJni.nativeEditorGameTouch(
+                            handle, 0, 0, e.x, e.y, 1f
+                        )
+                        EditorJni.nativeEditorGameTouch(
+                            handle, 2, 0, e.x, e.y, 1f
+                        )
+                        return true
+                    }
                     val hit = EditorJni.nativeEditorViewportTap(handle, e.x, e.y)
                     if (hit != 0L) {
                         selectEntity(hit)
@@ -971,6 +990,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     if (moveToolActive && selection != 0L) {
                         // MOVE a entidade selecionada (edit: dirty; play: clone).
                         EditorJni.nativeEditorMoveEntity(handle, selection, dx, dy)
+                    } else if (gameWantsTouch()) {
+                        EditorJni.nativeEditorGameTouch(handle, 1, 0, e2.x, e2.y, 1f)
                     } else {
                         EditorJni.nativeEditorViewportPan(handle, dx, dy)
                     }
@@ -997,6 +1018,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         if (handle != 0L) {
             EditorJni.nativeEditorSurfaceChanged(handle, width, height)
             surfaceReady = width > 0 && height > 0
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Cancela toques do jogo ao perder o foco (§6.10 pause robusto).
+        if (!hasFocus && handle != 0L) {
+            EditorJni.nativeEditorGameTouch(handle, 3, 0, 0f, 0f, 0f)
         }
     }
 

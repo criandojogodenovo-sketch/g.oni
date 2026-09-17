@@ -3,6 +3,7 @@ package com.goni.runtime
 import android.app.Activity
 import android.os.Bundle
 import android.view.Choreographer
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.WindowManager
@@ -73,6 +74,28 @@ class GoniActivity : Activity(), SurfaceHolder.Callback2 {
             runtimeHandle = 0L
         }
         super.onDestroy()
+    }
+
+    // --- input do jogo (FASE 9 §6.1) — conversão Android → canônico -------
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val handle = runtimeHandle
+        if (handle == 0L) {
+            return super.onTouchEvent(event)
+        }
+        val phase = when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> 0
+            MotionEvent.ACTION_MOVE -> 1
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> 2
+            MotionEvent.ACTION_CANCEL -> 3
+            else -> return super.onTouchEvent(event)
+        }
+        val index = event.actionIndex
+        GoniRuntime.nativeOnTouch(
+            handle, phase, event.getPointerId(index), event.getX(index),
+            event.getY(index), event.getPressure(index)
+        )
+        return true
     }
 
     // --- SurfaceHolder.Callback (§IV/§V/§VI) --------------------------------

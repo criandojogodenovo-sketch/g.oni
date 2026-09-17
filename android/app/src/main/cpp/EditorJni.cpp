@@ -999,6 +999,25 @@ Java_com_goni_runtime_EditorJni_nativeEditorAssetMove(JNIEnv* env,
 }
 
 // =============================================================================
+// Input do JOGO em Play (FASE 9 §6.1/§6.4 — separado dos gestos do editor)
+// =============================================================================
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGameTouch(JNIEnv* /*env*/,
+                                                      jobject /*thiz*/,
+                                                      jlong handle, jint phase,
+                                                      jint pointerId, jfloat x,
+                                                      jfloat y, jfloat pressure)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host != nullptr) {
+        host->document().gameTouch(static_cast<int>(phase),
+                                    static_cast<std::uint32_t>(pointerId), x,
+                                    y, pressure);
+    }
+}
+
+// =============================================================================
 // Erro da última operação (diálogos/toasts da UI)
 // =============================================================================
 

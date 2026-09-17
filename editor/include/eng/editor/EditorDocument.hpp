@@ -35,6 +35,7 @@
 #include "eng/editor/Viewport.hpp"
 #include "eng/fs/FileSystem.hpp"
 #include "eng/fs/Path.hpp"
+#include "eng/input/Input.hpp"
 #include "eng/math/Vec3.hpp"
 #include "eng/project/ProjectFile.hpp"
 #include "eng/scene/Scene.hpp"
@@ -142,9 +143,25 @@ public:
     [[nodiscard]] eng::core::Result<void> play();
     void stop() noexcept;
     [[nodiscard]] bool isPlaying() const noexcept { return mode_ == Mode::Play; }
-    /// Avanço do runtime por frame (Choreographer). FASE 8: mantém o
-    /// contrato do loop; o conteúdo dos sistemas cresce nas FASES 9/10.
+    /// Avanço do runtime por frame (Choreographer). FASE 9: input do jogo
+    /// processado por frame em Play (§6.1); FASE 10 adiciona física/etc.
     void tick(float deltaSeconds) noexcept;
+
+    /// INPUT DO JOGO (FASE 9, §6.4 — separado dos gestos do editor): os
+    /// toques do viewport em Play alimentam ESTE sistema; bindings são
+    /// configuráveis por asset (input.json — ActionBindings::fromJson).
+    [[nodiscard]] eng::input::InputSystem& runtimeInput() noexcept
+    {
+        return runtimeInput_;
+    }
+    void setRuntimeBindings(eng::input::ActionBindings bindings)
+    {
+        runtimeInput_.setBindings(std::move(bindings));
+    }
+    /// Toque do jogo (em Play). Fase canônica: 0=Down,1=Move,2=Up,3=Cancel.
+    void gameTouch(int canonicalPhase, std::uint32_t pointerId, float x,
+                   float y, float pressure);
+    void setGameViewportSize(float width, float height) noexcept;
 
     // --- viewport (§8.6) --------------------------------------------------------
 
@@ -211,6 +228,7 @@ private:
 
     std::optional<eng::ecs::Entity> selection_{};
 
+    eng::input::InputSystem runtimeInput_{}; ///< input do JOGO (§6.4)
     Viewport viewport_{};
     std::unique_ptr<AssetBrowser> assets_{};
 };

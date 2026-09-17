@@ -257,6 +257,7 @@ void AndroidRuntime::surfaceCreated(void* window, eng::rhi::NativeWindowKind kin
 void AndroidRuntime::surfaceChanged(std::uint32_t width, std::uint32_t height) {
     // Renderer adiado (surfaceCreated sem tamanho — Android): cria AGORA
     // com o tamanho real do primeiro surfaceChanged.
+    setViewportSize(static_cast<float>(width), static_cast<float>(height));
     if (window_ != nullptr && !demo_.renderer.has_value()) {
         ENG_INFO("[G.ONI] Surface changed ({}x{}) — criando renderer", width, height);
         if (!createRendererForWindow(width, height)) {
@@ -290,6 +291,27 @@ void AndroidRuntime::surfaceDestroyed() {
 // =============================================================================
 // Lifecycle (missão §VI/§XXIX)
 // =============================================================================
+
+void AndroidRuntime::setViewportSize(float width, float height) {
+    input_.setScreenSize(width, height);
+}
+
+void AndroidRuntime::onTouchEvent(int canonicalPhase, std::uint32_t pointerId,
+                                  float x, float y, float pressure) {
+    eng::input::InputEvent event;
+    event.device = eng::input::DeviceKind::Touch;
+    event.pointerId = pointerId;
+    switch (canonicalPhase) {
+    case 0: event.touchPhase = eng::input::TouchPhase::Down; break;
+    case 1: event.touchPhase = eng::input::TouchPhase::Move; break;
+    case 2: event.touchPhase = eng::input::TouchPhase::Up; break;
+    default: event.touchPhase = eng::input::TouchPhase::Cancelled; break;
+    }
+    event.x = x;
+    event.y = y;
+    event.pressure = pressure;
+    input_.queueEvent(event);
+}
 
 void AndroidRuntime::onPause() {
     paused_ = true;
@@ -333,6 +355,7 @@ void AndroidRuntime::setBackend(const char* backend) {
 // =============================================================================
 
 bool AndroidRuntime::renderFrame() {
+
     if (paused_) {
         ++stats_.framesSkippedPaused;
         return false;  // sem trabalho gráfico em pause (§VIII)
@@ -342,6 +365,10 @@ bool AndroidRuntime::renderFrame() {
         ++stats_.framesSkippedNoSurface;
         return false;  // NO_SURFACE/DESTROYED/sem renderer: nunca renderiza (§VIII)
     }
+
+    // Um passo de input por frame (FASE 9 §6.1) — apenas quando o runtime
+    // está ativo (pausa não consome janelas de input).
+    input_.update();
 
     // Resize pendente: backend recria swapchain/pbuffer (missão §XXVIII).
     if (state_ == SurfaceState::ChangedPending) {

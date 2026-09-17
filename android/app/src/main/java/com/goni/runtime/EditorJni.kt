@@ -99,6 +99,10 @@ object EditorJni {
     external fun nativeEditorAssetDelete(handle: Long, category: String, name: String): Boolean
     external fun nativeEditorAssetMove(handle: Long, fromCategory: String, name: String, toCategory: String): Boolean
 
+    /** Toque do JOGO em Play (§6.4 — separado dos gestos do editor). phase: 0=Down,1=Move,2=Up,3=Cancel. */
+    external fun nativeEditorGameTouch(handle: Long, phase: Int, pointerId: Int,
+                                       x: Float, y: Float, pressure: Float)
+
     // --- erro da última operação (toasts/diálogos) ----------------------------------------
 
     external fun nativeEditorLastError(handle: Long): String?

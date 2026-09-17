@@ -161,4 +161,19 @@ Java_com_goni_runtime_GoniRuntime_nativeRenderFrame(JNIEnv* /*env*/, jobject /*t
     return runtime->renderFrame() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_GoniRuntime_nativeOnTouch(JNIEnv* /*env*/,
+                                                jobject /*thiz*/, jlong handle,
+                                                jint phase, jint pointerId,
+                                                jfloat x, jfloat y,
+                                                jfloat pressure)
+{
+    AndroidRuntime* runtime = fromHandle(handle);
+    if (runtime != nullptr) {
+        runtime->onTouchEvent(static_cast<int>(phase),
+                              static_cast<std::uint32_t>(pointerId), x, y,
+                              pressure);
+    }
+}
+
 }  // extern "C"

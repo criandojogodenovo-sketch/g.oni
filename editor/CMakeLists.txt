@@ -38,6 +38,7 @@ target_link_libraries(eng_editor PUBLIC
     eng::project
     eng::assets
     eng::reflect
+    eng::input
     eng::log
     eng::core
     eng::rhi

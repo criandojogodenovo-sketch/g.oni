@@ -20,6 +20,7 @@
 
 #include "eng/core/Error.hpp"
 #include "eng/core/Result.hpp"
+#include "eng/input/Input.hpp"
 #include "eng/rhi/Renderer.hpp"
 #include "eng/rhi/Types.hpp"
 
@@ -76,6 +77,16 @@ public:
     /// janela — o renderer nunca toca um ANativeWindow morto (§V).
     void surfaceDestroyed();
 
+    // --- input do JOGO (FASE 9, missão §6.1) --------------------------------
+    // Fases canônicas (0=Down,1=Move,2=Up,3=Cancel — convertidas NO
+    // KOTLIN; MotionEvents/KeyCodes Android JAMAIS chegam ao C++).
+    void onTouchEvent(int canonicalPhase, std::uint32_t pointerId, float x,
+                      float y, float pressure);
+    void setViewportSize(float width, float height);
+
+    /// Estado de entrada do jogo (ações consultadas pelo gameplay).
+    [[nodiscard]] eng::input::InputSystem& input() noexcept { return input_; }
+
     // --- lifecycle (missão §VI/§XXIX) --------------------------------------
 
     void onPause();   ///< apenas flag: sem trabalho gráfico (§VIII)
@@ -128,6 +139,7 @@ private:
 #endif
     }
 
+    eng::input::InputSystem input_; ///< single-threaded (UI thread — ADR-039)
     eng::rhi::BackendType requested_{eng::rhi::BackendType::Auto};
     void* window_{nullptr};  ///< ANativeWindow* (owner entre created/destroyed)
     eng::rhi::NativeWindowKind windowKind_{eng::rhi::NativeWindowKind::None};

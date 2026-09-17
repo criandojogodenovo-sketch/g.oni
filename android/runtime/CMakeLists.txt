@@ -25,6 +25,7 @@ target_link_libraries(eng_android_runtime_tests PRIVATE
     eng::rhi
     eng::rhi::vulkan
     eng::rhi::gles
+    eng::input
     eng::log
     Catch2::Catch2WithMain)
 eng_apply_test_policy(eng_android_runtime_tests)

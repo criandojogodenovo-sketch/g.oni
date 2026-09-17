@@ -81,6 +81,29 @@ FASE 8 entrega o **Native Mobile Editor** (`editor/` C++ +
       arm64-v8a zero permissões (ADRs 039–041); triangle REAL no Linux
       com backends reais; emulador/dispositivo UNAVAILABLE no ambiente
 
+## Estado — FASE 9 (concluída) — Input + UI + Audio
+
+- [x] `eng::input` (ADR-045): TouchState por pointer ID (down/move/up/
+      multitouch/pressão/delta), teclado CANÔNICO (KeyCodes Android ficam
+      no Kotlin/JNI), `InputSystem` com janela por frame, AÇÕES por
+      combinação de fontes (tecla/zona de toque em frações/botão gamepad
+      declarado), bindings de/para JSON (asset `input.json`)
+- [x] `eng::ui` (ADR-046): widgets Panel/Button/Label/Image/Slider/
+      ProgressBar/Container, layout por rect relativo + anchors +
+      design-resolution (resolução-independente), hit-test top-most,
+      eventos fn-ptr sem captura, draw-list de quads (SEM RHI — o host
+      desenha), fonte 5×7 pontilhada (script-regenerável)
+- [x] `eng::audio` (ADR-047): WAV PCM8/16/24/32f, Sound/Music (streaming
+      real por janelas de 16k frames)/Voice/AudioBus, mixer software f32
+      com padrão PULL, backend AAudio no Android via dlopen (API<26 →
+      erro preciso) + Null p/ testes, handles geracionais, pauseAll/
+      resumeAll/stopAll
+- [x] Integração: GoniActivity→JNI→InputSystem (toques canônicos);
+      editor em PLAY alimenta o input do runtime (§6.4 separação)
+- [x] Testes: **23 suites** (input 9/61, ui 8/40, audio 13/70), zero
+      warnings nos dois presets; APK com os 3 módulos BUILT+INSPECTED
+      (59 símbolos JNI; AAudio dlopen, não linkado)
+
 ## Estado — FASE 8 (concluída) — Native Mobile Editor
 
 - [x] `editor/` — núcleo C++ do editor (ADR-042):
@@ -192,7 +215,7 @@ Auditoria da fase (inclui desvios D1–D5 da especificação):
 | 6 | backend OpenGL ES real `eng::rhi::gles` + paridade (ADR-038) — concluída |
 | 7 | runtime Android: JNI mínima, Activity+lifecycle, surface/ANativeWindow, APK arm64-v8a (ADRs 039–041) — concluída |
 | 8 | Native Mobile Editor: `editor/` C++ + EditorActivity/EditorJni (ADRs 042–044) — concluída |
-| 9 | eng::input (touch/actions) + eng::ui + eng::audio |
+| 9 | eng::input + eng::ui + eng::audio (ADRs 045–047) — concluída |
 | 10 | eng::physics + eng::animation + eng::particles |
 | 11 | NI-Script (lexer/parser/VM/bindings) |
 

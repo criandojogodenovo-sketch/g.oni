@@ -723,10 +723,37 @@ void EditorDocument::stop() noexcept
 
 void EditorDocument::tick(float deltaSeconds) noexcept
 {
-    // FASE 8: contrato do loop apenas. FASE 9 adiciona input/audio em Play;
-    // FASE 10 adiciona physics/animation/particles. Sem trabalho agora —
-    // SEM comportamento inventado (missão §13: não inventar sucesso).
     (void)deltaSeconds;
+    // FASE 9: input do jogo processa por frame EM PLAY (§6.1 — janela de
+    // um update por frame; os eventos chegam via gameTouch do viewport).
+    // Em Edit o input do jogo fica PARADO (gestos do editor não vazam —
+    // §6.4). FASE 10 adiciona física/animação/partículas aqui.
+    if (mode_ == Mode::Play) {
+        runtimeInput_.update();
+    }
+}
+
+void EditorDocument::gameTouch(int canonicalPhase, std::uint32_t pointerId,
+                               float x, float y, float pressure)
+{
+    eng::input::InputEvent event;
+    event.device = eng::input::DeviceKind::Touch;
+    event.pointerId = pointerId;
+    switch (canonicalPhase) {
+    case 0: event.touchPhase = eng::input::TouchPhase::Down; break;
+    case 1: event.touchPhase = eng::input::TouchPhase::Move; break;
+    case 2: event.touchPhase = eng::input::TouchPhase::Up; break;
+    default: event.touchPhase = eng::input::TouchPhase::Cancelled; break;
+    }
+    event.x = x;
+    event.y = y;
+    event.pressure = pressure;
+    runtimeInput_.queueEvent(event);
+}
+
+void EditorDocument::setGameViewportSize(float width, float height) noexcept
+{
+    runtimeInput_.setScreenSize(width, height);
 }
 
 // =============================================================================

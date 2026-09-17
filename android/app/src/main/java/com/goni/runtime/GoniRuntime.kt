@@ -41,4 +41,12 @@ object GoniRuntime {
 
     /** Renderiza um frame; false = não desenhou (no surface/paused — §VIII). */
     external fun nativeRenderFrame(handle: Long): Boolean
+
+    /**
+     * Toque do JOGO (FASE 9 §6.1): fases CANÔNICAS convertidas NO KOTLIN
+     * (o C++ nunca vê MotionEvent/KeyCodes Android). phase: 0=Down, 1=Move,
+     * 2=Up, 3=Cancel.
+     */
+    external fun nativeOnTouch(handle: Long, phase: Int, pointerId: Int,
+                               x: Float, y: Float, pressure: Float)
 }
