@@ -55,9 +55,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     // UI
     private lateinit var surfaceView: SurfaceView
+    private lateinit var topBar: LinearLayout
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var brand: TextView
+    private lateinit var panelHost: FrameLayout
     private lateinit var panelContainer: LinearLayout
     private lateinit var btnPlay: Button
     private lateinit var btnProject: Button
+    private lateinit var btnBackend: Button
     private lateinit var btnTool: Button
     private lateinit var hierarchyList: ListView
     private lateinit var inspectorScroll: ScrollView
@@ -120,19 +125,53 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     // --- UI (programática — sem XML, sem dependências) ---------------------------
 
+    // Identidade visual G.ONI (evolução P0-4: dark compact, viewport
+    // dominante, densidade de editor moderno — sem copiar Godot/Unreal).
+    private object Ui {
+        const val BG = 0xFF0B0E13.toInt()        // fundo geral
+        const val SURFACE = 0xF211161F.toInt()    // painéis/barras (com alpha)
+        const val SURFACE_SOLID = 0xFF11161F.toInt()
+        const val SURFACE_ALT = 0xFF161D29.toInt()  // linhas alternadas/hover
+        const val BORDER = 0xFF232B3A.toInt()
+        const val ACCENT = 0xFF8AB4F8.toInt()     // marca G.ONI
+        const val ACCENT_DIM = 0xFF5E8BE0.toInt()
+        const val TEXT = 0xFFE6EDF3.toInt()
+        const val TEXT_DIM = 0xFF8B949E.toInt()
+        const val DANGER = 0xFFFF5252.toInt()
+        const val OK = 0xFF4CAF50.toInt()
+    }
+
     private fun dp(v: Int): Int =
         TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics
         ).toInt()
 
-    private fun bigButton(label: String, onClick: (Button) -> Unit): Button {
+    /** Botão compacto do editor (40dp — densidade de ferramenta, não botão
+     * de marketing; alvo de toque OK pelo padding interno). */
+    private fun toolButton(label: String, onClick: (Button) -> Unit): Button {
         val b = Button(this)
         b.text = label
-        b.minHeight = dp(48)
-        b.minWidth = dp(64)
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        b.minHeight = 0
+        b.minWidth = 0
+        b.setPadding(dp(10), 0, dp(10), 0)
+        b.height = dp(36)
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        b.setTextColor(Ui.TEXT)
+        b.isAllCaps = false
+        b.background = rippleBox(Ui.SURFACE_ALT, dp(6))
         b.setOnClickListener { onClick(b) }
         return b
+    }
+
+    /** Fundo arredondado com ripple (sem lib de terceiros). */
+    private fun rippleBox(color: Int, radiusPx: Int): android.graphics.drawable.Drawable {
+        val base = android.graphics.drawable.GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = radiusPx.toFloat()
+        }
+        return android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(0x338AB4F8), base, null
+        )
     }
 
     private fun buildUi() {
@@ -143,57 +182,72 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         attachGestures(surfaceView)
 
         val root = FrameLayout(this)
+        root.setBackgroundColor(Ui.BG)
 
-        // Barra superior: projeto, cena, PLAY/STOP, backend, ferramenta.
-        val top = LinearLayout(this).apply {
+        // ---- barra superior: marca + projeto + cena | backend | play ----
+        topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xE6101216.toInt())
-            setPadding(dp(6), dp(4), dp(6), dp(4))
+            setBackgroundColor(Ui.SURFACE)
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            gravity = android.view.Gravity.CENTER_VERTICAL
         }
-        btnProject = bigButton("Projeto") { showProjectMenu() }
-        top.addView(
+        brand = TextView(this).apply {
+            text = "G.ONI"
+            setTextColor(Ui.ACCENT)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(0, 0, dp(8), 0)
+        }
+        topBar.addView(brand)
+        btnProject = toolButton("☰") { showProjectMenu() }
+        topBar.addView(
             btnProject,
-            LinearLayout.LayoutParams(0, dp(52), 1.4f)
+            LinearLayout.LayoutParams(dp(38), dp(36))
         )
-        top.addView(
-            bigButton("Cena") { showSceneMenu() },
-            LinearLayout.LayoutParams(0, dp(52), 1f)
+        topBar.addView(
+            toolButton("Cena") { showSceneMenu() },
+            LinearLayout.LayoutParams(0, dp(36), 0.9f)
         )
-        btnPlay = bigButton("▶") { togglePlay() }
-        btnPlay.setTextColor(0xFF4CAF50.toInt())
-        top.addView(btnPlay, LinearLayout.LayoutParams(0, dp(52), 0.7f))
-        top.addView(
-            bigButton("Auto") { showBackendMenu(it as Button) },
-            LinearLayout.LayoutParams(0, dp(52), 0.8f)
+        btnPlay = toolButton("▶") { togglePlay() }
+        btnPlay.setTextColor(Ui.OK)
+        btnPlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        topBar.addView(
+            btnPlay,
+            LinearLayout.LayoutParams(dp(42), dp(36))
         )
-        btnTool = bigButton("PAN") { toggleMoveTool() }
-        top.addView(btnTool, LinearLayout.LayoutParams(0, dp(52), 0.7f))
+        btnBackend = toolButton("Auto") { showBackendMenu(it as Button) }
+        topBar.addView(
+            btnBackend,
+            LinearLayout.LayoutParams(0, dp(36), 0.7f)
+        )
+        btnTool = toolButton("PAN") { toggleMoveTool() }
+        topBar.addView(
+            btnTool,
+            LinearLayout.LayoutParams(0, dp(36), 0.6f)
+        )
 
-        // Barra inferior: seletor de painéis.
-        val bottom = LinearLayout(this).apply {
+        // ---- barra inferior: toggles de painel (sheets/drawers) ----
+        bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xE6101216.toInt())
-            setPadding(dp(6), dp(2), dp(6), dp(2))
+            setBackgroundColor(Ui.SURFACE)
+            setPadding(dp(8), dp(5), dp(8), dp(5))
+            gravity = android.view.Gravity.CENTER_VERTICAL
         }
-        bottom.addView(
-            bigButton("Hierarquia") { togglePanel(PANEL_HIERARCHY) },
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+        bottomBar.addView(
+            toolButton("Hierarquia") { togglePanel(PANEL_HIERARCHY) },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
         )
-        bottom.addView(
-            bigButton("Inspector") { togglePanel(PANEL_INSPECTOR) },
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+        bottomBar.addView(
+            toolButton("Inspector") { togglePanel(PANEL_INSPECTOR) },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
         )
-        bottom.addView(
-            bigButton("Assets") { togglePanel(PANEL_ASSETS) },
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+        bottomBar.addView(
+            toolButton("Assets") { togglePanel(PANEL_ASSETS) },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
         )
 
-        // Painel (folha inferior, oculto por padrão).
-        panelContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xF20E1013.toInt())
-            visibility = View.GONE
-        }
+        // ---- host de painel (sheet inferior / drawer lateral) ----
+        panelHost = FrameLayout(this)
 
         root.addView(
             surfaceView,
@@ -203,34 +257,94 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             )
         )
         root.addView(
-            panelContainer,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(300),
-                Gravity.BOTTOM
-            ).apply { bottomMargin = dp(52) }
-        )
-        root.addView(
-            bottom,
+            panelHost,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
         root.addView(
-            top,
+            bottomBar,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP
+                android.view.Gravity.BOTTOM
             )
         )
+        root.addView(
+            topBar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.TOP
+            )
+        )
+
+        panelContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.SURFACE_SOLID)
+            visibility = View.GONE
+        }
 
         hierarchyAdapter = HierarchyAdapter()
         inspectorScroll = ScrollView(this)
         buildAssetsPanel()
 
         setContentView(root)
+        applyWindowInsets()
+        updatePanelPlacement()
+    }
+
+    /** Insets reais (status/nav bar — sem androidx): o chrome RESPETA o
+     * sistema em portrait e landscape (evolução P0-4). */
+    private fun applyWindowInsets() {
+        window.decorView.setOnApplyWindowInsetsListener { _, insets ->
+            val top = insets.systemWindowInsetTop
+            val bottom = insets.systemWindowInsetBottom
+            val left = insets.systemWindowInsetLeft
+            val right = insets.systemWindowInsetRight
+            topBar.setPadding(dp(8) + left, dp(6) + top, dp(8) + right, dp(6))
+            bottomBar.setPadding(dp(8) + left, dp(5), dp(8) + right, dp(5) + bottom)
+            updatePanelPlacement()
+            insets
+        }
+    }
+
+    /** Portrait: painel = sheet inferior (máx 62% da altura, viewport
+     * continua por trás). Landscape: drawer lateral direito (46%). */
+    private fun updatePanelPlacement() {
+        if (!::panelHost.isInitialized || !::panelContainer.isInitialized) return
+        (panelContainer.parent as? FrameLayout)?.removeView(panelContainer)
+        val isLandscape = resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        if (isLandscape) {
+            panelHost.addView(
+                panelContainer,
+                FrameLayout.LayoutParams(
+                    (resources.displayMetrics.widthPixels * 0.46f).toInt(),
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ).apply {
+                    gravity = android.view.Gravity.RIGHT or android.view.Gravity.BOTTOM
+                }
+            )
+        } else {
+            panelHost.addView(
+                panelContainer,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    (resources.displayMetrics.heightPixels * 0.62f).toInt(),
+                    android.view.Gravity.BOTTOM
+                )
+            )
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // configChanges cobre orientation|screenSize — o layout ADAPTA em
+        // runtime sem recriar a Activity (evolução P0-4: portrait E
+        // landscape corretos).
+        updatePanelPlacement()
     }
 
     // --- painéis ---------------------------------------------------------------
@@ -243,6 +357,39 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         activePanel = panel
         panelContainer.removeAllViews()
+        val title = when (panel) {
+            PANEL_HIERARCHY -> "Hierarquia"
+            PANEL_INSPECTOR -> "Inspector"
+            PANEL_ASSETS -> "Assets"
+            else -> ""
+        }
+        // Cabeçalho do sheet: título + fechar (padrão de drawer moderno).
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(8), dp(4), dp(8))
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setBackgroundColor(Ui.SURFACE_ALT)
+        }
+        header.addView(
+            TextView(this).apply {
+                text = title
+                setTextColor(Ui.TEXT)
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        header.addView(
+            toolButton("✕") { togglePanel(panel) }.apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f) },
+            LinearLayout.LayoutParams(dp(36), dp(32))
+        )
+        panelContainer.addView(
+            header,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
         when (panel) {
             PANEL_HIERARCHY -> buildHierarchyPanel()
             PANEL_INSPECTOR -> buildInspectorPanel()
@@ -263,8 +410,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private fun buildHierarchyPanel() {
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         bar.addView(
-            bigButton("+ Entidade") { createEntityDialog() },
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+            toolButton("+ Entidade") { createEntityDialog() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
         )
         hierarchyList = ListView(this).apply {
             adapter = hierarchyAdapter
@@ -331,11 +478,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         bar.addView(
             assetCategory,
-            LinearLayout.LayoutParams(0, dp(48), 1.4f)
+            LinearLayout.LayoutParams(0, dp(36), 1.4f)
         )
         bar.addView(
-            bigButton("Importar") { pickImportFile() },
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+            toolButton("Importar") { pickImportFile() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
         )
         assetAdapter = AssetAdapter()
         assetList = ListView(this).apply {
@@ -457,21 +604,21 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 }
                 if (removable) {
                     content.addView(
-                        bigButton("Remover $component") {
+                        toolButton("Remover $component") {
                             val ok = EditorJni.nativeEditorRemoveComponent(handle, selection, component)
                             if (!ok) toast(lastErrorText())
                             refreshPanel()
                         },
                         LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(36)
                         )
                     )
                 }
             }
         }
         content.addView(
-            bigButton("+ Adicionar componente") { addComponentDialog() },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52))
+            toolButton("+ Adicionar componente") { addComponentDialog() },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
         )
 
         inspectorScroll.removeAllViews()
@@ -498,7 +645,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         refreshHierarchySafe()
         if (::btnProject.isInitialized && handle != 0L) {
             val name = EditorJni.nativeEditorProjectName(handle) ?: ""
-            btnProject.text = name.ifEmpty { "Projeto" }
+            // Marca carrega o projeto: identidade + contexto na MESMA linha
+            // (evolução P0-4 — sem botão gigante de projeto).
+            brand.text = if (name.isEmpty()) "G.ONI" else "G.ONI · $name"
         }
     }
 
@@ -513,17 +662,19 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private fun labelView(text: String): TextView =
         TextView(this).apply {
             this.text = text
-            setTextColor(Color.LTGRAY)
-            setPadding(dp(8), dp(12), dp(8), dp(12))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(Ui.TEXT_DIM)
+            setPadding(dp(8), dp(8), dp(8), dp(4))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         }
 
     private fun sectionTitle(text: String): TextView =
         TextView(this).apply {
             this.text = text
-            setTextColor(0xFF8AB4F8.toInt())
+            setTextColor(Ui.ACCENT)
             setPadding(dp(4), dp(10), dp(4), dp(2))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setBackgroundColor(Ui.SURFACE_ALT)
         }
 
     private fun addVec3Row(
@@ -540,6 +691,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     InputType.TYPE_NUMBER_FLAG_DECIMAL
                 setSingleLine()
                 setText(fmtFloat(value))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextColor(Ui.TEXT)
+                setPadding(dp(6), dp(8), dp(6), dp(8))
                 imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
                 setOnEditorActionListener { _, actionId, _ ->
                     if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
@@ -553,7 +707,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             fields.add(edit)
             row.addView(
                 edit,
-                LinearLayout.LayoutParams(0, dp(48), 1f)
+                LinearLayout.LayoutParams(0, dp(40), 1f)
             )
         }
         parent.addView(row)
@@ -574,14 +728,20 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 setPadding(dp(8), dp(12), dp(8), dp(12))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             }
-            row.addView(current, LinearLayout.LayoutParams(0, dp(48), 1f))
+            row.addView(current, LinearLayout.LayoutParams(0, dp(40), 1f))
             row.addView(
                 Button(this).apply {
                     text = "Escolher…"
-                    minHeight = dp(48)
+                    minHeight = 0
+                    setPadding(dp(10), 0, dp(10), 0)
+                    height = dp(36)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    isAllCaps = false
+                    setTextColor(Ui.TEXT)
+                    background = rippleBox(Ui.SURFACE_ALT, dp(6))
                     setOnClickListener { pickTextureFor(current) }
                 },
-                LinearLayout.LayoutParams(0, dp(48), 0.8f)
+                LinearLayout.LayoutParams(0, dp(36), 0.8f)
             )
             parent.addView(row)
             return
@@ -590,12 +750,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(
             labelView(path.substringAfterLast('.').let { "$it ($typeName)" }),
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+            LinearLayout.LayoutParams(0, dp(40), 1f)
         )
         val edit = EditText(this).apply {
             setSingleLine()
             setText(if (typeName == "string") value else value)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(Ui.TEXT)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
             setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
@@ -609,7 +771,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         row.addView(
             edit,
-            LinearLayout.LayoutParams(0, dp(48), 1f)
+            LinearLayout.LayoutParams(0, dp(40), 1f)
         )
         parent.addView(row)
     }
@@ -953,12 +1115,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         if (EditorJni.nativeEditorIsPlaying(handle)) {
             EditorJni.nativeEditorStop(handle)
             btnPlay.text = "▶"
-            btnPlay.setTextColor(0xFF4CAF50.toInt())
+            btnPlay.setTextColor(Ui.OK)
             toast("STOP — edição intacta")
         } else {
             if (EditorJni.nativeEditorPlay(handle)) {
                 btnPlay.text = "■"
-                btnPlay.setTextColor(0xFFFF5252.toInt())
+                btnPlay.setTextColor(Ui.DANGER)
                 toast("PLAY — runtime clone ativo")
             } else {
                 toast(lastErrorText())
@@ -1180,10 +1342,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             val view = super.getView(position, convertView, parent)
             val row = rows[position]
             (view as? TextView)?.apply {
-                text = "${"  ".repeat(row.depth)}${if (row.packed == selection) "▶ " else ""}${row.name}"
-                setTextColor(if (row.packed == selection) 0xFF8AB4F8.toInt() else Color.WHITE)
-                setPadding(dp(8) + row.depth * dp(14), dp(12), dp(8), dp(12))
-                minHeight = dp(48)
+                // Densidade de editor: tipo à frente + indentação por
+                // profundidade (evolução P0-4 — hierarquia LEGÍVEL).
+                val icon = if (row.packed == selection) "▶ " else "· "
+                text = "${"  ".repeat(row.depth)}$icon${row.name}"
+                setTextColor(if (row.packed == selection) Ui.ACCENT else Ui.TEXT)
+                setPadding(dp(8) + row.depth * dp(10), dp(9), dp(8), dp(9))
+                minHeight = dp(38)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             }
             view.setOnClickListener {
                 selectEntity(row.packed)
@@ -1242,9 +1408,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 } else {
                     "${entry.name}  ·  (não catalogado)"
                 }
-                setTextColor(if (entry.registered) Color.WHITE else Color.GRAY)
-                setPadding(dp(8), dp(12), dp(8), dp(12))
-                minHeight = dp(48)
+                setTextColor(if (entry.registered) Ui.TEXT else Ui.TEXT_DIM)
+                setPadding(dp(8), dp(9), dp(8), dp(9))
+                minHeight = dp(38)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             }
             view.setOnClickListener {
                 selected = entry
