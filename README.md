@@ -217,7 +217,7 @@ Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-andro
 │   ├── math/              # Vec2/3/4, Mat4, Quat, Transform
 │   ├── mem/               # Allocator, Heap, Arena
 │   ├── log/               # Logger, sinks, format, macros
-│   ├── reflect/           # TypeRegistry + macros ENG_REFLECT
+│   ├── reflect/           # TypeRegistry + macros ENG_REFLECT (+hints de edição, P0-6/ADR-052)
 │   ├── events/            # EventBus + Subscription RAII
 │   ├── jobs/              # JobSystem work-stealing
 │   ├── ecs/               # World sparse-set + Entity geracional
@@ -237,7 +237,7 @@ Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-andro
 │   ├── niscript/          # NI-Script: lexer→sema→bytecode→VM+bindings (FASE 11)
 │   ├── build/             # Build & Export: manifest→cook GONI→cache→bundle (FASE 12)
 │   └── tick/              # TickScheduler + ticks concretos + câmera de jogo (evolução P0-5)
-├── editor/                # FASE 8: núcleo C++ do editor (consumidor)
+├── editor/                # FASE 8: núcleo C++ do editor (consumidor; inspector com kinds semânticos — P0-6/ADR-052)
 ├── android/               # FASES 7/8: runtime + editor Android (Gradle/APK)
 └── tests/                 # integração e2e (compõe scene+assets+project)
 ```

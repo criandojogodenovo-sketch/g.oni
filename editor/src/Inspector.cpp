@@ -6,11 +6,13 @@
 /// como QUALQUER struct refletida. Valores trafegam como string (boundary
 /// neutra — JNI recebe texto; §4 da auditoria).
 
+#include <array>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <type_traits>
 
@@ -297,6 +299,171 @@ template <typename Ptr>
                          current};
 }
 
+// =============================================================================
+// Kind semântico + grupos de cor (evolução P0-6, ADR-052)
+// =============================================================================
+
+/// Kind de UI para um campo folha — deriva do TIPO + HINT (nunca do nome).
+[[nodiscard]] std::string kindOf(const eng::reflect::PropertyInfo& property,
+                                const eng::reflect::TypeInfo& type)
+{
+    if (type.kind == eng::reflect::TypeKind::Enum) {
+        return "enum";
+    }
+    if (type.name == "bool") {
+        return "bool";
+    }
+    if (type.name == "f32" || type.name == "f64") {
+        return "number";
+    }
+    if (type.name == "i8" || type.name == "i16" || type.name == "i32" ||
+        type.name == "i64" || type.name == "u8" || type.name == "u16" ||
+        type.name == "u32" || type.name == "u64") {
+        return "int";
+    }
+    if (type.name == "string") {
+        return property.hint == "texture" ? "texture" : "text";
+    }
+    return "text";
+}
+
+/// Hint "color:<grupo>:<canal>" → {grupo, canal r/g/b/a} (nullo se não é cor).
+struct ColorHint {
+    std::string_view group;
+    char channel = 0; // 'r' | 'g' | 'b' | 'a'
+};
+
+[[nodiscard]] std::optional<ColorHint> parseColorHint(
+    std::string_view hint)
+{
+    constexpr std::string_view kPrefix = "color:";
+    if (hint.size() <= kPrefix.size() ||
+        hint.substr(0, kPrefix.size()) != kPrefix) {
+        return std::nullopt;
+    }
+    const std::string_view rest = hint.substr(kPrefix.size());
+    const std::size_t colon = rest.find(':');
+    if (colon == std::string_view::npos || colon == 0 ||
+        colon + 1 >= rest.size()) {
+        return std::nullopt;
+    }
+    const std::string_view group = rest.substr(0, colon);
+    const std::string_view channel = rest.substr(colon + 1);
+    if (channel.size() != 1) {
+        return std::nullopt;
+    }
+    const char c = channel[0];
+    if (c != 'r' && c != 'g' && c != 'b' && c != 'a') {
+        return std::nullopt;
+    }
+    return ColorHint{group, c};
+}
+
+/// Um dígito hex → valor 0..15 (nullo quando inválido).
+[[nodiscard]] std::optional<int> hexDigit(char c) noexcept
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return std::nullopt;
+}
+
+/// Par hex "2F" → 0..255.
+[[nodiscard]] std::optional<int> hexByte(char hi, char lo) noexcept
+{
+    const auto h = hexDigit(hi);
+    const auto l = hexDigit(lo);
+    if (!h.has_value() || !l.has_value()) {
+        return std::nullopt;
+    }
+    return *h * 16 + *l;
+}
+
+/// Float [0..1] → byte 0..255 (clamp + round-half-away-from-zero).
+[[nodiscard]] int floatToChannel(float v) noexcept
+{
+    if (!(v > 0.f)) {
+        return 0; // NaN e negativos → 0
+    }
+    if (v > 1.f) {
+        return 255;
+    }
+    return static_cast<int>(v * 255.f + 0.5f);
+}
+
+/// Canais → "#RRGGBB" (3) ou "#RRGGBBAA" (4).
+[[nodiscard]] std::string formatColorHex(const int channels[4], int count)
+{
+    char buf[10];
+    std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", channels[0],
+                  channels[1], channels[2]);
+    std::string out(buf);
+    if (count == 4) {
+        char abuf[3];
+        std::snprintf(abuf, sizeof(abuf), "%02X", channels[3]);
+        out += abuf;
+    }
+    return out;
+}
+
+/// "#RRGGBB[AA]" → 4 floats [0..1] (alpha 1 quando ausente). Erro preciso.
+[[nodiscard]] Result<std::array<float, 4>> parseColorHex(
+    std::string_view value)
+{
+    const std::string text(value);
+    if (text.size() != 7 && text.size() != 9) {
+        return makeUnexpected(inspectorError(
+            StatusCode::InvalidArgument,
+            "cor espera '#RRGGBB' ou '#RRGGBBAA' (recebido '" + text +
+                "')"));
+    }
+    if (text[0] != '#') {
+        return makeUnexpected(inspectorError(
+            StatusCode::InvalidArgument,
+            "cor deve começar com '#' (recebido '" + text + "')"));
+    }
+    const int pairs = text.size() == 9 ? 4 : 3;
+    std::array<float, 4> out{0.f, 0.f, 0.f, 1.f};
+    for (int i = 0; i < pairs; ++i) {
+        const auto byte = hexByte(text[1 + i * 2], text[2 + i * 2]);
+        if (!byte.has_value()) {
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "cor tem dígito hex inválido em '" + text + "'"));
+        }
+        out[static_cast<std::size_t>(i)] =
+            static_cast<float>(*byte) / 255.f;
+    }
+    return out;
+}
+
+/// Divide um path de grupo de cor em partes não-vazias.
+[[nodiscard]] std::vector<std::string_view> splitCommaPath(
+    std::string_view path)
+{
+    std::vector<std::string_view> parts;
+    std::size_t begin = 0;
+    while (begin <= path.size()) {
+        const std::size_t comma = path.find(',', begin);
+        const std::string_view part =
+            path.substr(begin, comma == std::string_view::npos
+                                    ? std::string_view::npos
+                                    : comma - begin);
+        parts.push_back(part);
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        begin = comma + 1;
+    }
+    return parts;
+}
+
 }  // namespace
 
 // =============================================================================
@@ -355,6 +522,112 @@ Result<std::vector<Inspector::Field>> Inspector::fieldsOf(
     const auto flatten = [&](auto&& self, std::string_view prefix,
                              const void* obj,
                              const eng::reflect::TypeInfo& type) -> void {
+        // Grupo de cor em formação (evolução P0-6): canais CONSECUTIVOS com
+        // hint color:<grupo>:<canal> colapsam em UM campo sintético.
+        struct ColorPart {
+            const eng::reflect::PropertyInfo* prop;
+            const eng::reflect::TypeInfo* type;
+            char channel;
+            std::string path;
+        };
+        std::vector<ColorPart> colorRun;
+        std::string colorGroup;
+
+        const auto flushColorRun = [&]() {
+            if (colorRun.empty()) {
+                return;
+            }
+            // Validação: grupo completo precisa de r+g+b (+a opcional),
+            // cada canal exatamente uma vez, todos f32. Grupo incompleto
+            // degrada para campos individuais (honesto, sem quebrar UI).
+            int rCount = 0, gCount = 0, bCount = 0, aCount = 0;
+            bool usable = true;
+            for (const auto& part : colorRun) {
+                if (part.type == nullptr || part.type->name != "f32") {
+                    usable = false;
+                    break;
+                }
+                switch (part.channel) {
+                case 'r': ++rCount; break;
+                case 'g': ++gCount; break;
+                case 'b': ++bCount; break;
+                case 'a': ++aCount; break;
+                default: usable = false; break;
+                }
+            }
+            const bool complete = rCount == 1 && gCount == 1 && bCount == 1 &&
+                                  (aCount == 0 || aCount == 1);
+            if (!usable || !complete) {
+                ENG_WARN("Inspector: grupo de cor '{}' incompleto em '{}' — "
+                         "canais viram campos numéricos individuais",
+                         colorGroup, type.name);
+                for (const auto& part : colorRun) {
+                    auto value = formatValue(
+                        static_cast<const char*>(obj) + part.prop->offset,
+                        *part.type);
+                    if (!value.isError()) {
+                        fields.push_back(Field{part.path, part.type->name,
+                                               std::move(value.value()),
+                                               "number", ""});
+                    }
+                }
+                colorRun.clear();
+                return;
+            }
+            // Campo sintético: path = canais por vírgula NA ORDEM r,g,b,a.
+            ColorPart ordered[4] = {};
+            for (const auto& part : colorRun) {
+                const int slot = part.channel == 'r'   ? 0
+                                 : part.channel == 'g' ? 1
+                                 : part.channel == 'b' ? 2
+                                                       : 3;
+                ordered[slot] = part;
+            }
+            const int count = aCount == 1 ? 4 : 3;
+            std::string path;
+            int channels[4] = {0, 0, 0, 255};
+            for (int i = 0; i < count; ++i) {
+                if (i > 0) {
+                    path += ',';
+                }
+                path += ordered[i].path;
+                channels[i] = floatToChannel(
+                    *static_cast<const float*>(static_cast<const void*>(
+                        static_cast<const char*>(obj) +
+                        ordered[i].prop->offset)));
+            }
+            fields.push_back(Field{std::move(path), "color",
+                                   formatColorHex(channels, count), "color",
+                                   ""});
+            colorRun.clear();
+        };
+
+        const auto emitProperty = [&](const eng::reflect::PropertyInfo& property,
+                                     const std::string& path,
+                                     const void* member,
+                                     const eng::reflect::TypeInfo& fieldType) {
+            auto value = formatValue(member, fieldType);
+            if (value.isError()) {
+                ENG_WARN("Inspector: campo '{}' ilegível ({})", path,
+                         value.error().message);
+                return;
+            }
+            std::string options;
+            if (fieldType.kind == eng::reflect::TypeKind::Enum) {
+                for (std::size_t i = 0; i < fieldType.enumerators.size();
+                     ++i) {
+                    if (i > 0) {
+                        options += '|';
+                    }
+                    options += fieldType.enumerators[i].name;
+                }
+            }
+            fields.push_back(Field{path, property.typeName,
+                                   std::move(value.value()),
+                                   kindOf(property, fieldType),
+                                   std::move(options)});
+        };
+
         for (const auto& property : type.properties) {
             const eng::reflect::TypeInfo* fieldType =
                 eng::reflect::TypeRegistry::global().find(property.typeName);
@@ -368,20 +641,30 @@ Result<std::vector<Inspector::Field>> Inspector::fieldsOf(
                 prefix.empty()
                     ? property.name
                     : std::string(prefix) + "." + property.name;
+
+            // Canal de cor? Agrupa com o run corrente (mesmo grupo) ou abre
+            // novo run (grupo distinto / primeiro canal).
+            if (const auto hint = parseColorHint(property.hint)) {
+                if (!colorRun.empty() && hint->group != colorGroup) {
+                    flushColorRun();
+                }
+                if (colorRun.empty()) {
+                    colorGroup = std::string(hint->group);
+                }
+                colorRun.push_back(
+                    ColorPart{&property, fieldType, hint->channel, path});
+                continue;
+            }
+            flushColorRun(); // hint comum encerra o run de cor anterior
+
             if (fieldType->kind == eng::reflect::TypeKind::Struct) {
                 // Struct conhecida → recursão (Vec3/Quat/...).
                 self(self, path, member, *fieldType);
                 continue;
             }
-            auto value = formatValue(member, *fieldType);
-            if (value.isError()) {
-                ENG_WARN("Inspector: campo '{}.{}' ilegível ({})", path,
-                         property.name, value.error().message);
-                continue;
-            }
-            fields.push_back(Field{path, property.typeName,
-                                   std::move(value.value())});
+            emitProperty(property, path, member, *fieldType);
         }
+        flushColorRun(); // run no fim da struct
     };
     flatten(flatten, "", base, *entry->info);
     return fields;
@@ -409,6 +692,38 @@ Result<std::string> Inspector::getField(const eng::scene::Scene& scene,
     if (base == nullptr || entry->info == nullptr) {
         return makeUnexpected(inspectorError(StatusCode::Internal,
                                              "componente sumiu entre has/get"));
+    }
+    // Grupo de cor (P0-6): path comma-junto lido como hex único.
+    if (fieldPath.find(',') != std::string_view::npos) {
+        const auto parts = splitCommaPath(fieldPath);
+        if (parts.size() != 3 && parts.size() != 4) {
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "grupo de cor precisa de 3 ou 4 canais (recebido " +
+                    std::to_string(parts.size()) + ")"));
+        }
+        int channels[4] = {0, 0, 0, 255};
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            if (parts[i].empty()) {
+                return makeUnexpected(inspectorError(
+                    StatusCode::InvalidArgument,
+                    "caminho '" + std::string(fieldPath) +
+                        "' tem canal vazio"));
+            }
+            auto resolved = resolveFieldImpl(base, *entry->info, parts[i]);
+            if (resolved.isError()) {
+                return makeUnexpected(resolved.error());
+            }
+            if (resolved.value().type->name != "f32") {
+                return makeUnexpected(inspectorError(
+                    StatusCode::InvalidArgument,
+                    "canal '" + std::string(parts[i]) +
+                        "' não é f32 — grupos de cor exigem floats"));
+            }
+            channels[i] = floatToChannel(
+                *static_cast<const float*>(resolved.value().member));
+        }
+        return formatColorHex(channels, static_cast<int>(parts.size()));
     }
     auto resolved = resolveFieldImpl(base, *entry->info, fieldPath);
     if (resolved.isError()) {
@@ -439,6 +754,49 @@ Result<void> Inspector::setField(eng::scene::Scene& scene,
     if (base == nullptr || entry->info == nullptr) {
         return makeUnexpected(inspectorError(StatusCode::Internal,
                                              "componente sumiu entre has/get"));
+    }
+    // Grupo de cor (P0-6): valida TUDO antes de escrever qualquer canal.
+    if (fieldPath.find(',') != std::string_view::npos) {
+        const auto parts = splitCommaPath(fieldPath);
+        if (parts.size() != 3 && parts.size() != 4) {
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "grupo de cor precisa de 3 ou 4 canais (recebido " +
+                    std::to_string(parts.size()) + ")"));
+        }
+        auto parsed = parseColorHex(value);
+        if (parsed.isError()) {
+            return makeUnexpected(parsed.error());
+        }
+        // Resolução completa ANTES da primeira escrita (sem escrita parcial).
+        struct ResolvedChannel {
+            float* member;
+        };
+        std::array<ResolvedChannel, 4> targets{};
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            if (parts[i].empty()) {
+                return makeUnexpected(inspectorError(
+                    StatusCode::InvalidArgument,
+                    "caminho '" + std::string(fieldPath) +
+                        "' tem canal vazio"));
+            }
+            auto resolved = resolveFieldImpl(base, *entry->info, parts[i]);
+            if (resolved.isError()) {
+                return makeUnexpected(resolved.error());
+            }
+            if (resolved.value().type->name != "f32") {
+                return makeUnexpected(inspectorError(
+                    StatusCode::InvalidArgument,
+                    "canal '" + std::string(parts[i]) +
+                        "' não é f32 — grupos de cor exigem floats"));
+            }
+            targets[i] = ResolvedChannel{
+                static_cast<float*>(resolved.value().member)};
+        }
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            *targets[i].member = parsed.value()[i];
+        }
+        return {};
     }
     auto resolved = resolveFieldImpl(base, *entry->info, fieldPath);
     if (resolved.isError()) {

@@ -58,6 +58,9 @@ struct PropertyDesc {
     std::string_view name;
     std::size_t offset = 0;
     std::string_view typeName; ///< nome canônico do tipo do campo
+    /// Dica de UI/edição (evolução P0-6, ADR-052): livre, por convenção
+    /// "texture" | "color:<grupo>:<canal>". Vazia = sem dica.
+    std::string_view hint;
 };
 
 /// Descritor de enumerador (par nome → valor).
@@ -72,6 +75,7 @@ struct PropertyInfo {
     std::size_t offset = 0;
     std::string typeName;
     TypeId typeId = 0; ///< id resolvido se o tipo do campo já estava registrado (senão 0; consultável por typeName)
+    std::string hint;   ///< dica de edição (ADR-052; "" quando ausente)
 };
 
 /// Metadados de um enumerador (cópia pertencente ao registry).
@@ -226,7 +230,14 @@ public:
     Registrar& property(std::string_view name, std::size_t offset,
                         std::string_view typeName)
     {
-        properties_.push_back(PropertyDesc{name, offset, typeName});
+        properties_.push_back(PropertyDesc{name, offset, typeName, {}});
+        return *this;
+    }
+
+    Registrar& property(std::string_view name, std::size_t offset,
+                        std::string_view typeName, std::string_view hint)
+    {
+        properties_.push_back(PropertyDesc{name, offset, typeName, hint});
         return *this;
     }
 
@@ -311,6 +322,18 @@ private:
 
 #define ENG_REFLECT_FIELD_AS(member, TypeName)                               \
         eng_refl_reg_.property(#member, offsetof(eng_refl_t_, member), TypeName);
+
+/// Campo com DICA de edição (evolução P0-6, ADR-052): "texture",
+/// "color:<grupo>:<canal(r|g|b|a)>"... O hint trafega no PropertyInfo e é
+/// consumido por Inspector/UI — nunca altera serialização nem layout.
+#define ENG_REFLECT_FIELD_HINT(member, Hint)                                 \
+        eng_refl_reg_.property(#member, offsetof(eng_refl_t_, member),       \
+            ::eng::reflect::typeNameOf<decltype(eng_refl_t_::member)>(),     \
+            Hint);
+
+#define ENG_REFLECT_FIELD_AS_HINT(member, TypeName, Hint)                    \
+        eng_refl_reg_.property(#member, offsetof(eng_refl_t_, member),      \
+            TypeName, Hint);
 
 #define ENG_REFLECT_ENUM_BEGIN(Type)                                         \
     [[maybe_unused]] static const bool                                       \

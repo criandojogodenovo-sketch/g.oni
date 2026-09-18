@@ -663,6 +663,12 @@ Java_com_goni_runtime_EditorJni_nativeEditorComponentFields(JNIEnv* env,
         tsv += field.typeName;
         tsv += '\t';
         tsv += field.value;
+        tsv += '\t';
+        // Kind + options (evolução P0-6, ADR-052): o host Kotlin renderiza
+        // Switch/dropdown/color-picker/textura em vez de EditText livre.
+        tsv += field.kind.empty() ? "text" : field.kind;
+        tsv += '\t';
+        tsv += field.options;
         tsv += '\n';
     }
     if (!tsv.empty()) {

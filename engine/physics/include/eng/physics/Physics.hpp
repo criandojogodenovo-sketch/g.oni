@@ -68,10 +68,14 @@ ENG_REFLECT_BEGIN(eng::physics::RigidBody)
     ENG_REFLECT_FIELD(linearDamping)
 ENG_REFLECT_END()
 
-ENG_REFLECT_BEGIN(eng::physics::ColliderShape)
+// BUG FIX (evolução P0-6): era ENG_REFLECT_BEGIN (STRUCT) — o enum era
+// registrado como struct sem propriedades: o campo `shape` do Collider
+// NUNCA apareceu no Inspector nem foi serializado (recursão em struct
+// vazia = silêncio). O macro correto registra kind=Enum + subjacente.
+ENG_REFLECT_ENUM_BEGIN(eng::physics::ColliderShape)
     ENG_REFLECT_ENUM_VALUE(Sphere)
     ENG_REFLECT_ENUM_VALUE(Box)
-ENG_REFLECT_END()
+ENG_REFLECT_ENUM_END()
 
 ENG_REFLECT_BEGIN(eng::physics::Collider)
     ENG_REFLECT_FIELD_AS(shape, "eng::physics::ColliderShape")

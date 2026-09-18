@@ -72,6 +72,7 @@ TypeId TypeRegistry::registerType(TypeKind kind,
         copy.name = p.name;
         copy.offset = p.offset;
         copy.typeName = p.typeName;
+        copy.hint = p.hint;
         // Resolução adiantada: o tipo do campo já registrado ganha typeId;
         // não registrado → 0 (resolúvel por typeName a qualquer momento).
         if (const auto field = byName_.find(p.typeName); field != byName_.end()) {

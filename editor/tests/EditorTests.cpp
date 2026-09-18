@@ -7,11 +7,13 @@
 /// contra backends REAIS (lavapipe/llvmpipe — mesmos binários do APK).
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iostream>
 #include <memory>
 #include <string>
 
@@ -331,6 +333,243 @@ TEST_CASE("editor: inspector rejeita lixo com erro preciso", "[editor]")
     auto badComp = f.doc->setInspectorField(
         entity.value(), "ComponenteInexistente", "x", "1");
     CHECK(badComp.isError());
+}
+
+// =============================================================================
+// 3b. Inspector com kinds semânticos (evolução P0-6, ADR-052)
+// =============================================================================
+
+namespace {
+
+/// Encontra um campo por path exato (ou nullptr).
+const eng::editor::Inspector::Field* fieldByPath(
+    const std::vector<eng::editor::Inspector::Field>& fields,
+    std::string_view path)
+{
+    for (const auto& field : fields) {
+        if (field.path == path) {
+            return &field;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("editor: inspector emite kind/options de enum (P0-6)", "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Col", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::physics::Collider")
+                .ok());
+
+    const auto fields = f.doc->inspectorFields(
+        entity.value(), "eng::physics::Collider");
+    for (const auto& field : fields) {
+        std::cout << "DBG path=[" << field.path << "] kind=[" << field.kind
+                  << "] type=[" << field.typeName << "] value=[" << field.value
+                  << "]\n";
+    }
+    const auto* shape = fieldByPath(fields, "shape");
+    REQUIRE(shape != nullptr);
+    CHECK(shape->kind == "enum");
+    CHECK(shape->options == "Sphere|Box");
+    CHECK(shape->value == "Sphere"); // default do campo
+
+    // Escrita por NOME de enumerador (contrato estável ADR-033).
+    REQUIRE(f.doc->setInspectorField(entity.value(), "eng::physics::Collider",
+                                     "shape", "Box")
+                .ok());
+    auto after = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::physics::Collider",
+        "shape");
+    REQUIRE(after.ok());
+    CHECK(after.value() == "Box");
+
+    // Enumerador inexistente → erro preciso.
+    auto bad = f.doc->setInspectorField(
+        entity.value(), "eng::physics::Collider", "shape", "Cylinder");
+    CHECK(bad.isError());
+}
+
+TEST_CASE("editor: inspector emite kind bool/number/int/text (P0-6)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("S", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::editor::SpriteData")
+                .ok());
+
+    const auto fields = f.doc->inspectorFields(
+        entity.value(), "eng::editor::SpriteData");
+
+    // bool → Switch na UI.
+    const auto* flipX = fieldByPath(fields, "flipX");
+    REQUIRE(flipX != nullptr);
+    CHECK(flipX->kind == "bool");
+    CHECK(flipX->value == "false");
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::editor::SpriteData", "flipX",
+                                     "true")
+                .ok());
+    CHECK(fieldByPath(f.doc->inspectorFields(entity.value(),
+                                             "eng::editor::SpriteData"),
+                      "flipX")
+              ->value == "true");
+
+    // bool com valor inválido → erro.
+    CHECK(f.doc->setInspectorField(entity.value(), "eng::editor::SpriteData",
+                                   "flipX", "sim")
+              .isError());
+
+    // f32 → number.
+    const auto* sort = fieldByPath(fields, "sort");
+    REQUIRE(sort != nullptr);
+    CHECK(sort->kind == "number");
+
+    // string COMUM → text (Name.value).
+    const auto nameFields = f.doc->inspectorFields(entity.value(),
+                                                  "eng::scene::Name");
+    const auto* value = fieldByPath(nameFields, "value");
+    REQUIRE(value != nullptr);
+    CHECK(value->kind == "text");
+    CHECK(value->options.empty());
+}
+
+TEST_CASE("editor: inspector colapsa canais de cor em UM campo hex (P0-6)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Tint", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::editor::SpriteData")
+                .ok());
+
+    const auto fields = f.doc->inspectorFields(
+        entity.value(), "eng::editor::SpriteData");
+
+    // Os três canais viram UM campo sintético — os individuais SOMEM.
+    const auto* tint = fieldByPath(fields, "tintR,tintG,tintB");
+    REQUIRE(tint != nullptr);
+    CHECK(tint->kind == "color");
+    CHECK(tint->typeName == "color");
+    CHECK(tint->value == "#FFFFFF"); // defaults 1,1,1
+    CHECK(fieldByPath(fields, "tintR") == nullptr);
+    CHECK(fieldByPath(fields, "tintG") == nullptr);
+    CHECK(fieldByPath(fields, "tintB") == nullptr);
+
+    // Escrita hex → três floats; leitura devolve o hex.
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::editor::SpriteData",
+                                     "tintR,tintG,tintB", "#FF8000")
+                .ok());
+    auto r = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::editor::SpriteData",
+        "tintR");
+    REQUIRE(r.ok());
+    CHECK(r.value() == "1");
+    auto g = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::editor::SpriteData",
+        "tintG");
+    REQUIRE(g.ok());
+    // float(128/255) impresso com %.9g — comparação numérica robusta.
+    CHECK(std::stof(g.value()) == Catch::Approx(128.f / 255.f)
+                                     .margin(1e-6f));
+    auto hex = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::editor::SpriteData",
+        "tintR,tintG,tintB");
+    REQUIRE(hex.ok());
+    CHECK(hex.value() == "#FF8000");
+
+    // Clamp: valores fora de [0..1] saturam nos bytes hex.
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::editor::SpriteData", "tintR", "2")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::editor::SpriteData", "tintG",
+                                     "-1")
+                .ok());
+    auto clamped = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::editor::SpriteData",
+        "tintR,tintG,tintB");
+    REQUIRE(clamped.ok());
+    CHECK(clamped.value() == "#FF0000");
+}
+
+TEST_CASE("editor: grupo de cor rejeita hex lixo SEM escrever nada (P0-6)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Bad", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::editor::SpriteData")
+                .ok());
+
+    // Estado conhecido: vermelho puro.
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::editor::SpriteData",
+                                     "tintR,tintG,tintB", "#FF0000")
+                .ok());
+
+    for (const char* garbage : {"red", "#12345", "#GGHHII", "", "#1234567"}) {
+        auto written = f.doc->setInspectorField(
+            entity.value(), "eng::editor::SpriteData", "tintR,tintG,tintB",
+            garbage);
+        CHECK(written.isError());
+    }
+    // Nenhuma escrita parcial: continua vermelho puro.
+    auto hex = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::editor::SpriteData",
+        "tintR,tintG,tintB");
+    REQUIRE(hex.ok());
+    CHECK(hex.value() == "#FF0000");
+
+    // Grupo com contagem errada de canais → erro preciso.
+    CHECK(f.doc->setInspectorField(entity.value(), "eng::editor::SpriteData",
+                                   "tintR,tintG", "#FF0000")
+              .isError());
+    CHECK(f.doc->setInspectorField(
+              entity.value(), "eng::editor::SpriteData",
+              "tintR,tintG,tintB,opacity,sort", "#FF0000FF")
+              .isError());
+    // Canal que não é float → erro.
+    CHECK(f.doc->setInspectorField(entity.value(), "eng::editor::SpriteData",
+                                   "tintR,textureAsset,tintB", "#FF0000")
+              .isError());
+}
+
+TEST_CASE("editor: campo de textura reporta kind texture (P0-6)", "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Sprite", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::editor::SpriteData")
+                .ok());
+
+    const auto fields = f.doc->inspectorFields(
+        entity.value(), "eng::editor::SpriteData");
+    const auto* texture = fieldByPath(fields, "textureAsset");
+    REQUIRE(texture != nullptr);
+    CHECK(texture->kind == "texture");
+    CHECK(texture->typeName == "string");
+    CHECK(texture->value.empty()); // sem textura atribuída
+
+    // Continua sendo uma string gravável (o picker de textura escreve aqui).
+    REQUIRE(f.doc->setInspectorField(entity.value(),
+                                     "eng::editor::SpriteData",
+                                     "textureAsset", "hero.png")
+                .ok());
+    CHECK(fieldByPath(f.doc->inspectorFields(entity.value(),
+                                             "eng::editor::SpriteData"),
+                      "textureAsset")
+              ->value == "hero.png");
 }
 
 TEST_CASE("editor: add/remove componente com proteção dos core", "[editor]")

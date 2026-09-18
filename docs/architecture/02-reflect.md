@@ -34,7 +34,12 @@ auto* info = eng::reflect::TypeRegistry::global().find("Material");
 ```
 
 `PropertyInfo` carrega nome, offset, `typeName` e `typeId` (resolvido quando o
-tipo do campo já estava registrado; senão 0, consultável por `typeName`).
+tipo do campo já estava registrado; senão 0, consultável por `typeName`) —
+e, desde a evolução P0-6 (ADR-052), um **hint de edição** (`hint`, string
+livre, `""` por padrão) via `ENG_REFLECT_FIELD_HINT(member, hint)` /
+`ENG_REFLECT_FIELD_AS_HINT`. Convenções: `texture` (asset-ref de textura),
+`color:<grupo>:<r|g|b|a>` (canal de um grupo de cor). O hint é metadado
+puro de UI — não altera serialização nem layout.
 `TypeId` é FNV-1a 64 do nome canônico — determinístico entre TUs e execuções.
 
 ## Concorrência
@@ -43,10 +48,11 @@ Escrita sob lock exclusivo; leitura sob lock compartilhado (leituras
 concorrentes testadas). Registro esperado em startup estático; `clear()` é
 restrito a testes (invalida ponteiros `TypeInfo*`).
 
-## Testes (11 casos)
+## Testes (15 casos)
 
 Tipos embutidos; struct com propriedades (offsets verificados contra
 `offsetof`); lookup inexistente → nullptr; lookup por id; enums escopado e
 não-escopado com subjacente; idempotência (primeiro vence); registro em
 runtime + lifetime além do escopo (deep copy); leitura concorrente
-(8 threads × 20k); contagem; `clear()` como último teste do binário.
+(8 threads × 20k); contagem; hints de edição trafegam no PropertyInfo
+(macro + API direta); `clear()` como último teste do binário.

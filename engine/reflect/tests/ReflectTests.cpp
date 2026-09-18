@@ -43,7 +43,24 @@ struct OpaqueBlob {
     std::array<std::uint8_t, 16> bytes{};
 };
 
+/// Tipos com DICA de edição (evolução P0-6, ADR-052).
+struct HintedSprite {
+    std::string texture{};
+    float tintR = 1.0f;
+    float tintG = 1.0f;
+    float tintB = 1.0f;
+    bool flip = false;
+};
+
 } // namespace
+
+ENG_REFLECT_BEGIN(HintedSprite)
+    ENG_REFLECT_FIELD_HINT(texture, "texture")
+    ENG_REFLECT_FIELD_HINT(tintR, "color:0:r")
+    ENG_REFLECT_FIELD_HINT(tintG, "color:0:g")
+    ENG_REFLECT_FIELD_HINT(tintB, "color:0:b")
+    ENG_REFLECT_FIELD(flip)
+ENG_REFLECT_END()
 
 // Integração de nomes canônicos para os tipos de teste (extensão prevista).
 namespace eng::reflect {
@@ -145,6 +162,65 @@ TEST_CASE("reflect: registro de struct com propriedades", "[reflect]") {
     CHECK(vec->properties[0].typeId == eng::reflect::typeIdOf("f32"));
 }
 
+TEST_CASE("reflect: hints de edição trafegam no PropertyInfo (P0-6)", "[reflect]") {
+    auto& registry = eng::reflect::TypeRegistry::global();
+
+    const eng::reflect::TypeInfo* sprite = registry.find("HintedSprite");
+    REQUIRE(sprite != nullptr);
+    REQUIRE(sprite->properties.size() == 5);
+
+    // Campos SEM hint → string vazia (compatível com tudo que já existe).
+    const auto* flip = registry.find("HintedSprite");
+    REQUIRE(flip != nullptr);
+    const eng::reflect::PropertyInfo* flipProp = nullptr;
+    for (const auto& p : flip->properties) {
+        if (p.name == "flip") {
+            flipProp = &p;
+        }
+    }
+    REQUIRE(flipProp != nullptr);
+    CHECK(flipProp->hint.empty());
+
+    // Campo COM hint: valor literal preservado (cópia profunda do registry).
+    const eng::reflect::PropertyInfo* textureProp = nullptr;
+    for (const auto& p : sprite->properties) {
+        if (p.name == "texture") {
+            textureProp = &p;
+        }
+    }
+    REQUIRE(textureProp != nullptr);
+    CHECK(textureProp->hint == "texture");
+    CHECK(textureProp->typeName == "string");
+
+    // Canais de cor: hint por canal — agrupamento é papel do CONSUMIDOR
+    // (Inspector), o registry só transporta a dica.
+    int colorChannels = 0;
+    for (const auto& p : sprite->properties) {
+        if (p.hint.rfind("color:", 0) == 0) {
+            ++colorChannels;
+            CHECK(p.typeName == "f32");
+        }
+    }
+    CHECK(colorChannels == 3);
+}
+
+TEST_CASE("reflect: registro em runtime aceita hint via PropertyDesc", "[reflect]") {
+    auto& registry = eng::reflect::TypeRegistry::global();
+
+    struct RuntimeHinted {
+        float v = 0.f;
+    };
+    const eng::reflect::PropertyDesc desc{
+        "v", offsetof(RuntimeHinted, v), "f32", "color:9:r"};
+    const auto id = registry.registerType(
+        eng::reflect::TypeKind::Struct, "test::RuntimeHinted",
+        sizeof(RuntimeHinted), alignof(RuntimeHinted), {&desc, 1});
+    const auto* info = registry.find(id);
+    REQUIRE(info != nullptr);
+    REQUIRE(info->properties.size() == 1);
+    CHECK(info->properties[0].hint == "color:9:r");
+}
+
 TEST_CASE("reflect: lookup inexistente devolve nullptr", "[reflect]") {
     auto& registry = eng::reflect::TypeRegistry::global();
     CHECK(registry.find("tipo::ausente") == nullptr);
@@ -229,8 +305,8 @@ TEST_CASE("reflect: registro em runtime e lifetime além do escopo", "[reflect]"
             eng::reflect::TypeKind::Struct, "test::Efemero",
             sizeof(Efemero), alignof(Efemero),
             std::vector<eng::reflect::PropertyDesc>{
-                {"a", offsetof(Efemero, a), "i32"},
-                {"b", offsetof(Efemero, b), "f32"},
+                {"a", offsetof(Efemero, a), "i32", ""},
+                {"b", offsetof(Efemero, b), "f32", ""},
             });
         CHECK(id == eng::reflect::typeIdOf("test::Efemero"));
         captured = registry.find("test::Efemero");

@@ -53,9 +53,11 @@ struct SpriteData {
 }  // namespace eng::editor
 
 /// Reflexão (ADR-043: campos por caminho — Inspector/serializer).
+/// Hints de edição (P0-6, ADR-052): textureAsset → picker de texturas;
+/// tintR/G/B → UM editor de cor (grupo 0) — serialização INALTERADA.
 /// clang-format off
 ENG_REFLECT_BEGIN(eng::editor::SpriteData)
-    ENG_REFLECT_FIELD(textureAsset)
+    ENG_REFLECT_FIELD_HINT(textureAsset, "texture")
     ENG_REFLECT_FIELD(u0)
     ENG_REFLECT_FIELD(v0)
     ENG_REFLECT_FIELD(u1)
@@ -64,9 +66,9 @@ ENG_REFLECT_BEGIN(eng::editor::SpriteData)
     ENG_REFLECT_FIELD(pivotY)
     ENG_REFLECT_FIELD(flipX)
     ENG_REFLECT_FIELD(flipY)
-    ENG_REFLECT_FIELD(tintR)
-    ENG_REFLECT_FIELD(tintG)
-    ENG_REFLECT_FIELD(tintB)
+    ENG_REFLECT_FIELD_HINT(tintR, "color:0:r")
+    ENG_REFLECT_FIELD_HINT(tintG, "color:0:g")
+    ENG_REFLECT_FIELD_HINT(tintB, "color:0:b")
     ENG_REFLECT_FIELD(opacity)
     ENG_REFLECT_FIELD(sort)
     ENG_REFLECT_FIELD(pixelsPerUnit)

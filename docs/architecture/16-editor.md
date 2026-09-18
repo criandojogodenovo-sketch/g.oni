@@ -28,7 +28,7 @@ ViewportRenderer — pipeline pos+cor, VBO dinâmico CPU→clip (ADR-042)
 | Peça | Papel |
 |---|---|
 | `EditorDocument` | projeto (new/open/save/settings), cena (new/save/load), entidades (create/delete/duplicate/rename/reparent), TRS com Euler em graus, seleção, play/stop, viewport, snapshot de hierarquia, pack/unpack JNI |
-| `Inspector` | catálogo `componentEntries()` (único — ADR-043); campos por caminho `position.x`; enums por nome; escrita validada por tipo |
+| `Inspector` | catálogo `componentEntries()` (único — ADR-043); campos por caminho `position.x`; enums por nome; escrita validada por tipo; **kinds semânticos + hints (P0-6, ADR-052)**: `{path, typeName, value, kind, options}` — enum/bool/number/int/text/texture/color com grupo de canais colapsado em hex |
 | `AssetBrowser` | categorias→AssetType; registry ∪ varredura de disco; import (staging→`assets/<cat>/`+upsert), rename/move/delete com AssetId estável |
 | `Viewport` | mundo Y-cima ↔ tela Y-baixo (Android); pan/zoom com foco; quads depth-first; hit-test top-most com raio de toque |
 | `ViewportRenderer` | shaders pos+cor (cópia exata dos fixtures FASES 5–7 — regeneração por script); grade/entidades/bordas (seleção branca, play verde); `updateBuffer` por frame |
@@ -46,13 +46,26 @@ arraste muta o clone (debug), stop preserva a edição intacta (ADR-044).
 
 ## Testes (Linux, backends reais)
 
-33 casos / 325 asserções (pós-auditoria final 4–10: + pré-projeto sem UB,
-+ quads de partículas em Play): projeto, entidades, hierarquia, componentes,
-inspector (get/set/erros/protegidos), Euler round-trip (tolerância perto
-do gimbal — limitação de f32 documentada), save/load de cena, PLAY/STOP
-(clone/rejeição/não-vazamento/re-clone), câmera/hit-test/world matrix,
-assets (import/list/rename/move/delete/não-catalogado), EditorHost×
-{GLES,Vulkan} com ciclos de surface/pause, pack/unpack JNI.
+46 casos / 501 asserções (evolução P0-6: + kinds enum/bool/color/texture,
++ colapso de cor com round-trip hex e clamp, + rejeição de hex sem
+escrita parcial, + hint de textura): projeto, entidades, hierarquia,
+componentes, inspector (get/set/erros/protegidos/kinds), Euler round-trip
+(toleração perto do gimbal — limitação de f32 documentada), save/load de
+cena, PLAY/STOP (clone/rejeição/não-vazamento/re-clone),
+câmera/hit-test/world matrix, assets (import/list/rename/move/delete/
+não-catalogado), EditorHost×{GLES,Vulkan} com ciclos de surface/pause,
+pack/unpack JNI.
+
+## UI Android por kind (P0-6, ADR-052)
+
+O host renderiza o editor adequado por kind — nada de digitar
+"true"/"Sphere"/hex à mão: `Switch` (bool), diálogo de seleção única
+(enum, options do C++), swatch + diálogo RGBA com sliders/preview/hex
+(color), picker de textura com thumbnails (texture), EditText
+numérico/texto (resto). Busca em adicionar-componente e no browser de
+assets; thumbnails reais (inSampleSize + cache) nas linhas do browser e
+no picker. Nomes de exibição prettificados ("Sprite", "Collider") — as
+chamadas JNI continuam com o nome canônico cru.
 
 ## Limitações v1 (honestas)
 

@@ -27,7 +27,10 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
+import android.widget.Space
 import android.widget.Spinner
+import android.widget.Switch
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
@@ -458,6 +461,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     private lateinit var assetsRoot: LinearLayout
+    private lateinit var assetSearch: EditText
+    private var assetQuery: String = ""
 
     private fun buildAssetsPanel() {
         assetsRoot = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -484,6 +489,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolButton("Importar") { pickImportFile() },
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
+        // Busca de assets (P0-6): filtra por nome dentro da categoria.
+        assetSearch = EditText(this).apply {
+            hint = "Buscar…"
+            setSingleLine()
+            textSize = 13f
+            setTextColor(Ui.TEXT)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = rippleBox(Ui.SURFACE_ALT, dp(6))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    assetQuery = s?.toString() ?: ""
+                    refreshAssets()
+                }
+                override fun beforeTextChanged(
+                    s: CharSequence?, a: Int, b: Int, c: Int
+                ) {}
+                override fun onTextChanged(
+                    s: CharSequence?, a: Int, b: Int, c: Int
+                ) {}
+            })
+        }
         assetAdapter = AssetAdapter()
         assetList = ListView(this).apply {
             adapter = assetAdapter
@@ -497,6 +523,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             bar,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        assetsRoot.addView(
+            assetSearch,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)
             )
         )
         assetsRoot.addView(
@@ -584,7 +616,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
         }
 
-        // Componentes (catálogo reflect-driven — §8.4).
+        // Componentes (catálogo reflect-driven — §8.4; kinds P0-6/ADR-052).
         val componentsTsv = EditorJni.nativeEditorEntityComponents(handle, selection)
         if (componentsTsv != null) {
             for (line in componentsTsv.lines().filter { it.isNotBlank() }) {
@@ -592,19 +624,22 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 if (parts.size < 2) continue
                 val component = parts[0]
                 val removable = parts[1] == "1"
-                content.addView(sectionTitle(component))
+                content.addView(sectionTitle(prettyComponent(component)))
                 val fieldsTsv =
                     EditorJni.nativeEditorComponentFields(handle, selection, component)
                 if (fieldsTsv != null) {
                     for (fline in fieldsTsv.lines().filter { it.isNotBlank() }) {
                         val fp = fline.split('\t')
                         if (fp.size < 3) continue
-                        addFieldRow(content, component, fp[0], fp[1], fp[2])
+                        addFieldRow(
+                            content, component, fp[0], fp[1], fp[2],
+                            fp.getOrElse(3) { "text" }, fp.getOrElse(4) { "" }
+                        )
                     }
                 }
                 if (removable) {
                     content.addView(
-                        toolButton("Remover $component") {
+                        toolButton("Remover ${prettyComponent(component)}") {
                             val ok = EditorJni.nativeEditorRemoveComponent(handle, selection, component)
                             if (!ok) toast(lastErrorText())
                             refreshPanel()
@@ -637,7 +672,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         val category = catList.getOrNull(assetCategory.selectedItemPosition) ?: return
         val tsv = EditorJni.nativeEditorAssetList(handle, category)
-        assetAdapter.reload(tsv ?: "")
+        // Busca (P0-6): filtro por nome, insensível a caixa.
+        val filtered = (tsv ?: "").lines().filter {
+            it.isNotBlank() && (assetQuery.isBlank() ||
+                it.contains(assetQuery, ignoreCase = true))
+        }
+        assetAdapter.reload(filtered)
         assetAdapter.notifyDataSetChanged()
     }
 
@@ -658,6 +698,42 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     // --- helpers de UI ----------------------------------------------------------
+
+    /** Nome de exibição de componente: "eng::editor::SpriteData" → "Sprite"
+     * (P0-6: cabeçalhos legíveis; a CHAMADA de API continua com o nome cru). */
+    private fun prettyComponent(raw: String): String {
+        var name = raw.substringAfterLast(':')
+        if (name.endsWith("Data")) name = name.removeSuffix("Data")
+        if (name.endsWith("Component")) name = name.removeSuffix("Component")
+        return name
+    }
+
+    /** Rótulo de campo: último segmento do path; grupo de cor → rótulo base. */
+    private fun prettyFieldLabel(path: String): String {
+        val leaf = path.substringBefore(',').substringAfterLast('.')
+        return leaf.replaceFirstChar { it.uppercase() }
+    }
+
+    /** Hex "#RRGGBB[AA]" → ARGB int (ou null quando inválido). */
+    private fun parseHexColor(hex: String): Int? {
+        if (!hex.startsWith("#")) return null
+        val digits = hex.substring(1)
+        if (digits.length != 6 && digits.length != 8) return null
+        val value = digits.toIntOrNull(16) ?: return null
+        return if (digits.length == 6) {
+            0xFF000000.toInt() or value
+        } else {
+            value
+        }
+    }
+
+    /** Escreve o valor de um campo com feedback (toast em erro). */
+    private fun setFieldQuiet(component: String, path: String, value: String) {
+        val ok = EditorJni.nativeEditorSetComponentField(
+            handle, selection, component, path, value
+        )
+        if (!ok) toast(lastErrorText())
+    }
 
     private fun labelView(text: String): TextView =
         TextView(this).apply {
@@ -713,91 +789,354 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         parent.addView(row)
     }
 
+    /**
+     * Linha de campo do Inspector (P0-6, ADR-052): o kind semântico vindo do
+     * C++ decide o editor — Switch (bool), dropdown (enum), swatch+sliders
+     * (color), picker de textura, campo numérico ou texto. Nada de digitar
+     * "true"/"Sphere"/hex à mão.
+     */
     private fun addFieldRow(
         parent: LinearLayout, component: String, path: String,
-        typeName: String, value: String
+        typeName: String, value: String, kind: String, options: String
     ) {
-        // Campo de textura do SpriteData: PICKER real (lista de texturas do
-        // projeto — evolução P0: "assign texture to sprite" funciona).
-        if (component == "eng::editor::SpriteData" && path == "textureAsset") {
-            parent.addView(labelView("Textura"))
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val current = TextView(this).apply {
-                text = value.ifEmpty { "(nenhuma)" }
-                setTextColor(0xFF8AB4F8.toInt())
-                setPadding(dp(8), dp(12), dp(8), dp(12))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            }
-            row.addView(current, LinearLayout.LayoutParams(0, dp(40), 1f))
-            row.addView(
-                Button(this).apply {
-                    text = "Escolher…"
-                    minHeight = 0
-                    setPadding(dp(10), 0, dp(10), 0)
-                    height = dp(36)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                    isAllCaps = false
+        when (kind) {
+            "bool" -> {
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                row.addView(
+                    labelView(prettyFieldLabel(path)),
+                    LinearLayout.LayoutParams(0, dp(44), 1f)
+                )
+                val sw = Switch(this).apply {
+                    isChecked = value == "true"
                     setTextColor(Ui.TEXT)
-                    background = rippleBox(Ui.SURFACE_ALT, dp(6))
-                    setOnClickListener { pickTextureFor(current) }
-                },
-                LinearLayout.LayoutParams(0, dp(36), 0.8f)
-            )
-            parent.addView(row)
-            return
+                    setOnCheckedChangeListener { _, checked ->
+                        setFieldQuiet(component, path, if (checked) "true" else "false")
+                    }
+                }
+                row.addView(sw, LinearLayout.LayoutParams(dp(84), dp(44)))
+                parent.addView(row)
+                return
+            }
+            "enum" -> {
+                val choices = options.split('|').filter { it.isNotEmpty() }
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                row.addView(
+                    labelView(prettyFieldLabel(path)),
+                    LinearLayout.LayoutParams(0, dp(44), 0.9f)
+                )
+                val current = TextView(this).apply {
+                    text = value
+                    setTextColor(Ui.ACCENT)
+                    setPadding(dp(8), dp(12), dp(8), dp(12))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    setOnClickListener {
+                        AlertDialog.Builder(this@EditorActivity)
+                            .setTitle(prettyFieldLabel(path))
+                            .setSingleChoiceItems(
+                                choices.toTypedArray(),
+                                choices.indexOf(value)
+                            ) { dialog, which ->
+                                setFieldQuiet(component, path, choices[which])
+                                dialog.dismiss()
+                                refreshInspector()
+                            }
+                            .setNegativeButton("Cancelar", null)
+                            .show()
+                    }
+                }
+                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1.1f))
+                parent.addView(row)
+                return
+            }
+            "color" -> {
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                row.addView(
+                    labelView(prettyFieldLabel(path)),
+                    LinearLayout.LayoutParams(0, dp(44), 0.9f)
+                )
+                val initial = parseHexColor(value) ?: 0xFFFFFFFF.toInt()
+                val swatch = TextView(this).apply {
+                    text = value
+                    setTextColor(Ui.TEXT)
+                    textSize = 12f
+                    gravity = Gravity.CENTER_VERTICAL or Gravity.END
+                    setPadding(dp(12), dp(6), dp(12), dp(6))
+                    background = rippleBox(initial and 0xFFFFFF or 0xFF000000.toInt(), dp(6))
+                    setOnClickListener {
+                        colorPickerDialog(component, path, value, initial) { hex, argb ->
+                            background = rippleBox(argb, dp(6))
+                            text = hex
+                        }
+                    }
+                }
+                row.addView(swatch, LinearLayout.LayoutParams(0, dp(44), 1.1f))
+                parent.addView(row)
+                return
+            }
+            "texture" -> {
+                parent.addView(labelView(prettyFieldLabel(path)))
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val current = TextView(this).apply {
+                    text = value.ifEmpty { "(nenhuma)" }
+                    setTextColor(0xFF8AB4F8.toInt())
+                    setPadding(dp(8), dp(12), dp(8), dp(12))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                }
+                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
+                row.addView(
+                    Button(this).apply {
+                        text = "Escolher…"
+                        minHeight = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        height = dp(36)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                        isAllCaps = false
+                        setTextColor(Ui.TEXT)
+                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
+                        setOnClickListener {
+                            pickTextureFor(component, path) { chosen ->
+                                current.text = chosen.ifEmpty { "(nenhuma)" }
+                            }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(36), 0.8f)
+                )
+                parent.addView(row)
+                return
+            }
         }
 
+        // number/int/text → EditText (numérico quando aplicável).
+        val numeric = kind == "number" || kind == "int"
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(
-            labelView(path.substringAfterLast('.').let { "$it ($typeName)" }),
-            LinearLayout.LayoutParams(0, dp(40), 1f)
+            labelView(prettyFieldLabel(path)),
+            LinearLayout.LayoutParams(0, dp(44), 0.7f)
         )
         val edit = EditText(this).apply {
             setSingleLine()
-            setText(if (typeName == "string") value else value)
+            inputType = if (numeric) {
+                InputType.TYPE_CLASS_NUMBER or
+                    InputType.TYPE_NUMBER_FLAG_SIGNED or
+                    InputType.TYPE_NUMBER_FLAG_DECIMAL
+            } else {
+                InputType.TYPE_CLASS_TEXT
+            }
+            setText(value)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(Ui.TEXT)
             setPadding(dp(6), dp(6), dp(6), dp(6))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
             setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
-                    val ok = EditorJni.nativeEditorSetComponentField(
-                        handle, selection, component, path, text.toString()
-                    )
-                    if (!ok) toast(lastErrorText())
+                    setFieldQuiet(component, path, text.toString())
                     true
                 } else false
             }
         }
         row.addView(
             edit,
-            LinearLayout.LayoutParams(0, dp(40), 1f)
+            LinearLayout.LayoutParams(0, dp(44), 1.3f)
         )
         parent.addView(row)
     }
 
-    /** Picker de textura: lista os assets de textura e atribui no campo. */
-    private fun pickTextureFor(field: TextView) {
+    /**
+     * Editor de cor REAL (P0-6): sliders R/G/B (+A quando o grupo tem 4
+     * canais) com preview ao vivo + hex — nativo, sem dependências.
+     */
+    private fun colorPickerDialog(
+        component: String, path: String, initialHex: String, initialArgb: Int,
+        onApplied: (String, Int) -> Unit
+    ) {
+        val hasAlpha = initialHex.length == 9
+        var r = (initialArgb shr 16) and 0xFF
+        var g = (initialArgb shr 8) and 0xFF
+        var b = initialArgb and 0xFF
+        var a = (initialArgb shr 24) and 0xFF
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(4))
+        }
+        val preview = TextView(this).apply {
+            text = initialHex
+            setTextColor(Ui.TEXT)
+            gravity = Gravity.CENTER
+            textSize = 14f
+            height = dp(56)
+        }
+        container.addView(preview)
+
+        fun currentArgb(): Int =
+            (if (hasAlpha) (a shl 24) else 0xFF shl 24) or (r shl 16) or (g shl 8) or b
+
+        fun currentHex(): String = String.format(
+            if (hasAlpha) "#%02X%02X%02X%02X" else "#%02X%02X%02X",
+            r, g, b, a
+        )
+
+        fun refresh() {
+            preview.text = currentHex()
+            preview.setBackgroundColor(currentArgb())
+            preview.setTextColor(
+                if (r * 299 + g * 587 + b * 114 < 128 * 1000)
+                    0xFFFFFFFF.toInt() else 0xFF000000.toInt()
+            )
+        }
+
+        fun slider(label: String, init: Int, on: (Int) -> Unit): LinearLayout {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(
+                TextView(this).apply {
+                    text = label
+                    setTextColor(Ui.TEXT_DIM)
+                    width = dp(28)
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            row.addView(
+                SeekBar(this).apply {
+                    max = 255
+                    progress = init
+                    setOnSeekBarChangeListener(
+                        object : SeekBar.OnSeekBarChangeListener {
+                            override fun onProgressChanged(
+                                s: SeekBar?, p: Int, fromUser: Boolean
+                            ) { on(p); refresh() }
+
+                            override fun onStartTrackingTouch(s: SeekBar?) {}
+                            override fun onStopTrackingTouch(s: SeekBar?) {}
+                        }
+                    )
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            return row
+        }
+
+        container.addView(slider("R", r) { r = it })
+        container.addView(slider("G", g) { g = it })
+        container.addView(slider("B", b) { b = it })
+        if (hasAlpha) {
+            container.addView(slider("A", a) { a = it })
+        }
+        refresh()
+
+        AlertDialog.Builder(this)
+            .setTitle(prettyFieldLabel(path))
+            .setView(container)
+            .setPositiveButton("OK") { _, _ ->
+                val hex = currentHex()
+                setFieldQuiet(component, path, hex)
+                onApplied(hex, currentArgb())
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /**
+     * Picker de textura COM THUMBNAILS (P0-6): lista os assets de textura do
+     * projeto com preview real e atribui no campo genérico (qualquer campo
+     * kind="texture" — não apenas SpriteData.textureAsset).
+     */
+    private fun pickTextureFor(
+        component: String, path: String, onApplied: (String) -> Unit
+    ) {
         val tsv = EditorJni.nativeEditorListTextures(handle) ?: return
         val names = tsv.lines().filter { it.isNotBlank() }
         if (names.isEmpty()) {
             toast("Nenhuma textura importada (Assets → textures → Importar)")
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("Textura")
-            .setItems(names.toTypedArray()) { _, which ->
-                val ok = EditorJni.nativeEditorSetComponentField(
-                    handle, selection, "eng::editor::SpriteData", "textureAsset",
-                    names[which]
-                )
-                if (ok) {
-                    field.text = names[which]
-                } else {
-                    toast(lastErrorText())
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply { addView(list) }
+        var picker: AlertDialog? = null
+        for (name in names) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+                background = rippleBox(Ui.SURFACE_ALT, dp(6))
+                setOnClickListener {
+                    setFieldQuiet(component, path, name)
+                    onApplied(name)
+                    picker?.dismiss()
                 }
             }
+            thumbnailOf("textures", name)?.let { bmp ->
+                row.addView(
+                    ImageView(this).apply {
+                        setImageBitmap(bmp)
+                        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                        background = rippleBox(Ui.BORDER, dp(4))
+                        clipToOutline = true
+                    },
+                    LinearLayout.LayoutParams(dp(44), dp(44))
+                )
+                row.addView(
+                    Space(this),
+                    LinearLayout.LayoutParams(dp(10), dp(1))
+                )
+            }
+            row.addView(
+                TextView(this).apply {
+                    text = name
+                    setTextColor(Ui.TEXT)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            list.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        picker = AlertDialog.Builder(this)
+            .setTitle("Textura")
+            .setView(scroll)
+            .setNegativeButton("Cancelar", null)
             .show()
+    }
+
+    // --- thumbnails (P0-6): decode com inSampleSize + cache em memória ---------
+
+    private val thumbCache = HashMap<String, android.graphics.Bitmap>()
+
+    /** Bitmap reduzido do asset (textures) para linhas/pickers — null se não
+     * é imagem decodificável. Cache por nome (chave: categoria/nome). */
+    private fun thumbnailOf(category: String, name: String): android.graphics.Bitmap? {
+        val key = "$category/$name"
+        thumbCache[key]?.let { return it }
+        val project = EditorJni.nativeEditorProjectName(handle) ?: return null
+        val file = File(File(File(filesDir, "projects"), project),
+                        "assets/$category/$name")
+        if (!file.isFile) return null
+        // 1ª passada: só dimensões.
+        val bounds = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        // inSampleSize: maior potência de 2 que ainda cabe em 96px.
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 96 &&
+               bounds.outHeight / (sample * 2) >= 96) {
+            sample *= 2
+        }
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+        }
+        val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
+            ?: return null
+        thumbCache[key] = bmp
+        return bmp
     }
 
     private fun fmtFloat(v: Float): String =
@@ -1017,18 +1356,74 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             .show()
     }
 
+    /** Adicionar componente COM BUSCA (P0-6): filtra o catálogo ao digitar. */
     private fun addComponentDialog() {
         val tsv = EditorJni.nativeEditorComponentCatalog(handle) ?: return
-        val entries = tsv.lines().filter { it.isNotBlank() }
-        val names = entries.map { it.split('\t').getOrNull(0) ?: "?" }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Adicionar componente")
-            .setItems(names) { _, which ->
-                if (!EditorJni.nativeEditorAddComponent(handle, selection, names[which])) {
-                    toast(lastErrorText())
+        // TSV: name\tremovable — o NOME é a primeira coluna.
+        val rawNames = tsv.lines().filter { it.isNotBlank() }
+            .map { it.split('\t').getOrNull(0) ?: "?" }
+        val display = rawNames.map { prettyComponent(it) }
+
+        val search = EditText(this).apply {
+            hint = "Buscar componente…"
+            setSingleLine()
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+        }
+        val list = ListView(this)
+        val adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1, mutableListOf<String>()
+        )
+        list.adapter = adapter
+        var current: List<String> = rawNames
+        fun applyFilter(query: String) {
+            current = if (query.isBlank()) {
+                rawNames
+            } else {
+                rawNames.filterIndexed { i, raw ->
+                    raw.contains(query, ignoreCase = true) ||
+                        display[i].contains(query, ignoreCase = true)
                 }
-                refreshPanel()
             }
+            adapter.clear()
+            adapter.addAll(current.map { n ->
+                val idx = rawNames.indexOf(n)
+                display.getOrElse(idx) { n }
+            })
+        }
+        applyFilter("")
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) {
+                applyFilter(s?.toString() ?: "")
+            }
+            override fun beforeTextChanged(
+                s: CharSequence?, a: Int, b: Int, c: Int
+            ) {}
+            override fun onTextChanged(
+                s: CharSequence?, a: Int, b: Int, c: Int
+            ) {}
+        })
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(search)
+            addView(
+                list,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(300)
+                )
+            )
+        }
+        var dialog: AlertDialog? = null
+        list.setOnItemClickListener { _, _, which, _ ->
+            if (!EditorJni.nativeEditorAddComponent(handle, selection, current[which])) {
+                toast(lastErrorText())
+            }
+            dialog?.dismiss()
+            refreshPanel()
+        }
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Adicionar componente")
+            .setView(container)
+            .setNegativeButton("Cancelar", null)
             .show()
     }
 
@@ -1373,9 +1768,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         private val entries = mutableListOf<AssetEntry>()
         private var selected: AssetEntry? = null
 
-        fun reload(tsv: String) {
+        fun reload(lines: List<String>) {
             entries.clear()
-            for (line in tsv.lines().filter { it.isNotBlank() }) {
+            for (line in lines) {
                 val p = line.split('\t')
                 if (p.size < 4) continue
                 entries.add(
@@ -1390,39 +1785,71 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         fun selectedOrNull(): AssetEntry? = selected
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-            val view = super.getView(position, convertView, parent)
             val entry = entries[position]
-            (view as? TextView)?.apply {
-                // Metadados de imagem (evolução P0): "name · WxH rgba" via
-                // decode REAL no C++ — o browser RECONHECE imagens.
-                val imageInfo =
-                    if (assetCategory.selectedItem?.toString() == "textures") {
-                        EditorJni.nativeEditorAssetImageInfo(
-                            handle, "textures", entry.name
-                        )
-                    } else null
-                text = if (imageInfo != null) {
-                    "[IMG] ${entry.name}  ·  $imageInfo"
-                } else if (entry.registered) {
-                    "${entry.name}  ·  ${entry.id.take(8)}…"
-                } else {
-                    "${entry.name}  ·  (não catalogado)"
-                }
-                setTextColor(if (entry.registered) Ui.TEXT else Ui.TEXT_DIM)
-                setPadding(dp(8), dp(9), dp(8), dp(9))
-                minHeight = dp(38)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            val category = assetCategory.selectedItem?.toString() ?: ""
+            // Linha densa com THUMBNAIL REAL (P0-6): imagens mostram o
+            // conteúdo; demais tipos mostram o nome + id/metadata.
+            val row = LinearLayout(this@EditorActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(6), dp(8), dp(6))
             }
-            view.setOnClickListener {
+            if (category == "textures") {
+                val thumb = thumbnailOf("textures", entry.name)
+                if (thumb != null) {
+                    row.addView(
+                        ImageView(this@EditorActivity).apply {
+                            setImageBitmap(thumb)
+                            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                            background = rippleBox(Ui.BORDER, dp(4))
+                            clipToOutline = true
+                        },
+                        LinearLayout.LayoutParams(dp(40), dp(40))
+                    )
+                    row.addView(
+                        Space(this@EditorActivity),
+                        LinearLayout.LayoutParams(dp(8), dp(1))
+                    )
+                }
+            }
+            val texts = LinearLayout(this@EditorActivity).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            val imageInfo =
+                if (category == "textures") {
+                    EditorJni.nativeEditorAssetImageInfo(
+                        handle, "textures", entry.name
+                    )
+                } else null
+            texts.addView(TextView(this@EditorActivity).apply {
+                text = entry.name
+                setTextColor(if (entry.registered) Ui.TEXT else Ui.TEXT_DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            })
+            texts.addView(TextView(this@EditorActivity).apply {
+                text = when {
+                    imageInfo != null -> imageInfo
+                    entry.registered -> "id ${entry.id.take(8)}…"
+                    else -> "(não catalogado)"
+                }
+                setTextColor(Ui.TEXT_DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            })
+            row.addView(
+                texts,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            row.setOnClickListener {
                 selected = entry
                 assetPreviewDialog(entry)
             }
-            view.setOnLongClickListener {
+            row.setOnLongClickListener {
                 selected = entry
                 assetMenuDialog(entry)
                 true
             }
-            return view
+            return row
         }
     }
 

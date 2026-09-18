@@ -6,17 +6,31 @@
 /// - Catálogo: `eng::scene::detail::componentEntries()` (ÚNICO registry —
 ///   auditoria D2; inclui os built-ins Name/Transform e tudo que as fases
 ///   futuras registrarem — física/animação/etc aparecem automaticamente).
-/// - Campos: `TypeInfo::properties` (offset + typeName). Valores trafegam
-///   como STRING (boundary neutra para JNI — audit §4):
+/// - Campos: `TypeInfo::properties` (offset + typeName + hint). Valores
+///   trafegam como STRING (boundary neutra para JNI — audit §4):
 ///     bool → "true"/"false"; inteiros → decimal; f32/f64 → %g;
 ///     string → como está; enum → NOME do enumerador;
 ///     struct conhecida (Vec3/Quat) → subcampos por caminho "position.x".
 /// - Escrita: parse por tipo → escrita por offset. Erros precisos (campo
 ///   desconhecido, valor inválido, entidade obsoleta, componente ausente).
 ///
+/// Evolução P0-6 (ADR-052): cada Field carrega um KIND semântico + options
+/// para o host renderizar editores REAIS (não EditText livre):
+///     "bool"    → Switch/checkbox
+///     "enum"    → opções legais em `options` (separadas por '|')
+///     "number"  → campo numérico (f32/f64)
+///     "int"     → campo inteiro (i8..u64)
+///     "color"   → grupo de canais hint color:<grupo>:<r|g|b|a>; o path é a
+///                 lista de membros por vírgula ("tintR,tintG,tintB") e o
+///                 valor é hex "#RRGGBB" ou "#RRGGBBAA" (alpha = 4º canal
+///                 quando presente)
+///     "texture" → string com hint "texture" (asset de textura do projeto)
+///     "text"    → texto livre
+///
 /// Nada aqui conhece componentes específicos: Transform é lido como
 /// QUALQUER struct refletida — o Inspector não tem um único if de
-/// "position" (missão §8.4: não hard-code).
+/// "position" (missão §8.4: não hard-code). Kind/color/texture derivam de
+/// METADADOS (hint), nunca de nomes de campos.
 
 #include <string>
 #include <string_view>
@@ -32,11 +46,13 @@ class Inspector final {
 public:
     Inspector() = delete;
 
-    /// Um campo achatado do Inspector (primitivo folha).
+    /// Um campo achatado do Inspector (primitivo folha ou grupo de cor).
     struct Field {
-        std::string path;     ///< "position.x", "value", "rotation.w"
-        std::string typeName; ///< "f32", "string", nome do enum...
-        std::string value;    ///< representação textual
+        std::string path;     ///< "position.x", "value", "tintR,tintG,tintB"
+        std::string typeName; ///< "f32", "string", nome do enum, "color"...
+        std::string value;    ///< representação textual (cor: "#RRGGBB[AA]")
+        std::string kind;     ///< semântico p/ UI (P0-6): ver header
+        std::string options;  ///< enums: enumeradores por '|' ("" se não-enum)
     };
 
     /// Catálogo completo de componentes registrados (ordenado por nome).
@@ -51,13 +67,14 @@ public:
         const eng::scene::Scene& scene, eng::ecs::Entity entity,
         std::string_view component);
 
-    /// Lê um campo por caminho ("position.x"). Erros precisos.
+    /// Lê um campo por caminho ("position.x"; grupos de cor aceitam o path
+    /// comma-junto emitido por fieldsOf). Erros precisos.
     [[nodiscard]] static eng::core::Result<std::string> getField(
         const eng::scene::Scene& scene, eng::ecs::Entity entity,
         std::string_view component, std::string_view fieldPath);
 
-    /// Escreve um campo por caminho (parse por tipo). Marca a cena suja.
-    /// Erros precisos; NUNCA escreve parcialmente.
+    /// Escreve um campo por caminho (parse por tipo; cor aceita hex). Marca
+    /// a cena suja. Erros precisos; NUNCA escreve parcialmente.
     [[nodiscard]] static eng::core::Result<void> setField(
         eng::scene::Scene& scene, eng::ecs::Entity entity,
         std::string_view component, std::string_view fieldPath,
