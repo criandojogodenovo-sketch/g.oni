@@ -21,7 +21,13 @@
 
 | APK | Commit | CI | Sha256 | Status |
 |---|---|---|---|---|
-| app-debug.apk (CI Android artifact) | `3cade4a` | verde | `e4863448204601cca740b38bbc5cd45cca7b39b56681d6600e557577b915234c` | **PENDENTE** |
+| goni-debug-f391c28.apk (CI Android artifact) | `f391c28` | verde | `a5fe81566f80449d7f6d365755ce2b363fc92783435a031e6b158b3cbc81579b` | **PENDENTE** |
+| app-debug.apk (CI Android artifact) | `3cade4a` | verde | `e4863448204601cca740b38bbc5cd45cca7b39b56681d6600e557577b915234c` | **PENDENTE** (superseded) |
+
+> `f391c28` é o primeiro candidato com a FASE 0 completa: imagem no
+> viewport com tamanho/orientação/seleção corretos (reproduzida e corrigida
+> com validação por pixel no Linux; APK auditado — libgoni.so contém o
+> readback novo e os 8 fixes B1-B8).
 
 ## Roteiro de aceitação §32 (preencher por passo)
 
