@@ -421,7 +421,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     auto worldToClipY = [&](float wy) {
         return 1.f - (viewport.worldToScreenY(wy) / h) * 2.f;
     };
-    const float step = viewport.camera().zoom < 14.f ? 5.f : 1.f;
+    const float step =
+        viewport.effectiveCamera().zoom < 14.f ? 5.f : 1.f;  // P0-5: câmera em foco
     const float x0 = std::floor(viewport.screenToWorldX(0.f) / step) * step;
     const float x1 = viewport.screenToWorldX(w);
     const float y0 = std::floor(viewport.screenToWorldY(h) / step) * step;
@@ -452,7 +453,7 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     // --- entidades SEM textura + BORDAS de sprites (pipeline pos+cor) -------
     // Ordem: play-indicator → seleção (borda) → quad. Sem blending: desenho
     // por sobreposição (ordem estável — quads em depth-first).
-    const float zoom = viewport.camera().zoom;
+    const float zoom = viewport.effectiveCamera().zoom;  // P0-5
     auto pushEntityMarkers = [&](const EntityQuad& quad, float halfW, float halfH) {
         const float cx = worldToClipX(quad.worldX);
         const float cy = worldToClipY(quad.worldY);

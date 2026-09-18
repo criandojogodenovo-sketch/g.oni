@@ -696,6 +696,103 @@ TEST_CASE("editor: câmera world↔screen ida e volta + zoom foco", "[editor]")
                Catch::Matchers::WithinAbs(beforeY + 48.f / 72.f, 1e-3f));
 }
 
+TEST_CASE("editor: câmera de JOGO toma o viewport em Play (P0-5, ADR-051)", "[editor][tick]")
+{
+    DocFixture f;
+    f.withProject();
+    auto cam = f.doc->createEntity("Cam", eng::scene::kNoEntity);
+    REQUIRE(cam.ok());
+    // CameraData entra pelo CATÁLOGO (mesmo caminho do Inspector/JNI).
+    REQUIRE(f.doc->addComponent(cam.value(), "eng::tick::CameraData").ok());
+    REQUIRE(f.doc->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "posX", "12").ok());
+    REQUIRE(f.doc->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "posY", "-6").ok());
+    REQUIRE(f.doc->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "zoom", "96").ok());
+
+    auto& viewport = f.doc->viewport();
+    viewport.setScreenSize(1000.f, 500.f);
+    // Câmera do EDITOR em outro lugar — se vazasse, o teste pega.
+    viewport.camera().posX = 1000.f;
+    viewport.camera().posY = 1000.f;
+    viewport.camera().zoom = 8.f;
+
+    REQUIRE(f.doc->play().ok());
+    // play() NÃO roda frame (contrato FASE 11) — mas a câmera já resolve.
+    CHECK(f.doc->hasGameCamera());
+    CHECK(viewport.gameCameraActive());
+    // Conversões seguem a câmera do JOGO: centro da tela = pos da câmera.
+    CHECK_THAT(viewport.screenToWorldX(500.f),
+               Catch::Matchers::WithinAbs(12.f, 1e-3f));
+    CHECK_THAT(viewport.screenToWorldY(250.f),
+               Catch::Matchers::WithinAbs(-6.f, 1e-3f));
+    // worldToScreen do ponto da câmera = centro (zoom 96: 1 unidade = 96px).
+    CHECK_THAT(viewport.worldToScreenX(12.f),
+               Catch::Matchers::WithinAbs(500.f, 1e-2f));
+    CHECK_THAT(viewport.worldToScreenY(-6.f),
+               Catch::Matchers::WithinAbs(250.f, 1e-2f));
+
+    // Gestos do editor são NO-OP sob câmera de jogo (debug honesto).
+    const float beforeX = viewport.screenToWorldX(500.f);
+    viewport.pan(120.f, 60.f);
+    viewport.zoomAt(2.f, 500.f, 250.f);
+    CHECK_THAT(viewport.screenToWorldX(500.f),
+               Catch::Matchers::WithinAbs(beforeX, 1e-6f));
+
+    f.doc->stop();
+    // STOP devolve a câmera do editor.
+    CHECK_FALSE(f.doc->hasGameCamera());
+    CHECK_FALSE(viewport.gameCameraActive());
+    CHECK_THAT(viewport.screenToWorldX(500.f),
+               Catch::Matchers::WithinAbs(1000.f, 1e-3f));
+}
+
+TEST_CASE("editor: Play sem CameraData usa a câmera do editor (P0-5)", "[editor][tick]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Plain", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+
+    auto& viewport = f.doc->viewport();
+    viewport.setScreenSize(1000.f, 500.f);
+    viewport.camera().posX = 42.f;
+    viewport.camera().zoom = 48.f;
+
+    REQUIRE(f.doc->play().ok());
+    CHECK_FALSE(f.doc->hasGameCamera());
+    CHECK_FALSE(viewport.gameCameraActive());
+    CHECK_THAT(viewport.screenToWorldX(500.f),
+               Catch::Matchers::WithinAbs(42.f, 1e-3f));
+    // Pan continua funcionando (câmera do editor em foco).
+    viewport.pan(48.f, 0.f);
+    CHECK_THAT(viewport.screenToWorldX(500.f),
+               Catch::Matchers::WithinAbs(41.f, 1e-3f));
+    f.doc->stop();
+}
+
+TEST_CASE("editor: câmera de jogo desativada (active=false) cai para o editor", "[editor][tick]")
+{
+    DocFixture f;
+    f.withProject();
+    auto cam = f.doc->createEntity("Cam", eng::scene::kNoEntity);
+    REQUIRE(cam.ok());
+    REQUIRE(f.doc->addComponent(cam.value(), "eng::tick::CameraData").ok());
+    REQUIRE(f.doc->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "active", "false").ok());
+
+    auto& viewport = f.doc->viewport();
+    viewport.setScreenSize(1000.f, 500.f);
+    viewport.camera().posX = 7.f;
+
+    REQUIRE(f.doc->play().ok());
+    CHECK_FALSE(f.doc->hasGameCamera());
+    CHECK_THAT(viewport.screenToWorldX(500.f),
+               Catch::Matchers::WithinAbs(7.f, 1e-3f));
+    f.doc->stop();
+}
+
 TEST_CASE("editor: hit-test seleciona o quad da frente", "[editor]")
 {
     DocFixture f;

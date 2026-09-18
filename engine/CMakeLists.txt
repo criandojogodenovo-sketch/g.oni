@@ -43,6 +43,10 @@ add_subdirectory(particles) # Emitter/pool CPU determinística — sobre scene
 # Núcleo puro sobre core/math/ecs/reflect; bindings de gameplay ficam no
 # CONSUMIDOR (editor), igual ao catálogo do SceneSerializer (ADR-043).
 add_subdirectory(niscript) # Lexer/Parser/Sema/Compiler + NI VM + bindings
+# Evolução (P0-5, ADR-051): arquitetura de Tick — fases + agendador +
+# ticks concretos (física/animação/partículas/câmera) sobre a cena. TOPO
+# da pilha de gameplay; consumidor: editor hoje, runtime de bundles depois.
+add_subdirectory(tick)    # eng::tick — TickScheduler + CameraData/CameraTick
 # FASE 12 (ADR-050): Build & Export — pipeline de DADOS (manifest → cook
 # GONI → cache determinístico → bundle verificado → export por alvo).
 add_subdirectory(build)    # eng::build — sobre project/assets/serial/niscript

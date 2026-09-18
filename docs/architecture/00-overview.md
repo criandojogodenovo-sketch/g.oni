@@ -76,6 +76,7 @@ graph TD
 | `eng::rhi` | core, log | [035](../adr/ADR-035-rhi-abstraction.md) · [036](../adr/ADR-036-rhi-selection.md) |
 | `eng::rhi::vulkan` (backend) | rhi | [037](../adr/ADR-037-vulkan-backend.md) |
 | `eng::rhi::gles` (backend) | rhi | [038](../adr/ADR-038-gles-backend.md) |
+| `eng::tick` (evolução P0-5) | core, scene, physics, animation, particles, reflect | [051](../adr/ADR-051-tick-architecture.md) |
 | `android/runtime` (consumidor) | rhi, rhi::vulkan, rhi::gles, log | [039](../adr/ADR-039-android-activity-jni-renderthread.md) · [040](../adr/ADR-040-android-surface-ownership.md) |
 | `tests/` (raiz) | TODOS — integração e2e | — |
 | executáveis de teste | módulo testado + Catch2 (externa) | — |
@@ -92,7 +93,7 @@ Documentação por módulo: [13-rhi](13-rhi.md) · [14-rhi-vulkan](14-rhi-vulkan
 [05-ecs](05-ecs.md) · [06-scene](06-scene.md) · [07-fs](07-fs.md) ·
 [08-platform](08-platform.md) · [09-serial](09-serial.md) ·
 [10-assets](10-assets.md) · [11-project](11-project.md) ·
-[12-scene-serialization](12-scene-serialization.md).
+[12-scene-serialization](12-scene-serialization.md) · [21-tick](21-tick.md).
 
 Decisão registrada: `eng::mem` reporta vazamentos via `fprintf(stderr)` no
 destrutor do `HeapAllocator` em vez de usar `eng::log`. Motivo: introduzir a
@@ -121,6 +122,8 @@ graph TD
     particles["eng::particles (FASE 10)"] --> scene & math & reflect
     niscript["eng::niscript — NI-Script (FASE 11)"] --> core & math & ecs & reflect
     build["eng::build — build/export (FASE 12)"] --> project & assets & serial & niscript
+    tick["eng::tick — arquitetura de Tick (evolução P0-5)"] --> scene & physics & animation & particles
+    editor --> tick
 ```
 
 Regras que mantêm o grafo acíclico conforme os módulos entram:

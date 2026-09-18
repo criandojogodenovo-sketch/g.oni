@@ -25,37 +25,48 @@ namespace {
 }  // namespace
 
 // =============================================================================
-// Conversões tela ↔ mundo
+// Conversões tela ↔ mundo (P0-5: passam pela câmera EM FOCO — a de jogo
+// quando ativa em Play, senão a do editor — ADR-051)
 // =============================================================================
 
 float Viewport::worldToScreenX(float wx) const noexcept
 {
-    return screenW_ * 0.5f + (wx - camera_.posX) * camera_.zoom;
+    const Camera2D& camera = effectiveCamera();
+    return screenW_ * 0.5f + (wx - camera.posX) * camera.zoom;
 }
 
 float Viewport::worldToScreenY(float wy) const noexcept
 {
-    return screenH_ * 0.5f - (wy - camera_.posY) * camera_.zoom;
+    const Camera2D& camera = effectiveCamera();
+    return screenH_ * 0.5f - (wy - camera.posY) * camera.zoom;
 }
 
 float Viewport::screenToWorldX(float sx) const noexcept
 {
-    return (sx - screenW_ * 0.5f) / camera_.zoom + camera_.posX;
+    const Camera2D& camera = effectiveCamera();
+    return (sx - screenW_ * 0.5f) / camera.zoom + camera.posX;
 }
 
 float Viewport::screenToWorldY(float sy) const noexcept
 {
-    return camera_.posY - (sy - screenH_ * 0.5f) / camera_.zoom;
+    const Camera2D& camera = effectiveCamera();
+    return camera.posY - (sy - screenH_ * 0.5f) / camera.zoom;
 }
 
 void Viewport::pan(float screenDx, float screenDy) noexcept
 {
+    if (gameCameraActive()) {
+        return; // ADR-051: a câmera em foco é do JOGO — pan é no-op
+    }
     camera_.posX -= screenDx / camera_.zoom;
     camera_.posY += screenDy / camera_.zoom;
 }
 
 void Viewport::zoomAt(float factor, float screenFocusX, float screenFocusY) noexcept
 {
+    if (gameCameraActive()) {
+        return; // ADR-051: zoom é no-op sob câmera de jogo
+    }
     if (factor <= 0.f || !std::isfinite(factor)) {
         return;
     }
@@ -89,6 +100,15 @@ std::vector<EntityQuad> Viewport::buildQuads(
     // Caminhada depth-first estável (mesma ordem do hierarchySnapshot — a
     // ORDEM DE DESENHO; hit-test varre de trás para frente).
     const auto visit = [&](auto&& self, eng::ecs::Entity node, int depth) -> void {
+        // Camadas (P0-5, ADR-051): entidades em camada sem participação
+        // de render NÃO geram quad (filhos continuam sendo visitados — a
+        // camada é por entidade, não herdada).
+        if (!scene.participatesIn(node, eng::scene::LayerStage::Render)) {
+            scene.eachChild(node, [&](eng::ecs::Entity child) {
+                self(self, child, depth + 1);
+            });
+            return;
+        }
         const eng::math::Mat4 world = scene.computeWorldMatrix(node);
 
         EntityQuad quad;
@@ -167,10 +187,15 @@ std::vector<ParticleQuad> Viewport::buildParticleQuads(
     // Auditoria final (drift D6 da FASE 10): o viewport prometia desenhar
     // partículas como quads — nada lia a ParticlePool. Uma por partícula
     // VIVA (pool é runtime-only; em Play o clone tem as pools ativas).
+    // Camadas (P0-5, ADR-051): pool de camada sem render NÃO desenha.
     std::vector<ParticleQuad> quads;
     scene.world().each<eng::particles::ParticlePool>(
-        [&](eng::ecs::Entity /*emitter*/,
+        [&](eng::ecs::Entity emitter,
             const eng::particles::ParticlePool& pool) {
+            if (!scene.participatesIn(emitter,
+                                      eng::scene::LayerStage::Render)) {
+                return;
+            }
             quads.reserve(quads.size() + pool.particles.size());
             for (const auto& particle : pool.particles) {
                 ParticleQuad quad;
@@ -189,13 +214,16 @@ std::optional<eng::ecs::Entity> Viewport::hitTest(
     float touchRadius) const noexcept
 {
     // Top-most = último desenhado (frente). Raio generoso p/ dedo (§8.8).
+    // P0-5: usa a câmera EM FOCO (de jogo quando ativa) — o toque segue
+    // a câmera que o usuário está vendo.
+    const Camera2D& camera = effectiveCamera();
     for (auto it = quads.rbegin(); it != quads.rend(); ++it) {
         const float centerSX = worldToScreenX(it->worldX);
         const float centerSY = worldToScreenY(it->worldY);
         const float halfPX =
-            std::max(it->sizeX * camera_.zoom * 0.5f, kMinQuadPixels * 0.5f);
+            std::max(it->sizeX * camera.zoom * 0.5f, kMinQuadPixels * 0.5f);
         const float halfPY =
-            std::max(it->sizeY * camera_.zoom * 0.5f, kMinQuadPixels * 0.5f);
+            std::max(it->sizeY * camera.zoom * 0.5f, kMinQuadPixels * 0.5f);
         const float dx = std::abs(screenX - centerSX);
         const float dy = std::abs(screenY - centerSY);
         if (dx <= halfPX + touchRadius && dy <= halfPY + touchRadius) {

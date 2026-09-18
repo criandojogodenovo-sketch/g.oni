@@ -43,6 +43,8 @@
 #include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectFile.hpp"
 #include "eng/scene/Scene.hpp"
+#include "eng/tick/Camera.hpp"
+#include "eng/tick/Tick.hpp"
 
 namespace eng::editor {
 
@@ -155,10 +157,27 @@ public:
     [[nodiscard]] eng::core::Result<void> play();
     void stop() noexcept;
     [[nodiscard]] bool isPlaying() const noexcept { return mode_ == Mode::Play; }
-    /// Avanço do runtime por frame (Choreographer). Play: input (§6.1) +
-    /// física com timestep fixo (§7.6) + animação (§7.9) + partículas
-    /// (§7.12) sobre o CLONE. Edit: parado (gestos não vazam — §6.4).
+    /// Avanço do runtime por frame. Play: input (§6.1) + TICK SCHEDULER
+    /// (evolução P0-5, ADR-051 — física com timestep fixo, animação,
+    /// partículas, scripts e câmera agendados por (fase, ordem)) sobre o
+    /// CLONE. Edit: parado (gestos não vazam — §6.4). Depois do frame a
+    /// câmera de jogo ativa (se houver) toma o viewport (ADR-051).
     void tick(float deltaSeconds) noexcept;
+
+    /// Agendador de ticks do runtime (P0-5). Vazio em Edit; construído no
+    /// play(). Diagnóstico/testes.
+    [[nodiscard]] const eng::tick::TickScheduler* runtimeScheduler()
+        const noexcept
+    {
+        return scheduler_.get();
+    }
+
+    /// Câmera de jogo ativa do último frame (P0-5) — o viewport a usa em
+    /// Play quando a cena tem câmera ativa (ADR-051).
+    [[nodiscard]] bool hasGameCamera() const noexcept
+    {
+        return gameCameraActive_;
+    }
 
     /// Física do runtime (contatos do último passo — gameplay/debug).
     [[nodiscard]] const eng::physics::PhysicsWorld& runtimePhysics() const
@@ -258,11 +277,19 @@ private:
 
     std::optional<eng::ecs::Entity> selection_{};
 
+    /// Espelha a câmera de jogo ativa no viewport (P0-5, ADR-051): copia
+    /// posX/posY/zoom para `gameCamera_` e entrega ao viewport, ou devolve
+    /// a câmera do editor quando a cena não tem câmera ativa.
+    void syncGameCamera(const eng::tick::ActiveCamera& active) noexcept;
+
     eng::input::InputSystem runtimeInput_{}; ///< input do JOGO (§6.4)
     eng::physics::PhysicsWorld physicsWorld_{};      ///< §7.1–§7.6
     eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
     eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
     std::unique_ptr<class NiRuntime> niRuntime_;     ///< §FASE 11 (clone)
+    std::unique_ptr<eng::tick::TickScheduler> scheduler_{}; ///< P0-5 (Play)
+    Viewport::Camera2D gameCamera_{};      ///< cache da câmera ativa (P0-5)
+    bool gameCameraActive_ = false;        ///< último refresh achou câmera?
     Viewport viewport_{};
     std::unique_ptr<AssetBrowser> assets_{};
 };

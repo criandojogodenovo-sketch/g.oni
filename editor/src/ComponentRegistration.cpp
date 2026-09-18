@@ -6,7 +6,9 @@
 #include "eng/editor/SpriteData.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
+#include "eng/scene/Layers.hpp"
 #include "eng/scene/SceneSerializer.hpp"
+#include "eng/tick/Camera.hpp"
 
 /// Registro dos componentes de GAMEPLAY (FASE 10, missão §8 integração):
 /// physics/animation/particles entram no CATÁLOGO ÚNICO do serializer —
@@ -36,6 +38,12 @@ const bool goni_editor_components_registered = [] {
     // FASE 11: scripts NI-Script anexados a nós (ADR-043 — mesmo catálogo)
     (void)SceneSerializer::registerComponentType<
         eng::editor::NiScriptComponent>("eng::editor::NiScriptComponent");
+    // Evolução P0-5 (ADR-051): câmera de jogo como cidadã da cena +
+    // membro de camada (GAME/SUBGAME/nomeadas) — Inspector/persistência/clone.
+    (void)SceneSerializer::registerComponentType<eng::tick::CameraData>(
+        "eng::tick::CameraData");
+    (void)SceneSerializer::registerComponentType<eng::scene::LayerMember>(
+        "eng::scene::LayerMember");
     return true;
 }();
 

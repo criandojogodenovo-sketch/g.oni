@@ -168,6 +168,14 @@ void AnimationSystem::update(eng::scene::Scene& scene,
                              const AnimationBank& bank, float deltaSeconds)
 {
     scene.world().each<Animator>([&](eng::ecs::Entity e, Animator& animator) {
+        // Camadas (evolução P0-5, ADR-051): sem participação de update o
+        // animator CONGELA (não expira blend, não avança); com timeScale
+        // o dt é escalado por entidade.
+        if (!scene.participatesIn(e, eng::scene::LayerStage::Update)) {
+            return;
+        }
+        const float dt =
+            deltaSeconds * scene.timeScaleOf(e);
         const AnimationClip* clip = bank.find(animator.clip);
         if (clip == nullptr || clip->duration() <= 0.f) {
             // sem clip válido: congela (sem crash); blend ativo expira
@@ -180,7 +188,7 @@ void AnimationSystem::update(eng::scene::Scene& scene,
         // Avanço com velocidade (§7.9 speed) — APENAS tocando; pausado
         // mantém o cursor (seek continua aplicando a pose do instante).
         if (animator.playing) {
-            animator.time += deltaSeconds * animator.speed;
+            animator.time += dt * animator.speed;
             if (animator.loop) {
                 animator.time = std::fmod(animator.time, clip->duration());
             } else if (animator.time >= clip->duration()) {
@@ -205,7 +213,7 @@ void AnimationSystem::update(eng::scene::Scene& scene,
             blending = false;
         }
         if (blending && animator.playing) {
-            animator.previousTime += deltaSeconds * animator.speed;
+            animator.previousTime += dt * animator.speed;
             if (animator.previousTime >= previous->duration()) {
                 animator.previousTime = previous->duration();
             }
@@ -218,7 +226,7 @@ void AnimationSystem::update(eng::scene::Scene& scene,
             // fade 0.2s com dt 0.1 já está em t=0.5 — sem frame "perdido"
             // em t=0).
             animator.blendRemaining =
-                std::max(0.f, animator.blendRemaining - deltaSeconds);
+                std::max(0.f, animator.blendRemaining - dt);
             const float t = 1.f - (animator.blendRemaining /
                                    animator.blendDuration);
             pose = blend(sample(*previous, animator.previousTime), pose, t);

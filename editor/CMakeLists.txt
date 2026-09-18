@@ -37,6 +37,7 @@ target_compile_options(eng_editor PRIVATE ${ENG_RUNTIME_FLAGS})
 
 target_link_libraries(eng_editor PUBLIC
     eng::niscript
+    eng::tick
     eng::scene
     eng::serial
     eng::project

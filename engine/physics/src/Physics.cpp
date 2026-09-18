@@ -244,10 +244,16 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
     contacts_.clear();
 
     // 1) Integração semi-implícita (velocidade → posição).
+    //    Camadas (evolução P0-5, ADR-051): corpo em camada sem
+    //    participação de física é PULADO — fica estático e fora do
+    //    mundo físico (sem resposta, sem trigger, sem raycast).
     scene.world().each<RigidBody>(
         [&](eng::ecs::Entity e, RigidBody& body) {
             if (body.mass <= 0.f) {
                 return; // estático
+            }
+            if (!scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
+                return; // camada sem física (ADR-051)
             }
             if (body.useGravity) {
                 body.velocity = body.velocity + body.gravity * fixedDt;
@@ -269,7 +275,8 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
     std::vector<eng::ecs::Entity> collidable;
     collidable.reserve(scene.nodeCount());
     scene.world().each<Collider>([&](eng::ecs::Entity e, const Collider&) {
-        if (scene.isNode(e)) {
+        if (scene.isNode(e) &&
+            scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
             collidable.push_back(e);
         }
     });
@@ -383,7 +390,8 @@ eng::core::Result<RaycastHit> PhysicsWorld::raycast(
 
     scene.world().each<Collider>(
         [&](eng::ecs::Entity e, const Collider& collider) {
-            if (!scene.isNode(e) || (collider.layer & mask) == 0u) {
+            if (!scene.isNode(e) || (collider.layer & mask) == 0u ||
+                !scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
                 return;
             }
             const WorldShape shape = worldShapeOf(scene, e, collider);
@@ -461,7 +469,8 @@ Vec3 PhysicsWorld::moveAndSlide(const eng::scene::Scene& scene,
 
     scene.world().each<Collider>([&](eng::ecs::Entity e,
                                      const Collider& collider) {
-        if (e == body || collider.isTrigger) {
+        if (e == body || collider.isTrigger ||
+            !scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
             return;
         }
         const WorldShape other = worldShapeOf(scene, e, collider);

@@ -81,8 +81,15 @@ TEST_CASE("scene-serial: cena vazia round-trip", "[scene][serial]")
 
     const auto saved = eng::scene::SceneSerializer::save(scene);
     REQUIRE(saved.ok());
+    // Evolução P0-5 (ADR-051): a seção "layers" é SEMPRE emitida (defaults
+    // GAME/SUBGAME incluídos) — compatível nos dois sentidos (o parser da
+    // PRÉ-P0-5 ignora chaves de topo desconhecidas).
     CHECK(saved.value() ==
-          "{\"entities\":[],\"formatVersion\":1,\"sceneEntityIds\":[]}");
+          "{\"entities\":[],\"formatVersion\":1,\"layers\":["
+          "{\"name\":\"GAME\",\"physics\":true,\"render\":true,"
+          "\"timeScale\":1.0,\"update\":true},"
+          "{\"name\":\"SUBGAME\",\"physics\":true,\"render\":true,"
+          "\"timeScale\":1.0,\"update\":true}],\"sceneEntityIds\":[]}");
 
     eng::scene::Scene clone;
     const auto loaded = eng::scene::SceneSerializer::load(clone, saved.value());

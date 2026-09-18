@@ -29,13 +29,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "eng/core/Result.hpp"
 #include "eng/ecs/Ecs.hpp"
 #include "eng/math/Mat4.hpp"
 #include "eng/math/Transform.hpp"
+#include "eng/scene/Layers.hpp"
+#include "eng/scene/Links.hpp"
 
 namespace eng::scene {
 
@@ -152,6 +157,54 @@ public:
     [[nodiscard]] eng::ecs::World& world() noexcept { return world_; }
     [[nodiscard]] const eng::ecs::World& world() const noexcept { return world_; }
 
+    // --- links tipados (evolução P0-5, ADR-051) ------------------------------
+
+    /// Registry de links da cena (tipos, criação, consultas).
+    [[nodiscard]] LinkRegistry& links() noexcept { return links_; }
+    [[nodiscard]] const LinkRegistry& links() const noexcept { return links_; }
+
+    /// Cria um link tipado `from → to`. Valida AMBAS as pontas (nós vivos)
+    /// ANTES de tocar a registry — erros da registry (tipo não registrado,
+    /// duplicado, ciclo) são propagados com contexto.
+    [[nodiscard]] eng::core::Result<LinkId> createLink(std::string_view type,
+                                                       eng::ecs::Entity from,
+                                                       eng::ecs::Entity to);
+
+    /// Destrói um link (no-op seguro com handle obsoleto).
+    bool destroyLink(LinkId id);
+
+    /// Remove links com ponta morta (bypass do world). Retorna quantos.
+    std::size_t sweepLinks();
+
+    // --- camadas (evolução P0-5, ADR-051) -------------------------------------
+
+    /// Registry de camadas da cena (GAME/SUBGAME + nomeadas).
+    [[nodiscard]] LayerRegistry& layers() noexcept { return layers_; }
+    [[nodiscard]] const LayerRegistry& layers() const noexcept
+    {
+        return layers_;
+    }
+
+    /// Remove uma camada — REJEITADA enquanto qualquer entidade a
+    /// referencia (varredura de LayerMember; sem fallback silencioso).
+    [[nodiscard]] eng::core::Result<void> removeLayer(
+        std::string_view name);
+
+    /// Nome da camada de `node` (LayerMember → registry; GAME quando sem
+    /// componente). string_view para o storage VIVO — não reter além da
+    /// consulta. Camada referenciada mas ausente → GAME (defensivo; o
+    /// serializer valida no load e removeLayer impede o órfão).
+    [[nodiscard]] std::string_view layerOf(eng::ecs::Entity node) const noexcept;
+
+    /// `node` participa do estágio na sua camada? Ausência de LayerMember
+    /// = GAME (tudo participante). Consulta canônica de física/animação/
+    /// partículas/viewport — ADR-051.
+    [[nodiscard]] bool participatesIn(eng::ecs::Entity node,
+                                       LayerStage stage) const noexcept;
+
+    /// timeScale da camada de `node` (GAME default = 1.f).
+    [[nodiscard]] float timeScaleOf(eng::ecs::Entity node) const noexcept;
+
 private:
     [[nodiscard]] Hierarchy* hierarchyOf(eng::ecs::Entity node) noexcept;
     [[nodiscard]] const Hierarchy* hierarchyOf(eng::ecs::Entity node) const noexcept;
@@ -165,6 +218,8 @@ private:
     [[nodiscard]] std::vector<eng::ecs::Entity> collectSubtree(eng::ecs::Entity node) const;
 
     eng::ecs::World world_;
+    LinkRegistry links_{};    ///< links tipados (P0-5, ADR-051)
+    LayerRegistry layers_{};  ///< GAME/SUBGAME/nomeadas (P0-5, ADR-051)
 };
 
 } // namespace eng::scene

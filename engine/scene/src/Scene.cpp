@@ -69,6 +69,12 @@ bool Scene::destroyNode(eng::ecs::Entity node)
     }
 
     const std::vector<eng::ecs::Entity> subtree = collectSubtree(node);
+    // Links das entidades da subárvore morrem JUNTOS (ADR-051) — antes do
+    // world_.destroy, para que consultas durante a destruição não vejam
+    // pontas mortas.
+    for (const eng::ecs::Entity member : subtree) {
+        (void)links_.destroyAllFor(member);
+    }
     // Folhas primeiro (ordem reversa da coleta por nível): determinístico e
     // mantém os handles válidos o máximo possível durante a destruição.
     for (auto it = subtree.rbegin(); it != subtree.rend(); ++it) {
@@ -218,6 +224,110 @@ std::vector<eng::ecs::Entity> Scene::collectSubtree(eng::ecs::Entity node) const
         }
     }
     return subtree;
+}
+
+// =============================================================================
+// Links tipados (evolução P0-5, ADR-051)
+// =============================================================================
+
+eng::core::Result<LinkId> Scene::createLink(std::string_view type,
+                                            eng::ecs::Entity from,
+                                            eng::ecs::Entity to)
+{
+    using eng::core::Error;
+    using eng::core::StatusCode;
+
+    if (!isNode(from) || !isNode(to)) {
+        return eng::core::makeUnexpected(Error{
+            StatusCode::InvalidArgument,
+            "Scene::createLink: ponta do link não é um nó vivo"});
+    }
+    return links_.create(type, from, to);
+}
+
+bool Scene::destroyLink(LinkId id)
+{
+    return links_.destroy(id);
+}
+
+std::size_t Scene::sweepLinks()
+{
+    return links_.sweep(world_);
+}
+
+// =============================================================================
+// Camadas (evolução P0-5, ADR-051)
+// =============================================================================
+
+eng::core::Result<void> Scene::removeLayer(std::string_view name)
+{
+    using eng::core::Error;
+    using eng::core::StatusCode;
+
+    if (!layers_.has(name)) {
+        return eng::core::makeUnexpected(Error{
+            StatusCode::NotFound,
+            "Scene::removeLayer: camada '" + std::string(name) +
+                "' não existe"});
+    }
+    // Remoção com entidades usando a camada é REJEITADA (ADR-051): sem
+    // fallback silencioso para GAME. Varredura dos LayerMember vivos.
+    bool inUse = false;
+    world_.each<LayerMember>(
+        [&](eng::ecs::Entity /*e*/, const LayerMember& member) {
+            if (member.layer == name) {
+                inUse = true;
+            }
+        });
+    if (inUse) {
+        return eng::core::makeUnexpected(Error{
+            StatusCode::InvalidState,
+            "Scene::removeLayer: camada '" + std::string(name) +
+                "' ainda é usada por entidades"});
+    }
+    return layers_.remove(name);
+}
+
+std::string_view Scene::layerOf(eng::ecs::Entity node) const noexcept
+{
+    const LayerMember* member =
+        world_.valid(node) ? world_.get<LayerMember>(node) : nullptr;
+    if (member != nullptr) {
+        if (const LayerDefinition* definition = layers_.find(member->layer)) {
+            return definition->name;
+        }
+    }
+    return LayerRegistry::kGame;  // default (e defensivo p/ órfãos)
+}
+
+bool Scene::participatesIn(eng::ecs::Entity node,
+                           LayerStage stage) const noexcept
+{
+    const LayerMember* member =
+        world_.valid(node) ? world_.get<LayerMember>(node) : nullptr;
+    const LayerDefinition* definition =
+        member != nullptr ? layers_.find(member->layer) : nullptr;
+    if (definition == nullptr) {
+        return true;  // sem LayerMember/camada ausente → GAME default
+    }
+    switch (stage) {
+    case LayerStage::Update:
+        return definition->participation.update;
+    case LayerStage::Physics:
+        return definition->participation.physics;
+    case LayerStage::Render:
+        return definition->participation.render;
+    }
+    return true;  // inalcançável (todos os estágios acima)
+}
+
+float Scene::timeScaleOf(eng::ecs::Entity node) const noexcept
+{
+    const LayerMember* member =
+        world_.valid(node) ? world_.get<LayerMember>(node) : nullptr;
+    const LayerDefinition* definition =
+        member != nullptr ? layers_.find(member->layer) : nullptr;
+    return definition != nullptr ? definition->timeScale : 1.f;
 }
 
 } // namespace eng::scene

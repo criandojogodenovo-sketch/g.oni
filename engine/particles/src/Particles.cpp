@@ -99,6 +99,13 @@ void ParticleSystem::update(eng::scene::Scene& scene, float deltaSeconds)
 
     scene.world().each<ParticleEmitter>(
         [&](eng::ecs::Entity e, const ParticleEmitter& emitter) {
+            // Camadas (evolução P0-5, ADR-051): sem update a emissão
+            // congela inteira (integração, morte e spawn); timeScale
+            // escala o dt do emissor.
+            if (!scene.participatesIn(e, eng::scene::LayerStage::Update)) {
+                return;
+            }
+            const float dt = deltaSeconds * scene.timeScaleOf(e);
             ParticlePool* pool = scene.world().get<ParticlePool>(e);
             if (pool == nullptr) {
                 // Pool nasce junto do primeiro update (runtime only).
@@ -112,12 +119,12 @@ void ParticleSystem::update(eng::scene::Scene& scene, float deltaSeconds)
             //    partícula nascida NESTE update não envelhece o dt que a
             //    gerou — bug pego pelo teste de determinismo).
             for (auto& particle : pool->particles) {
-                particle.age += deltaSeconds;
+                particle.age += dt;
                 particle.velocity =
-                    particle.velocity + emitter.gravity * deltaSeconds;
+                    particle.velocity + emitter.gravity * dt;
                 particle.position =
-                    particle.position + particle.velocity * deltaSeconds;
-                particle.rotation += emitter.rotationSpeed * deltaSeconds;
+                    particle.position + particle.velocity * dt;
+                particle.rotation += emitter.rotationSpeed * dt;
             }
 
             // 2) Morte.
@@ -131,7 +138,7 @@ void ParticleSystem::update(eng::scene::Scene& scene, float deltaSeconds)
 
             // 3) Spawn por acumulador (taxa média — independente do dt).
             if (emitter.playing && emitter.rate > 0.f) {
-                pool->spawnAccumulator += emitter.rate * deltaSeconds;
+                pool->spawnAccumulator += emitter.rate * dt;
                 while (pool->spawnAccumulator >= 1.f) {
                     pool->spawnAccumulator -= 1.f;
                     spawnParticle(scene, e, emitter, *pool);

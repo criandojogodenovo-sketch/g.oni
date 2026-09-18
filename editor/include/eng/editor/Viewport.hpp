@@ -89,10 +89,13 @@ public:
 
     // --- navegação (gestos — §8.6/§8.8) -------------------------------------
 
-    /// Pan por delta de TELA (pixels).
+    /// Pan por delta de TELA (pixels). NO-OP quando a câmera de JOGO
+    /// está ativa (P0-5: em Play com câmera na cena, mexer na câmera do
+    /// editor por trás seria debug mentiroso — a câmera é do jogo).
     void pan(float screenDx, float screenDy) noexcept;
 
     /// Zoom centrado num foco de TELA (pinch). Fator > 1 = aproximar.
+    /// Mesma política de `pan` sob câmera de jogo.
     void zoomAt(float factor, float screenFocusX, float screenFocusY) noexcept;
 
     // --- geometria do viewport ----------------------------------------------
@@ -102,6 +105,24 @@ public:
     [[nodiscard]] float screenHeight() const noexcept { return screenH_; }
     [[nodiscard]] const Camera2D& camera() const noexcept { return camera_; }
     [[nodiscard]] Camera2D& camera() noexcept { return camera_; }
+
+    // --- câmera de jogo (evolução P0-5, ADR-051) ------------------------------
+
+    /// Define a câmera de JOGO usada nas conversões (nullptr = desliga).
+    /// TODAS as conversões world↔screen E o hit-test passam a usá-la — o
+    /// render, o toque e o arraste seguem a câmera do jogo de graça.
+    /// O DONO do objeto apontado é o chamador (o documento guarda o
+    /// cache do frame). Pan/zoom do editor ficam no-op enquanto ativa.
+    void setGameCamera(const Camera2D* camera) noexcept { gameCamera_ = camera; }
+    [[nodiscard]] bool gameCameraActive() const noexcept
+    {
+        return gameCamera_ != nullptr;
+    }
+    /// Câmera em foco: a de jogo quando ativa, senão a do editor.
+    [[nodiscard]] const Camera2D& effectiveCamera() const noexcept
+    {
+        return gameCamera_ != nullptr ? *gameCamera_ : camera_;
+    }
 
     /// Zoom clampado a limites utilizáveis (evita degenerar com pinch).
     static constexpr float kMinZoom = 8.f;
@@ -139,6 +160,7 @@ public:
 
 private:
     Camera2D camera_{};
+    const Camera2D* gameCamera_ = nullptr;  ///< câmera de jogo (P0-5)
     float screenW_{1.f};
     float screenH_{1.f};
 };

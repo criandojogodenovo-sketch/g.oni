@@ -696,8 +696,38 @@ Result<void> EditorDocument::removeComponent(eng::ecs::Entity entity,
 }
 
 // =============================================================================
-// Play/Stop (§8.7 — ADR-044)
+// Play/Stop (§8.7, ADR-044) + Tick architecture (P0-5, ADR-051)
 // =============================================================================
+
+namespace {
+
+/// ScriptTick (evolução P0-5): NI-Script no agendador. Vive no EDITOR
+/// porque depende de NiRuntime (camada de composição — mesmo padrão do
+/// catálogo de componentes, ADR-043).
+class ScriptTick final : public eng::tick::TickSystem {
+public:
+    explicit ScriptTick(NiRuntime& runtime) noexcept : runtime_(runtime) {}
+
+    [[nodiscard]] const char* name() const override { return "ScriptTick"; }
+    [[nodiscard]] eng::tick::Phase phase() const override
+    {
+        return eng::tick::Phase::Update;
+    }
+    [[nodiscard]] int order() const override { return 30; }
+
+    void tick(eng::scene::Scene& /*scene*/, float dt) override
+    {
+        if (runtime_.empty()) {
+            return;
+        }
+        runtime_.tick(dt);
+    }
+
+private:
+    NiRuntime& runtime_;
+};
+
+}  // namespace
 
 Result<void> EditorDocument::play()
 {
@@ -731,9 +761,36 @@ Result<void> EditorDocument::play()
         &runtimeInput_);
     niRuntime_->start(*runtimeScene_);
     niRuntime_->fireStart();
+
+    // Evolução P0-5 (ADR-051): o frame do jogo é o TICK SCHEDULER —
+    // sistemas ordenados por (fase, ordem, inserção). Mesma ordem de
+    // execução de antes (física → animação → partículas → scripts →
+    // câmera), agora DECLARADA, testável e extensível.
+    scheduler_ = std::make_unique<eng::tick::TickScheduler>();
+    (void)scheduler_->addSystem(std::make_unique<eng::tick::PhysicsTick>(
+        physicsWorld_, physicsAccumulator_));
+    (void)scheduler_->addSystem(
+        std::make_unique<eng::tick::AnimationTick>(runtimeAnimations_));
+    (void)scheduler_->addSystem(std::make_unique<eng::tick::ParticleTick>());
+    (void)scheduler_->addSystem(
+        std::make_unique<ScriptTick>(*niRuntime_));
+    (void)scheduler_->addSystem(
+        std::make_unique<eng::tick::CameraTickSystem>());
+
     mode_ = Mode::Play;
-    ENG_INFO("PLAY: runtime clone pronto ({} nós, {} scripts)",
-             runtimeScene_->nodeCount(), niRuntime_->size());
+    // Câmera de jogo resolvida SEM rodar o frame: `up update` (e qualquer
+    // sistema com efeito) só roda em tick() explícito do host — contrato
+    // FASE 11 (play() não avança o mundo). O CameraTick ainda não tem
+    // cache (nenhum frame rodou): resolução direta (ADR-051).
+    syncGameCamera(eng::tick::resolveActiveCamera(*runtimeScene_));
+    {
+        std::string ticks;
+        for (const std::string& name : scheduler_->systemOrder()) {
+            ticks += ticks.empty() ? name : ", " + name;
+        }
+        ENG_INFO("PLAY: runtime clone pronto ({} nós, {} scripts; ticks: {})",
+                 runtimeScene_->nodeCount(), niRuntime_->size(), ticks);
+    }
     return {};
 }
 
@@ -741,6 +798,9 @@ void EditorDocument::stop() noexcept
 {
     if (mode_ == Mode::Play) {
         mode_ = Mode::Edit;
+        scheduler_.reset();  // ticks morrem com o clone (ADR-051)
+        gameCameraActive_ = false;
+        viewport_.setGameCamera(nullptr);  // câmera do editor volta
         niRuntime_->shutdown(); // `up destroy` + descarte (bindings morrem
                                 // JUNTOS com o clone — ADR-044)
         runtimeScene_.reset();
@@ -757,25 +817,35 @@ void EditorDocument::tick(float deltaSeconds) noexcept
     // FASE 9 (§6.1): input com janela de um update por frame.
     runtimeInput_.update();
 
-    // FASE 10 (§7.6): física com TIMESTEP FIXO por acumulador — o dt do
-    // frame NÃO vaza para a simulação (determinismo testado).
-    const auto steps = physicsAccumulator_.advance(deltaSeconds);
-    for (std::uint32_t step = 0; step < steps; ++step) {
-        physicsWorld_.step(*runtimeScene_, physicsAccumulator_.fixedDt());
-    }
+    // Evolução P0-5 (ADR-051): frame completo pelo TickScheduler —
+    // física (timestep fixo), animação, partículas, scripts e câmera
+    // nas fases/ordens declaradas no play(). Determinismo: a ordem é
+    // fixa e cada sistema vê o estado deixado pelos anteriores.
+    scheduler_->runFrame(*runtimeScene_, deltaSeconds);
 
-    // FASE 10 (§7.7): animação (dt do frame — interpolação, não física).
-    eng::animation::AnimationSystem::update(*runtimeScene_,
-                                            runtimeAnimations_,
-                                            deltaSeconds);
+    // Câmera de jogo (P0-5): o CameraTick cacheou a ativa no frame; o
+    // viewport passa a ver POR ELA (render/hit-test/arraste seguem).
+    const auto* cameraSystem = static_cast<const eng::tick::CameraTickSystem*>(
+        scheduler_->find("CameraTick"));
+    syncGameCamera(
+        cameraSystem != nullptr
+            ? cameraSystem->activeCamera()
+            : eng::tick::resolveActiveCamera(*runtimeScene_));
+}
 
-    // FASE 10 (§7.12): partículas CPU (dt do frame; spawn por acumulador).
-    eng::particles::ParticleSystem::update(*runtimeScene_, deltaSeconds);
-
-    // FASE 11: scripts NI-Script do clone (`up update`, orçamento por
-    // evento — determinismo §6.2; faults reparáveis não interrompem).
-    if (niRuntime_ != nullptr && !niRuntime_->empty()) {
-        niRuntime_->tick(deltaSeconds);
+void EditorDocument::syncGameCamera(
+    const eng::tick::ActiveCamera& active) noexcept
+{
+    if (active.found()) {
+        gameCamera_.posX = active.data.posX;
+        gameCamera_.posY = active.data.posY;
+        gameCamera_.zoom =
+            active.data.zoom > 0.f ? active.data.zoom : 48.f;
+        viewport_.setGameCamera(&gameCamera_);
+        gameCameraActive_ = true;
+    } else {
+        viewport_.setGameCamera(nullptr);
+        gameCameraActive_ = false;
     }
 }
 

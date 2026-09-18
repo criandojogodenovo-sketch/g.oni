@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <unordered_map>
+
+#include "eng/log/Log.hpp"
 #include <utility>
 #include <vector>
 
@@ -91,6 +93,11 @@ const bool eng_scene_builtin_components_registered = [] {
         "eng::math::Transform");
     (void)SceneSerializer::registerComponentType<eng::scene::Name>(
         "eng::scene::Name");
+    // Evolução P0-5 (ADR-051): camadas são ESTRUTURA DE CENA e o componente
+    // vive NO módulo scene — registro built-in (idempotente: consumidor que
+    // re-registra só sobrescreve a mesma entrada).
+    (void)SceneSerializer::registerComponentType<eng::scene::LayerMember>(
+        "eng::scene::LayerMember");
     return true;
 }();
 
@@ -118,6 +125,10 @@ struct NodeRecord {
 
 eng::core::Result<std::string> SceneSerializer::save(Scene& scene)
 {
+    // 0. Links com ponta morta (bypass do world) não persistem — varredura
+    //    antes de qualquer leitura (tolerância oportunista, ADR-051).
+    (void)scene.sweepLinks();
+
     // 1. Enumerar nós (achado crítico 2: todo nó tem Hierarchy; each
     //    itera o pool com snapshot mutável-seguro — emplace de
     //    SceneIdentity durante a iteração é seguro, ADR-024).
@@ -199,11 +210,75 @@ eng::core::Result<std::string> SceneSerializer::save(Scene& scene)
         entitiesArray.append(std::move(entity.json));
     }
 
+    // 4. Camadas (evolução P0-5, ADR-051): SEMPRE emitidas — defaults
+    //    incluídos. Ordem da registry (GAME, SUBGAME, nomeadas na ordem de
+    //    adição) é estável entre saves.
+    eng::serial::JsonValue layersArray = eng::serial::JsonValue::array();
+    for (const LayerDefinition& layer : scene.layers().definitions()) {
+        eng::serial::JsonValue entry = eng::serial::JsonValue::object();
+        entry.set("name", eng::serial::JsonValue::string(layer.name));
+        entry.set("update",
+                  eng::serial::JsonValue::boolean(
+                      layer.participation.update));
+        entry.set("physics",
+                  eng::serial::JsonValue::boolean(
+                      layer.participation.physics));
+        entry.set("render",
+                  eng::serial::JsonValue::boolean(
+                      layer.participation.render));
+        entry.set("timeScale", eng::serial::JsonValue::real(
+                                   static_cast<double>(layer.timeScale)));
+        layersArray.append(std::move(entry));
+    }
+
+    // 5. Links (evolução P0-5, ADR-051): tipos registrados + entradas em
+    //    ordem de criação (round-trip estável — ADR-051).
+    eng::serial::JsonValue linksSection = eng::serial::JsonValue::object();
+    bool hasLinkContent = false;
+    if (!scene.links().types().empty()) {
+        eng::serial::JsonValue linkTypes = eng::serial::JsonValue::array();
+        for (const auto& [type, flags] : scene.links().types()) {
+            eng::serial::JsonValue entry = eng::serial::JsonValue::object();
+            entry.set("type", eng::serial::JsonValue::string(type));
+            entry.set("hierarchical",
+                      eng::serial::JsonValue::boolean(flags.hierarchical));
+            linkTypes.append(std::move(entry));
+        }
+        linksSection.set("linkTypes", std::move(linkTypes));
+        hasLinkContent = true;
+    }
+    if (scene.links().size() > 0) {
+        eng::serial::JsonValue entries = eng::serial::JsonValue::array();
+        scene.links().each(
+            [&](LinkId /*id*/, const LinkRecord& record) {
+                const auto fromId = idOf.find(record.from);
+                const auto toId = idOf.find(record.to);
+                if (fromId == idOf.end() || toId == idOf.end()) {
+                    return;  // sweep garantiu vivos; defesa extra
+                }
+                eng::serial::JsonValue entry =
+                    eng::serial::JsonValue::object();
+                entry.set("type",
+                          eng::serial::JsonValue::string(record.type));
+                entry.set("from", eng::serial::JsonValue::string(
+                                     fromId->second.toString()));
+                entry.set("to", eng::serial::JsonValue::string(
+                                   toId->second.toString()));
+                entries.append(std::move(entry));
+            });
+        linksSection.set("entries", std::move(entries));
+        hasLinkContent = true;
+    }
+
     eng::serial::JsonValue root = eng::serial::JsonValue::object();
     root.set("formatVersion",
              eng::serial::JsonValue::uinteger(kFormatVersion));
     root.set("sceneEntityIds", std::move(ids));
     root.set("entities", std::move(entitiesArray));
+    root.set("layers", std::move(layersArray));
+    if (hasLinkContent) {
+        root.set("links", std::move(linksSection));
+    }
     return eng::serial::dumpJson(root);
 }
 
@@ -231,6 +306,89 @@ eng::core::Result<void> SceneSerializer::load(Scene& scene,
             StatusCode::NotSupported,
             "formatVersion ausente/inválida/maior que a suportada (" +
                 std::to_string(kFormatVersion) + ")"));
+    }
+
+    // Camadas (evolução P0-5, ADR-051): definições ANTES das entidades —
+    // LayerMember é validado contra a registry no fim do load. Arquivos
+    // antigos (sem a seção) carregam com os defaults GAME/SUBGAME.
+    const auto layersField = root.find("layers");
+    if (layersField.has_value()) {
+        if (!layersField->isArray()) {
+            return makeUnexpected(sceneError(
+                StatusCode::ParseError, "'layers' não é array"));
+        }
+        for (std::size_t i = 0; i < layersField->size(); ++i) {
+            const eng::serial::JsonValue layer = layersField->at(i);
+            if (!layer.isObject()) {
+                return makeUnexpected(sceneError(
+                    StatusCode::ParseError,
+                    "layers[" + std::to_string(i) + "] não é objeto"));
+            }
+            const auto nameField = layer.find("name");
+            if (!nameField.has_value() || !nameField->isString()) {
+                return makeUnexpected(sceneError(
+                    StatusCode::ParseError,
+                    "layers[" + std::to_string(i) +
+                        "] sem 'name' string"));
+            }
+            const std::string layerName = nameField->asString();
+
+            LayerParticipation participation;
+            const auto readFlag =
+                [&layer, &layerName,
+                 i](const char* key, bool& out)
+                    -> eng::core::Result<void> {
+                    const auto flag = layer.find(key);
+                    if (!flag.has_value() || !flag->isBool()) {
+                        return makeUnexpected(sceneError(
+                            StatusCode::ParseError,
+                            "layers[" + std::to_string(i) + "] ('" +
+                                layerName + "') sem '" + key + "' bool"));
+                    }
+                    out = flag->asBool();
+                    return {};
+                };
+            if (const auto r = readFlag("update", participation.update);
+                r.isError()) {
+                return makeUnexpected(r.error());
+            }
+            if (const auto r = readFlag("physics", participation.physics);
+                r.isError()) {
+                return makeUnexpected(r.error());
+            }
+            if (const auto r = readFlag("render", participation.render);
+                r.isError()) {
+                return makeUnexpected(r.error());
+            }
+            float timeScale = 1.f;
+            const auto timeField = layer.find("timeScale");
+            if (timeField.has_value()) {
+                if (!timeField->isNumber() || !(timeField->asF64() >= 0.0)) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "layers[" + std::to_string(i) + "] ('" +
+                            layerName + "') timeScale inválido"));
+                }
+                timeScale = static_cast<float>(timeField->asF64());
+            }
+
+            if (!scene.layers().has(layerName)) {
+                const auto added = scene.layers().addLayer(layerName);
+                if (added.isError()) {
+                    return makeUnexpected(added.error());
+                }
+            }
+            const auto setParticipation = scene.layers().setParticipation(
+                layerName, participation);
+            if (setParticipation.isError()) {
+                return makeUnexpected(setParticipation.error());
+            }
+            const auto setTimeScale =
+                scene.layers().setTimeScale(layerName, timeScale);
+            if (setTimeScale.isError()) {
+                return makeUnexpected(setTimeScale.error());
+            }
+        }
     }
 
     // sceneEntityIds: lista canônica (consistência validada contra entities)
@@ -409,6 +567,160 @@ eng::core::Result<void> SceneSerializer::load(Scene& scene,
                 "attach de " + record.id.toString() +
                     " sob " + record.parent.toString() +
                     " falhou (ciclo? inválido?)"));
+        }
+    }
+
+    // LayerMember (evolução P0-5): membros precisam referenciar camadas
+    // DEFINIDAS — sem fallback silencioso (ADR-051). Validação após o load
+    // das definições e das entidades.
+    {
+        bool orphan = false;
+        std::string orphanLayer;
+        scene.world().each<LayerMember>(
+            [&](eng::ecs::Entity /*e*/, const LayerMember& member) {
+                if (!scene.layers().has(member.layer) && !orphan) {
+                    orphan = true;
+                    orphanLayer = member.layer;
+                }
+            });
+        if (orphan) {
+            return makeUnexpected(sceneError(
+                StatusCode::ParseError,
+                "LayerMember referencia camada não definida: '" +
+                    orphanLayer + "'"));
+        }
+    }
+
+    // Links (evolução P0-5, ADR-051): tipos primeiro, entradas em ordem de
+    // arquivo (== ordem de criação no save). Pontas por uuid — ausente é
+    // ParseError, igual ao parent.
+    const auto linksField = root.find("links");
+    if (linksField.has_value()) {
+        if (!linksField->isObject()) {
+            return makeUnexpected(sceneError(
+                StatusCode::ParseError, "'links' não é objeto"));
+        }
+        const auto linkTypes = linksField->find("linkTypes");
+        if (linkTypes.has_value()) {
+            if (!linkTypes->isArray()) {
+                return makeUnexpected(sceneError(
+                    StatusCode::ParseError,
+                    "links.linkTypes não é array"));
+            }
+            for (std::size_t i = 0; i < linkTypes->size(); ++i) {
+                const eng::serial::JsonValue type = linkTypes->at(i);
+                if (!type.isObject()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "linkTypes[" + std::to_string(i) +
+                            "] não é objeto"));
+                }
+                const auto typeName = type.find("type");
+                if (!typeName.has_value() || !typeName->isString()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "linkTypes[" + std::to_string(i) +
+                            "] sem 'type' string"));
+                }
+                const std::string name = typeName->asString();
+                LinkTypeFlags flags;
+                const auto hierarchical = type.find("hierarchical");
+                if (hierarchical.has_value()) {
+                    if (!hierarchical->isBool()) {
+                        return makeUnexpected(sceneError(
+                            StatusCode::ParseError,
+                            "linkTypes[" + std::to_string(i) +
+                                "] ('" + name +
+                                "') 'hierarchical' não é bool"));
+                    }
+                    flags.hierarchical = hierarchical->asBool();
+                }
+                if (scene.links().hasType(name)) {
+                    const LinkTypeFlags* existing =
+                        scene.links().typeFlags(name);
+                    if (existing == nullptr ||
+                        existing->hierarchical != flags.hierarchical) {
+                        return makeUnexpected(sceneError(
+                            StatusCode::ParseError,
+                            "tipo de link '" + name +
+                                "' já registrado com flags diferentes"));
+                    }
+                } else {
+                    const auto registered =
+                        scene.links().registerType(name, flags);
+                    if (registered.isError()) {
+                        return makeUnexpected(registered.error());
+                    }
+                }
+            }
+        }
+        const auto linkEntries = linksField->find("entries");
+        if (linkEntries.has_value()) {
+            if (!linkEntries->isArray()) {
+                return makeUnexpected(sceneError(
+                    StatusCode::ParseError,
+                    "links.entries não é array"));
+            }
+            for (std::size_t i = 0; i < linkEntries->size(); ++i) {
+                const eng::serial::JsonValue entry = linkEntries->at(i);
+                if (!entry.isObject()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "links.entries[" + std::to_string(i) +
+                            "] não é objeto"));
+                }
+                const auto typeName = entry.find("type");
+                if (!typeName.has_value() || !typeName->isString()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "links.entries[" + std::to_string(i) +
+                            "] sem 'type' string"));
+                }
+                const auto fromField = entry.find("from");
+                if (!fromField.has_value() || !fromField->isString()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "links.entries[" + std::to_string(i) +
+                            "] sem 'from' string"));
+                }
+                const auto toField = entry.find("to");
+                if (!toField.has_value() || !toField->isString()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "links.entries[" + std::to_string(i) +
+                            "] sem 'to' string"));
+                }
+                auto fromId =
+                    SceneEntityId::fromString(fromField->asString());
+                if (fromId.isError()) {
+                    return makeUnexpected(fromId.error());
+                }
+                auto toId = SceneEntityId::fromString(toField->asString());
+                if (toId.isError()) {
+                    return makeUnexpected(toId.error());
+                }
+                const auto from = entityOf.find(fromId.value());
+                if (from == entityOf.end()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "links.entries[" + std::to_string(i) +
+                            "] from " + fromId.value().toString() +
+                            " não existe na cena"));
+                }
+                const auto to = entityOf.find(toId.value());
+                if (to == entityOf.end()) {
+                    return makeUnexpected(sceneError(
+                        StatusCode::ParseError,
+                        "links.entries[" + std::to_string(i) +
+                            "] to " + toId.value().toString() +
+                            " não existe na cena"));
+                }
+                const auto created = scene.createLink(
+                    typeName->asString(), from->second, to->second);
+                if (created.isError()) {
+                    return makeUnexpected(created.error());
+                }
+            }
         }
     }
     return {};
