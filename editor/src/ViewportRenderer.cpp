@@ -85,6 +85,22 @@ void pushQuad(std::vector<ViewportRenderer::Vertex>& out, float cx, float cy,
     out.insert(out.end(), std::begin(quad), std::end(quad));
 }
 
+/// Segmento espesso (RECOVERY §10 — contornos de collider): um quad
+/// girado de A a B com a espessura dada (half-thickness em clip).
+void pushSegment(std::vector<ViewportRenderer::Vertex>& out, float ax,
+                 float ay, float bx, float by, float halfThick, float r,
+                 float g, float b)
+{
+    const float dx = bx - ax;
+    const float dy = by - ay;
+    const float length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1e-9f) {
+        return;
+    }
+    pushQuad(out, (ax + bx) * 0.5f, (ay + by) * 0.5f, length * 0.5f,
+             halfThick, std::atan2(dy, dx), r, g, b);
+}
+
 /// Um quad de sprite (2 triângulos, pos+cor+uv) em clip space.
 void pushSpriteQuad(std::vector<ViewportRenderer::SpriteVertex>& out, float cx,
                     float cy, float halfW, float halfH, float rotation, float u0,
@@ -494,6 +510,77 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float halfY = std::max(particle.size * zoom * 0.5f, 2.f) / h;
         pushQuad(frameVertices_, cx, cy, half, halfY, particle.rotation,
                  1.f, 0.86f, 0.55f);
+    }
+
+    // --- COLLIDERS (RECOVERY §10): o autor VÊ o shape de colisão ----------
+    // Contorno por cima da camada de cor (abaixo apenas de sprites com
+    // blending — o +2px de inflação espreita ao redor do sprite, mesmo
+    // padrão da borda de seleção). Teal = sólido; âmbar = trigger (sem
+    // resolução — §7.2 da física). Box = retângulo na ROTAÇÃO do nó;
+    // esfera = octógono (aproximação honesta num renderer de quads).
+    // Geometria idêntica à que o PhysicsWorld usará no Play: o que o
+    // autor vê é o que a física resolve.
+    {
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr int kSphereSides = 8;
+        const float kSolidR = 0.16f, kSolidG = 0.90f, kSolidB = 0.85f;
+        const float kTriggerR = 0.98f, kTriggerG = 0.78f, kTriggerB = 0.20f;
+        const float inflateX = 2.f / w;
+        const float inflateY = 2.f / h;
+        const float halfThick = 0.75f / w;
+        for (const EntityQuad& quad : quads) {
+            if (!quad.hasCollider) {
+                continue;
+            }
+            const float r =
+                quad.colliderTrigger ? kTriggerR : kSolidR;
+            const float g =
+                quad.colliderTrigger ? kTriggerG : kSolidG;
+            const float b =
+                quad.colliderTrigger ? kTriggerB : kSolidB;
+            const float cx = worldToClipX(quad.worldX);
+            const float cy = worldToClipY(quad.worldY);
+            const float hx =
+                quad.colliderHalfX * zoom / w + inflateX;
+            const float hy =
+                quad.colliderHalfY * zoom / h + inflateY;
+            if (quad.colliderIsSphere) {
+                // Octógono (fase inicial na rotação do nó p/ consistência).
+                float prevX = cx + hx * std::cos(quad.rotation);
+                float prevY = cy + hy * std::sin(quad.rotation);
+                for (int i = 1; i <= kSphereSides; ++i) {
+                    const float angle =
+                        quad.rotation +
+                        (2.f * kPi * static_cast<float>(i)) /
+                            static_cast<float>(kSphereSides);
+                    const float nextX = cx + hx * std::cos(angle);
+                    const float nextY = cy + hy * std::sin(angle);
+                    pushSegment(frameVertices_, prevX, prevY, nextX, nextY,
+                               halfThick, r, g, b);
+                    prevX = nextX;
+                    prevY = nextY;
+                }
+            } else {
+                // Retângulo: 4 cantos girados pela rotação do nó.
+                const float cosR = std::cos(quad.rotation);
+                const float sinR = std::sin(quad.rotation);
+                const float corners[4][2] = {
+                    {-hx, -hy}, {hx, -hy}, {hx, hy}, {-hx, hy}};
+                float vx[4];
+                float vy[4];
+                for (int i = 0; i < 4; ++i) {
+                    vx[i] = cx + corners[i][0] * cosR -
+                            corners[i][1] * sinR;
+                    vy[i] = cy + corners[i][0] * sinR +
+                            corners[i][1] * cosR;
+                }
+                for (int i = 0; i < 4; ++i) {
+                    const int next = (i + 1) % 4;
+                    pushSegment(frameVertices_, vx[i], vy[i], vx[next],
+                                vy[next], halfThick, r, g, b);
+                }
+            }
+        }
     }
 
     // --- SPRITES: vértices pos+cor+uv (pipeline texturizado com blending) ----

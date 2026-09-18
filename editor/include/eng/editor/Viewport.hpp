@@ -59,6 +59,20 @@ struct EntityQuad {
     /// Pivot do sprite [0..1] (0.5,0.5 = centrado).
     float pivotX{0.5f};
     float pivotY{0.5f};
+
+    // --- collider (RECOVERY §10) — preenchido quando o nó tem Collider ---
+    /// O AUTOR precisa VER o shape de colisão que está editando: o quad
+    /// carrega a geometria (nas MESMAS convenções do PhysicsWorld —
+    /// centrado no nó, escalado pelas colunas do world matrix) e o
+    /// renderer desenha o contorno por cima da cena.
+    bool hasCollider{false};
+    /// Meia-largura/altura em MUNDO (esfera: halfX == halfY == raio).
+    float colliderHalfX{0.5f};
+    float colliderHalfY{0.5f};
+    /// Esfera → contorno octogonal; box → retângulo na rotação do nó.
+    bool colliderIsSphere{false};
+    /// Trigger → contorno âmbar (contato SEM resolução — §7.2 da física).
+    bool colliderTrigger{false};
 };
 
 /// Quad de PARTÍCULA viva (marcador de gameplay — FASE 10). Auditoria

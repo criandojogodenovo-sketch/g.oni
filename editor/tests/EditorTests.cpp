@@ -2102,3 +2102,208 @@ TEST_CASE("editor: host com workspace ABSOLUTO — import e script funcionam "
         // já provou o pipeline); a reabertura é bônus de integração.
     }
 }
+
+// =============================================================================
+// COLLIDER VISÍVEL (RECOVERY §10): "The editor must visually show the
+// collision shape" — o autor edita shape/layer/mask/trigger e VÊ o que a
+// física usará. Três provas: dados no quad, contorno na GPU, e o efeito
+// físico OBSERVÁVEL (player cai no chão e PARA).
+// =============================================================================
+
+TEST_CASE("editor: quad expõe o shape do collider (dados — §10)", "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto ground = f.doc->createEntity("Ground", eng::scene::kNoEntity);
+    REQUIRE(ground.ok());
+    REQUIRE(f.doc->addComponent(ground.value(), "eng::physics::Collider")
+                .ok());
+
+    // Box com halfExtents (2,1) e escala de nó (2,1,1) → mundo (4,1).
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider", "shape", "Box")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider",
+                                     "halfExtents.x", "2")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider",
+                                     "halfExtents.y", "1")
+                .ok());
+    eng::editor::TransformDesc tr;
+    tr.scale = {2.f, 1.f, 1.f};
+    REQUIRE(f.doc->setTransform(ground.value(), tr).ok());
+
+    const auto quads = f.doc->viewport().buildQuads(
+        *f.doc->sceneInFocus(), std::nullopt);
+    REQUIRE(quads.size() == 1);
+    CHECK(quads[0].hasCollider);
+    CHECK_FALSE(quads[0].colliderIsSphere);
+    CHECK_FALSE(quads[0].colliderTrigger);
+    CHECK(quads[0].colliderHalfX == Catch::Approx(4.f).margin(1e-4f));
+    CHECK(quads[0].colliderHalfY == Catch::Approx(1.f).margin(1e-4f));
+
+    // Esfera: raio 1.5 × escala X (2) → halfX == halfY == 3 (convenção do
+    // PhysicsWorld::worldShapeOf — coluna X aproxima o raio).
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider", "shape",
+                                     "Sphere")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider", "radius", "1.5")
+                .ok());
+    const auto sphereQuads = f.doc->viewport().buildQuads(
+        *f.doc->sceneInFocus(), std::nullopt);
+    REQUIRE(sphereQuads.size() == 1);
+    CHECK(sphereQuads[0].hasCollider);
+    CHECK(sphereQuads[0].colliderIsSphere);
+    CHECK(sphereQuads[0].colliderHalfX == Catch::Approx(3.f).margin(1e-4f));
+    CHECK(sphereQuads[0].colliderHalfY == Catch::Approx(3.f).margin(1e-4f));
+
+    // Trigger refletido no quad (contorno âmbar no renderer).
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider", "isTrigger",
+                                     "true")
+                .ok());
+    const auto triggerQuads = f.doc->viewport().buildQuads(
+        *f.doc->sceneInFocus(), std::nullopt);
+    REQUIRE(triggerQuads.size() == 1);
+    CHECK(triggerQuads[0].colliderTrigger);
+
+    // Sem Collider: quad não carrega shape.
+    auto plain = f.doc->createEntity("Plain", eng::scene::kNoEntity);
+    REQUIRE(plain.ok());
+    const auto plainQuads = f.doc->viewport().buildQuads(
+        *f.doc->sceneInFocus(), std::nullopt);
+    REQUIRE(plainQuads.size() == 2);
+    std::size_t withCollider = 0;
+    for (const auto& quad : plainQuads) {
+        withCollider += quad.hasCollider ? 1u : 0u;
+    }
+    CHECK(withCollider == 1);
+}
+
+TEST_CASE("editor: renderer desenha o contorno do collider (§10)",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles",
+                                                ".editor-test-ws-collider");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    auto& doc = owned->document();
+    ensureProject(doc, "ColliderGame");
+
+    auto entity = doc.createEntity("Solid", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(doc.addComponent(entity.value(), "eng::physics::Collider").ok());
+    // Box sólido.
+    REQUIRE(doc.setInspectorField(entity.value(), "eng::physics::Collider",
+                                  "shape", "Box")
+                .ok());
+    auto trigger = doc.createEntity("Sensor", eng::scene::kNoEntity);
+    REQUIRE(trigger.ok());
+    REQUIRE(doc.addComponent(trigger.value(), "eng::physics::Collider").ok());
+    REQUIRE(doc.setInspectorField(trigger.value(), "eng::physics::Collider",
+                                  "shape", "Sphere")
+                .ok());
+    REQUIRE(doc.setInspectorField(trigger.value(), "eng::physics::Collider",
+                                  "isTrigger", "true")
+                .ok());
+
+    int marker = 0;
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless, 64,
+                          48);
+    REQUIRE(owned->state() == eng::editor::HostSurfaceState::Available);
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+
+    // PROVA sem readback: vértices do último frame.
+    //  - Box: 4 segmentos × 6 vértices = 24 vértices de contorno
+    //  - Esfera: 8 segmentos × 6 = 48
+    const auto& verts =
+        owned->viewportRenderer()->lastFrameVertices();
+    std::size_t solid = 0;
+    std::size_t amber = 0;
+    constexpr float kTealR = 0.16f, kTealG = 0.90f, kTealB = 0.85f;
+    constexpr float kAmberR = 0.98f, kAmberG = 0.78f, kAmberB = 0.20f;
+    for (const auto& v : verts) {
+        if (v.r == kTealR && v.g == kTealG && v.b == kTealB) {
+            ++solid;
+        } else if (v.r == kAmberR && v.g == kAmberG && v.b == kAmberB) {
+            ++amber;
+        }
+    }
+    CHECK(solid == 24);  // box sólido: teal
+    CHECK(amber == 48);  // esfera trigger: âmbar
+}
+
+TEST_CASE("editor: §10 — player com collider CAI no chão e PARA (física "
+          "observável)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Chão: box collider SEM RigidBody (estático — invB = 0).
+    auto ground = f.doc->createEntity("Ground", eng::scene::kNoEntity);
+    REQUIRE(ground.ok());
+    REQUIRE(f.doc->addComponent(ground.value(), "eng::physics::Collider")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider", "shape", "Box")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider",
+                                     "halfExtents.x", "50")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(ground.value(),
+                                     "eng::physics::Collider",
+                                     "halfExtents.y", "1")
+                .ok());
+    eng::editor::TransformDesc groundTr;
+    groundTr.position = {0.f, 0.f, 0.f};
+    REQUIRE(f.doc->setTransform(ground.value(), groundTr).ok());
+
+    // Player: RigidBody (cai) + esfera collider r=0.5 em y=5.
+    auto player = f.doc->createEntity("Player", eng::scene::kNoEntity);
+    REQUIRE(player.ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::RigidBody")
+                .ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(player.value(),
+                                     "eng::physics::Collider", "shape",
+                                     "Sphere")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(player.value(),
+                                     "eng::physics::Collider", "radius", "0.5")
+                .ok());
+    eng::editor::TransformDesc playerTr;
+    playerTr.position = {0.f, 5.f, 0.f};
+    REQUIRE(f.doc->setTransform(player.value(), playerTr).ok());
+
+    REQUIRE(f.doc->play().ok());
+    // 3 segundos de jogo em frames de 8ms — física em passos fixos 1/60.
+    for (int i = 0; i < 360; ++i) {
+        f.doc->tick(1.f / 120.f);
+    }
+    // OBSERVÁVEL: parou EM CIMA do chão (top do box = y 1; centro do
+    // player = 1 + 0.5) — nem atravessou, nem ficou flutuando longe.
+    auto y = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(y.ok());
+    CHECK(std::stof(y.value()) ==
+          Catch::Approx(1.5f).margin(0.05f));
+
+    f.doc->stop();
+    // Authoring intacto (§8.7): player volta para y=5.
+    auto editY = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(editY.ok());
+    CHECK(editY.value() == "5");
+}

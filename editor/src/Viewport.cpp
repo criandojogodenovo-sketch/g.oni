@@ -9,6 +9,7 @@
 
 #include "eng/editor/SpriteData.hpp"
 #include "eng/particles/Particles.hpp"
+#include "eng/physics/Physics.hpp"
 #include "eng/scene/Name.hpp"
 
 namespace eng::editor {
@@ -150,6 +151,26 @@ std::vector<EntityQuad> Viewport::buildQuads(
                                                          : 1.f;
             quad.pivotX = sprite->pivotX;
             quad.pivotY = sprite->pivotY;
+        }
+
+        // Collider (RECOVERY §10): geometria nas MESMAS convenções do
+        // PhysicsWorld::worldShapeOf — centrado no nó, raio/halfExtents
+        // escalados pela norma das colunas do world matrix (sizeX/sizeY
+        // do quad JÁ são essas normas). O runtime usa exatamente isto;
+        // agora o autor VÊ o mesmo shape que a física usará.
+        if (const auto* collider =
+                scene.world().get<eng::physics::Collider>(node)) {
+            quad.hasCollider = true;
+            quad.colliderIsSphere =
+                collider->shape == eng::physics::ColliderShape::Sphere;
+            quad.colliderTrigger = collider->isTrigger;
+            if (quad.colliderIsSphere) {
+                quad.colliderHalfX = collider->radius * quad.sizeX;
+                quad.colliderHalfY = quad.colliderHalfX;
+            } else {
+                quad.colliderHalfX = collider->halfExtents.x * quad.sizeX;
+                quad.colliderHalfY = collider->halfExtents.y * quad.sizeY;
+            }
         }
         quads.push_back(quad);
         (void)depth; // profundidade não muda o quad — reserva de API futura
