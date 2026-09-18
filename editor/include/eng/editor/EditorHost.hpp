@@ -126,6 +126,11 @@ public:
     {
         return viewportRenderer_.has_value() ? &viewportRenderer_.value() : nullptr;
     }
+    /// Não-const — readback de pixels em testes visuais (RECOVERY P0).
+    [[nodiscard]] ViewportRenderer* viewportRenderer() noexcept
+    {
+        return viewportRenderer_.has_value() ? &viewportRenderer_.value() : nullptr;
+    }
 
     /// Invalida o cache de texturas (troca de projeto/reimport — chamado
     /// pela fronteira JNI nos comandos que mudam assets/textures).

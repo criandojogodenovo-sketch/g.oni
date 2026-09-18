@@ -783,7 +783,10 @@ Java_com_goni_runtime_EditorJni_nativeEditorViewportTap(JNIEnv* /*env*/,
     if (host == nullptr) {
         return 0;
     }
-    const auto hit = host->document().viewportTap(x, y);
+    // RECOVERY P0: o hit-test precisa das dimensões das texturas (tamanho
+    // DESENHADO do sprite) — o cache do host resolve com o mesmo estado
+    // das texturas renderizadas.
+    const auto hit = host->document().viewportTap(x, y, &host->textureCache());
     return hit.has_value()
                ? static_cast<jlong>(EditorDocument::packEntity(*hit))
                : 0;
@@ -952,19 +955,24 @@ Java_com_goni_runtime_EditorJni_nativeEditorAssetImport(JNIEnv* env,
     if (browser == nullptr) {
         return JNI_FALSE;
     }
-    auto imported = browser->import(tempBuf, catBuf, nameBuf);
+    // RECOVERY P0: o nome FINAL (com a extensão preservada do original) é
+    // o arquivo que existe de fato — a validação de conteúdo tem de ler
+    // EXATAMENTE ele (antes lia `nameBuf` sem extensão e o import de
+    // texturas com nome > que a extensão falhava com "arquivo não existe").
+    std::string finalName;
+    auto imported = browser->import(tempBuf, catBuf, nameBuf, &finalName);
     if (record(handle, imported)) {
         // VALIDAÇÃO de imagem no import (evolução P0-2): textura corrompida
         // é rejeitada AQUI com erro preciso, não no primeiro render.
         if (std::strcmp(catBuf, "textures") == 0) {
-            auto bytes = browser->read(catBuf, nameBuf);
+            auto bytes = browser->read(catBuf, finalName);
             if (bytes.isError()) {
                 return record(handle, bytes) ? JNI_TRUE : JNI_FALSE;
             }
             auto decoded = eng::image::decode(std::span{bytes.value()});
             if (decoded.isError()) {
                 // Remove o arquivo importado inválido (não deixa lixo).
-                (void)browser->remove(catBuf, nameBuf);
+                (void)browser->remove(catBuf, finalName);
                 return record(handle, decoded) ? JNI_TRUE : JNI_FALSE;
             }
         }

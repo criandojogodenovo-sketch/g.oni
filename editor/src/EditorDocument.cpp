@@ -21,6 +21,7 @@
 #include "eng/scene/SceneIdentity.hpp"
 #include "eng/scene/SceneSerializer.hpp"
 #include "eng/serial/Json.hpp"
+#include "eng/editor/TextureCache.hpp"
 
 namespace eng::editor {
 
@@ -919,14 +920,34 @@ void EditorDocument::setGameViewportSize(float width, float height) noexcept
 // Viewport (§8.6)
 // =============================================================================
 
-std::optional<eng::ecs::Entity> EditorDocument::viewportTap(float screenX,
-                                                           float screenY)
+std::optional<eng::ecs::Entity> EditorDocument::viewportTap(
+    float screenX, float screenY, TextureCache* textures)
 {
     const eng::scene::Scene* scene = sceneInFocus();
     if (scene == nullptr) {
         return std::nullopt;
     }
-    const auto quads = viewport_.buildQuads(*scene, selection_);
+    auto quads = viewport_.buildQuads(*scene, selection_);
+    // RECOVERY P0: resolve as dimensões em PIXELS das texturas dos sprites
+    // (decode sem GPU, cacheado pelo TextureCache do host) — o hit-test
+    // precisa do tamanho DESENHADO, não da escala local. Sem cache (tests/
+    // hosts sem texturas), os quads seguem com dimensões 0 e o hit-test usa
+    // o caminho da escala (comportamento anterior).
+    if (textures != nullptr && assets_ != nullptr) {
+        for (auto& quad : quads) {
+            if (quad.textureAsset.empty() || quad.textureWidthPx > 0u) {
+                continue;
+            }
+            const auto info =
+                textures->imageInfo(*assets_, quad.textureAsset);
+            if (info.valid) {
+                quad.textureWidthPx =
+                    static_cast<std::uint32_t>(info.width);
+                quad.textureHeightPx =
+                    static_cast<std::uint32_t>(info.height);
+            }
+        }
+    }
     auto hit = viewport_.hitTest(quads, screenX, screenY, 14.f);
     if (hit.has_value()) {
         // Seleção do EDITOR segue o foco (em Play seleciona no clone — a

@@ -219,8 +219,13 @@ public:
     [[nodiscard]] const Viewport& viewport() const noexcept { return viewport_; }
 
     /// Tap → seleção (hit-test top-most). Sem hit → deselect.
+    /// `textures` (opcional): cache do HOST para resolver as dimensões em
+    /// pixels das texturas dos sprites — o hit-test usa o tamanho DESENHADO
+    /// (região/ppu), não a escala local. Nulo → sprites usam o caminho da
+    /// escala (quads de cor/sem resolução).
     [[nodiscard]] std::optional<eng::ecs::Entity> viewportTap(
-        float screenX, float screenY);
+        float screenX, float screenY,
+        class TextureCache* textures = nullptr);
     void viewportPan(float screenDx, float screenDy) noexcept;
     void viewportZoom(float factor, float focusX, float focusY) noexcept;
     /// Arraste: move a entidade (delta de TELA → mundo). Edit: move na

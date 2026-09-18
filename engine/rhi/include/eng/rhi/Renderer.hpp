@@ -183,6 +183,10 @@ public:
     /// Recrea a surface/swapchain (resize). Sem surface → `NotSupported`.
     [[nodiscard]] eng::core::Result<void> resize(std::uint32_t width, std::uint32_t height);
 
+    /// Readback do pixel central da surface (RGBA8) — validação visual em
+    /// testes. Backend sem readback → `NotSupported` preciso.
+    [[nodiscard]] eng::core::Result<void> readCenterPixel(std::uint8_t outRgba[4]);
+
 private:
     Renderer(std::unique_ptr<RhiBackend> backend, BackendType type, bool hasSurface);
 

@@ -142,6 +142,21 @@ public:
     /// present. O chamador decide recriar a surface via `resize()` ou
     /// recriar o Renderer.
     [[nodiscard]] virtual bool surfaceLost() const = 0;
+
+    // --- readback (validação visual — RECOVERY P0) ---------------------------
+
+    /// Lê o pixel CENTRAL da surface de desenho (RGBA8). Fora de um frame,
+    /// lê o último conteúdo apresentado. Backends sem readback → erro
+    /// `NotSupported` preciso. É o instrumento de VALIDAÇÃO VISUAL dos
+    /// testes (missão: "feature visual é validada visualmente").
+    [[nodiscard]] virtual eng::core::Result<void> readCenterPixel(
+        std::uint8_t outRgba[4])
+    {
+        (void)outRgba;
+        return eng::core::makeUnexpected(eng::core::Error{
+            eng::core::StatusCode::NotSupported,
+            "rhi: backend sem readback de pixels"});
+    }
 };
 
 } // namespace eng::rhi

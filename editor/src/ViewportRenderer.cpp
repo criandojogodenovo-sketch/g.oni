@@ -443,8 +443,11 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     const float x1 = viewport.screenToWorldX(w);
     const float y0 = std::floor(viewport.screenToWorldY(h) / step) * step;
     const float y1 = viewport.screenToWorldY(0.f);
-    const float halfPxX = 0.7f / w;  // ~1.4px de espessura em clip
-    const float halfPxY = 0.7f / h;
+    // RECOVERY P0: 1 unidade NDC = w/2 px — meio-valor em clip de N pixels
+    // é (N*2/w)/2 = N/w. A espessura de ~1.4px exige half = 1.4/w (antes
+    // 0.7/w desenhava 0.7px — metade do que o comentário prometia).
+    const float halfPxX = 1.4f / w;
+    const float halfPxY = 1.4f / h;
     const float kGridR = 0.20f;
     const float kGridG = 0.21f;
     const float kGridB = 0.24f;
@@ -484,9 +487,12 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     };
     for (const EntityQuad* quadPtr : untexturedQuads) {
         const EntityQuad& quad = *quadPtr;
-        const float halfW = std::max(quad.sizeX * zoom * 0.5f,
+        // RECOVERY P0: tamanho mundial correto — escala N unidades = N*zoom
+        // px na tela; half-extent NDC = total_px/w (o 0.5 espúrio desenhava
+        // tudo com METADE do size e o hit box ficava 2× maior que o quad).
+        const float halfW = std::max(quad.sizeX * zoom,
                                      Viewport::kMinQuadPixels) / w;
-        const float halfH = std::max(quad.sizeY * zoom * 0.5f,
+        const float halfH = std::max(quad.sizeY * zoom,
                                      Viewport::kMinQuadPixels) / h;
 
         float r = 0.f;
@@ -506,8 +512,9 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     for (const ParticleQuad& particle : particles) {
         const float cx = worldToClipX(particle.worldX);
         const float cy = worldToClipY(particle.worldY);
-        const float half = std::max(particle.size * zoom * 0.5f, 2.f) / w;
-        const float halfY = std::max(particle.size * zoom * 0.5f, 2.f) / h;
+        // RECOVERY P0: same correção de half-extent (total = size*zoom px).
+        const float half = std::max(particle.size * zoom, 2.f) / w;
+        const float halfY = std::max(particle.size * zoom, 2.f) / h;
         pushQuad(frameVertices_, cx, cy, half, halfY, particle.rotation,
                  1.f, 0.86f, 0.55f);
     }
@@ -540,10 +547,14 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                 quad.colliderTrigger ? kTriggerB : kSolidB;
             const float cx = worldToClipX(quad.worldX);
             const float cy = worldToClipY(quad.worldY);
+            // RECOVERY P0: colliderHalfX é MEIA-extensão MUNDIAL — o canto
+            // fica a halfX*zoom px do centro → offset NDC = 2*px/w. O fator
+            // 2 faltava e o contorno saía com METADE do tamanho físico (a
+            // promessa do §10 é ver o shape que a FÍSICA resolve).
             const float hx =
-                quad.colliderHalfX * zoom / w + inflateX;
+                quad.colliderHalfX * zoom * 2.f / w + inflateX;
             const float hy =
-                quad.colliderHalfY * zoom / h + inflateY;
+                quad.colliderHalfY * zoom * 2.f / h + inflateY;
             if (quad.colliderIsSphere) {
                 // Octógono (fase inicial na rotação do nó p/ consistência).
                 float prevX = cx + hx * std::cos(quad.rotation);
@@ -618,8 +629,11 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float v0 = quad.flipY ? quad.v1 : quad.v0;
         const float v1 = quad.flipY ? quad.v0 : quad.v1;
 
-        pushSpriteQuad(spriteVertices_, cx, cy, worldW * zoom * 0.5f / w,
-                       worldH * zoom * 0.5f / h, quad.rotation, u0, v0, u1, v1,
+        // RECOVERY P0: half-extent NDC = total_px/w — worldW*zoom é o
+        // total em px. O 0.5 espúrio desenhava a IMAGEM com metade do
+        // tamanho da própria borda de seleção (borda correta, imagem não).
+        pushSpriteQuad(spriteVertices_, cx, cy, worldW * zoom / w,
+                       worldH * zoom / h, quad.rotation, u0, v0, u1, v1,
                        quad.tintR, quad.tintG, quad.tintB, quad.tintA);
         ++lastFrameTexturedSprites_;
     }

@@ -173,7 +173,8 @@ Result<std::vector<AssetBrowser::Entry>> AssetBrowser::list(
 
 Result<std::string> AssetBrowser::import(std::string_view tempRelPath,
                                           std::string_view category,
-                                          std::string_view name)
+                                          std::string_view name,
+                                          std::string* outFinalName)
 {
     const char* typeName = assetTypeFor(category);
     if (typeName == nullptr) {
@@ -188,13 +189,20 @@ Result<std::string> AssetBrowser::import(std::string_view tempRelPath,
     }
 
     // Nome final: preserva a extensão do original quando existe.
+    // RECOVERY P0: o guard era `size() >= ext.size() + 1`, que NEGAVA a
+    // extensão a todo nome com comprimento ≤ da extensão (ex.: "hero"
+    // com 4 chars vs ".png" com 4) — o arquivo era salvo SEM extensão e a
+    // fronteira que validava pelo nome com extensão falhava. O guard real
+    // (evitar compare fora dos limites) exige apenas `size() >= ext.size()`.
     std::string finalName(name);
     const std::string ext = from.extension().str();
-    if (!ext.empty() &&
-        finalName.size() >= ext.size() + 1 &&
+    if (!ext.empty() && finalName.size() >= ext.size() &&
         finalName.compare(finalName.size() - ext.size(), ext.size(), ext) !=
             0) {
         finalName += ext;
+    }
+    if (outFinalName != nullptr) {
+        *outFinalName = finalName;
     }
     const eng::fs::Path dir = categoryDir(category);
     const eng::fs::Path to = dir / eng::fs::Path{finalName};

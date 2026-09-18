@@ -11,7 +11,8 @@
 /// - pivot: âncora local [0..1]² (centro 0.5,0.5 default);
 /// - flip X/Y, tint RGB multiplicativo + opacity [0..1];
 /// - sort/z: ordem de desenho (maior = frente);
-/// - pixelsPerUnit: escala mundo do sprite (1 texel = N unidades).
+/// - pixelsPerUnit: densidade da textura (N pixels por 1 unidade de
+///   mundo — tamanho mundial = pixels da região / ppu).
 ///
 /// Registrado no catálogo ÚNICO do SceneSerializer (ADR-043): aparece no
 /// Inspector, persiste em cena e clona no Play. Campos FLAT (sem arrays —
@@ -47,7 +48,13 @@ struct SpriteData {
 
     // --- ordenação ------------------------------------------------------------
     float sort{0.f};
-    float pixelsPerUnit{1.f};
+    /// RECOVERY P0: 48 px por unidade — casa com o zoom padrão da câmera do
+    /// editor (Viewport::Camera2D::zoom = 48): uma imagem importada aparece
+    /// no viewport em tamanho 1:1 (1 texel = 1 pixel de tela), utilizável
+    /// de cara. O default ANTERIOR (1) fazia uma foto de 1080px medir
+    /// 1080 unidades ≈ 51.840px de tela — um "mar de cor" no viewport.
+    /// Cenas antigas com ppu explícito são preservadas pela serialização.
+    float pixelsPerUnit{48.f};
 };
 
 }  // namespace eng::editor

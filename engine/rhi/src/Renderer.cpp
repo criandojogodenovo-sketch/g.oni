@@ -522,4 +522,11 @@ eng::core::Result<void> Renderer::resize(std::uint32_t width, std::uint32_t heig
     return state_->backend->resize(width, height);
 }
 
+eng::core::Result<void> Renderer::readCenterPixel(std::uint8_t outRgba[4]) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    return state_->backend->readCenterPixel(outRgba);
+}
+
 } // namespace eng::rhi

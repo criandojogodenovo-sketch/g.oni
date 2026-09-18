@@ -22,8 +22,8 @@ C = apenas código (CODE_ONLY); — = não existe (e não se apresenta).
 | Load Scene (`Carregar cena…`) | `loadScene` | ✓ | ✓ | ✓ | **PENDENTE** |
 | Entity/Tick creation (`Nova entidade`) | `createEntity` + Name | ✓ serializado | ✓ quads refletem hierarquia | ✓ | **PENDENTE** |
 | Hierarchy (rename/duplicate/delete/reparent) | `renameEntity`/`duplicateEntity`/`deleteEntity`/`reparentEntity` | ✓ | ✓ | ✓ | **PENDENTE** |
-| Sprite (`addComponent SpriteData`) | catálogo refletido | ✓ | ✓ texturizado na tela | ✓ | **PENDENTE** |
-| Import (`Importar` — SAF) | staging → `import` | ✓ registry + arquivo | ✓ TextureCache | ✓ (§26 regression) | **PENDENTE** |
+| Sprite (`addComponent SpriteData`) | catálogo refletido | ✓ | ✓ texturizado na tela — **tamanho/orientação/hit validados por PIXEL** (regressão P0) | ✓ (24 asserções visuais) | **PENDENTE** |
+| Import (`Importar` — SAF) | staging → `import` | ✓ registry + arquivo | ✓ TextureCache | ✓ (§26 + nome final com extensão — B7/B8) | **PENDENTE** |
 | Asset rename/move/delete (long-press) | `rename`/`move`/`remove` | ✓ id preservado (ADR-029) | ✓ | ✓ | **PENDENTE** |
 | Asset search (`Buscar…`) | filtro local Kotlin | — | — | ✓ | **PENDENTE** |
 | Asset preview (duplo-toque) | decode + bitmap | — | ✓ | ✓ | **PENDENTE** |

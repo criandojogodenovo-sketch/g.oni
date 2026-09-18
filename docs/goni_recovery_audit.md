@@ -55,6 +55,34 @@ Contratos do `RootedFileSystem` (engine/fs, ADR-027 estendido):
 | Diálogo "Carregar cena" listava `<workspace>/scenes` — sempre vazio (UI morta) | `EditorActivity.loadSceneDialog` | Lista `<workspace>/<projeto>/scenes` (o mesmo que `ProjectPaths` resolve) |
 | Diretórios de staging (`.import_tmp`) apareciam como "projetos" no seletor | `EditorActivity.openProjectDialog` | Filtro de ocultos |
 
+### 3.1 FASE 0 — "a imagem não aparece corretamente no viewport" (6 defeitos)
+
+Rastreio completo do pipeline (AssetBrowser → decode → upload GPU →
+ViewportRenderer → pixel), com **reprodução visual** lendo pixel real da
+surface (llvmpipe) e teste de regressão de 24 asserções:
+
+| # | Defeito | Causa raiz | Correção |
+|---|---------|-----------|----------|
+| B1 | Sprite desenhado com **metade** do tamanho mundial | fator 0.5 espúrio no half-extent NDC (`worldW*zoom*0.5/w`) — a imagem ficava menor que a própria borda de seleção | `ViewportRenderer`: half-extent = total_px/w |
+| B2 | Sprite renderizado **de ponta-cabeça** | stb decodifica top-down; GL tem v=0 na BASE — ninguém convertia | `TextureCache`: flip de linhas NA FRONTEIRA de upload; contrato: UV do sprite = imagem em pé |
+| B3 | Imagem real cobria a tela inteira ("mar de cor") | `pixelsPerUnit` default 1 → foto 1080px = 51.840px de tela | default 48 (1 texel = 1 px de tela no zoom padrão) |
+| B4 | Toque na imagem não selecionava | hit-test usava escala local, não o tamanho desenhado (região/ppu) | `EntityQuad` carrega dimensões da textura; hit usa a mesma fórmula do renderer |
+| B5 | Contorno do collider com metade do tamanho físico | meia-extensão mundial tratada como offset NDC direto (faltava o fator 2 do px→NDC) | ×2 — o autor vê o shape que a física resolve (promessa §10) |
+| B6 | Marcadores/partículas com metade do tamanho; grade 0.7px em vez de 1.4px | mesmo erro de conversão px→NDC do B1 | corrigidos no mesmo lugar |
+| B7 | Nomes de asset curtos (≤ comprimento da extensão) perdiam a extensão | guard `size() >= ext.size()+1` em `AssetBrowser::import` | guard correto `size() >= ext.size()` |
+| B8 | Import de textura com nome longo falhava na validação JNI | validação lia `name` (sem extensão) em vez do arquivo final (com extensão) | `import` devolve `outFinalName`; JNI valida pelo nome final |
+
+Além disso: o teste "host renderiza sprite TEXTURIZADO" usava janela
+`nullptr` e **skipava até no CI** — o upload de textura nunca tinha sido
+validado de verdade (é por isso que B2 sobreviveu). Agora usa janela-marker
+e roda.
+
+### 3.2 Instrumento permanente: readback de pixels
+
+`RhiBackend::readCenterPixel` (virtual, default `NotSupported`) +
+implementação GLES + passthrough `Renderer` — o instrumento da regra
+"feature visual é validada visualmente" para todos os testes futuros.
+
 ## 4. Cobertura de regressão (§26 — "nunca mais")
 
 Teste `editor: host com workspace ABSOLUTO — import e script funcionam

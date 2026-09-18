@@ -59,6 +59,14 @@ struct EntityQuad {
     /// Pivot do sprite [0..1] (0.5,0.5 = centrado).
     float pivotX{0.5f};
     float pivotY{0.5f};
+    /// Dimensões em PIXELS da textura resolvida (0 = desconhecida — o
+    /// hit-test usa o tamanho de sprite SÓ quando ambas > 0; o documento
+    /// preenche via TextureCache::imageInfo antes do tap, o renderer via
+    /// a textura GPU que subiu). Tamanho mundial do sprite =
+    /// escala × (região em px / ppu) — o hit box tem de casar com o
+    /// desenhado, senão o autor toca na imagem e "não seleciona nada".
+    std::uint32_t textureWidthPx{0u};
+    std::uint32_t textureHeightPx{0u};
 
     // --- collider (RECOVERY §10) — preenchido quando o nó tem Collider ---
     /// O AUTOR precisa VER o shape de colisão que está editando: o quad

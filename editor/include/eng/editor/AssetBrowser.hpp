@@ -62,9 +62,12 @@ public:
     /// Importa: move `tempRelPath` (dentro do projeto, ex.: SAF copiou para
     /// `.import_tmp/foo.png`) para `assets/<category>/<name>`, cataloga com
     /// novo AssetId e persiste o registry. Retorna o id canônico.
+    /// `outFinalName` (opcional): nome do arquivo APÓS o sufixo de extensão
+    /// do original ser preservado (ex.: name="hero" + .png → "hero.png") —
+    /// a fronteira JNI valida o CONTEÚDO lendo exatamente este nome.
     [[nodiscard]] eng::core::Result<std::string> import(
         std::string_view tempRelPath, std::string_view category,
-        std::string_view name);
+        std::string_view name, std::string* outFinalName = nullptr);
 
     /// Renomeia (disco + registry; referências por AssetId sobrevivem).
     [[nodiscard]] eng::core::Result<void> rename(std::string_view category,

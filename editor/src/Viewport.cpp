@@ -239,12 +239,29 @@ std::optional<eng::ecs::Entity> Viewport::hitTest(
     // a câmera que o usuário está vendo.
     const Camera2D& camera = effectiveCamera();
     for (auto it = quads.rbegin(); it != quads.rend(); ++it) {
+        // Tamanho tocável = tamanho DESENHADO (RECOVERY P0): sprite
+        // texturizado usa escala × (região em px / ppu) — a MESMA fórmula
+        // do renderer; o hit box tem de casar com o que o autor VÊ, senão
+        // ele toca na imagem e "não seleciona nada". Sem dimensões
+        // resolvidas, cai no caminho da escala local (quad de cor).
+        float worldHalfW = it->sizeX * 0.5f;
+        float worldHalfH = it->sizeY * 0.5f;
+        if (!it->textureAsset.empty() && it->textureWidthPx > 0u &&
+            it->textureHeightPx > 0u) {
+            const float regionPx =
+                static_cast<float>(it->textureWidthPx) * (it->u1 - it->u0);
+            const float regionPy =
+                static_cast<float>(it->textureHeightPx) * (it->v1 - it->v0);
+            const float ppu = it->spritePpu > 0.f ? it->spritePpu : 1.f;
+            worldHalfW = it->sizeX * regionPx / ppu * 0.5f;
+            worldHalfH = it->sizeY * regionPy / ppu * 0.5f;
+        }
         const float centerSX = worldToScreenX(it->worldX);
         const float centerSY = worldToScreenY(it->worldY);
         const float halfPX =
-            std::max(it->sizeX * camera.zoom * 0.5f, kMinQuadPixels * 0.5f);
+            std::max(worldHalfW * camera.zoom, kMinQuadPixels * 0.5f);
         const float halfPY =
-            std::max(it->sizeY * camera.zoom * 0.5f, kMinQuadPixels * 0.5f);
+            std::max(worldHalfH * camera.zoom, kMinQuadPixels * 0.5f);
         const float dx = std::abs(screenX - centerSX);
         const float dy = std::abs(screenY - centerSY);
         if (dx <= halfPX + touchRadius && dy <= halfPY + touchRadius) {

@@ -1303,6 +1303,42 @@ TEST_CASE("editor: importa, lista, renomeia, move e remove assets", "[editor]")
     CHECK(browser->registry().size() == 0);
 }
 
+TEST_CASE("editor: import preserva a extensão de nomes CURTOS (regr. P0)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{".import_tmp"}).ok());
+    REQUIRE(f.fs->writeAllText(eng::fs::Path{".import_tmp/hero.png"},
+                               "PNGDATA")
+                .ok());
+
+    auto* browser = f.doc->assets();
+    REQUIRE(browser != nullptr);
+
+    // "hero" tem 4 chars — o MESMO comprimento de ".png". Antes: o guard
+    // `size() >= ext.size()+1` negava a extensão e o arquivo era salvo como
+    // "hero" (sem sufixo) — a fronteira que valida pelo nome final
+    // (com extensão) não encontrava o arquivo.
+    std::string finalName;
+    auto imported = browser->import(".import_tmp/hero.png", "textures",
+                                     "hero", &finalName);
+    REQUIRE(imported.ok());
+    CHECK(finalName == "hero.png");
+
+    // O arquivo existe EXATAMENTE sob o nome final devolvido (é ele que a
+    // validação JNI lê e o TextureCache resolve).
+    auto bytes = browser->read("textures", finalName);
+    REQUIRE(bytes.ok());
+    CHECK(bytes.value().size() == 7);  // "PNGDATA"
+
+    // E a listagem mostra o nome com extensão.
+    auto listed = browser->list("textures");
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0].name == "hero.png");
+}
+
 TEST_CASE("editor: arquivo não catalogado aparece como unregistered", "[editor]")
 {
     DocFixture f;
@@ -1830,7 +1866,11 @@ TEST_CASE("editor: host renderiza sprite TEXTURIZADO (GLES/llvmpipe real)",
         SKIP("OpenGL ES indisponível: " << created.error().message);
     }
     std::unique_ptr<eng::editor::EditorHost> host{created.value()};
-    host->surfaceCreated(nullptr, eng::rhi::NativeWindowKind::Headless, 64, 48);
+    // RECOVERY P0: janela-marker headless — antes nullptr, o que deixava o
+    // host em NoSurface e este teste SKIPAVA ATÉ NO CI (nunca validou o
+    // upload de textura de verdade; o bug da orientação sobreviveu por isso).
+    int marker = 0;
+    host->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless, 64, 48);
     if (host->viewportRenderer() == nullptr) {
         SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
     }
@@ -1894,6 +1934,128 @@ TEST_CASE("editor: host renderiza sprite TEXTURIZADO (GLES/llvmpipe real)",
     CHECK(renderer->lastFrameTexturedSprites() == 1);
     REQUIRE(host->renderFrame(1.f / 60.f));
     doc.stop();
+}
+
+TEST_CASE("editor: SpriteData default — ppu 48 (imagem utilizável no viewport)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Hero", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(), "eng::editor::SpriteData").ok());
+
+    // Default = 48 px/unidade (casa com o zoom padrão da câmera → a imagem
+    // aparece 1:1 na tela). Antes: 1 → uma foto de 1080px media 51.840px de
+    // tela — o viewport virava um "mar de cor".
+    const auto* scene = f.doc->sceneInFocus();
+    const auto quads = f.doc->viewport().buildQuads(*scene, entity.value());
+    REQUIRE(quads.size() == 1);
+    CHECK(quads[0].spritePpu == 48.f);
+}
+
+// =============================================================================
+// REPRODUÇÃO P0 (RECOVERY FASE 0) — "A imagem é importada mas NÃO APARECE
+// CORRETAMENTE no viewport". Contrato VISUAL do sprite pinhado com PIXEL
+// REAL lido da surface (missão: feature visual é validada visualmente):
+//   1. TAMANHO — o quad cobre a região mundial esperada (sem o fator 0.5
+//      espúrio no half-extent NDC que desenhava tudo com metade do size);
+//   2. ORIENTAÇÃO — o topo da imagem aparece no TOPO do quad na tela
+//      (stb decodifica top-down; GL tem v=0 na BASE — sem o flip na
+//      fronteira de upload, o sprite sai de ponta-cabeça);
+//   3. SELEÇÃO — o hit-test acerta a borda do sprite (tamanho desenhado,
+//      não a escala local).
+// =============================================================================
+
+TEST_CASE("editor: P0 — PNG no viewport: tamanho, orientação e hit CORRETOS",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles",
+                                                ".editor-test-ws-p0img");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    int marker = 0;  // janela-marker headless (mesmo padrão dos testes GLES)
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless,
+                          128, 128);
+    REQUIRE(owned->state() == eng::editor::HostSurfaceState::Available);
+
+    auto& doc = owned->document();
+    ensureProject(doc, "P0ImageGame");
+
+    // PNG canônico 2x2 (kPng2x2): linha 0 do ARQUIVO é o TOPO da imagem —
+    // (0,0)=vermelho TL, (1,0)=verde TR, (0,1)=azul BL, (1,1)=branco BR.
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    {
+        eng::fs::FileSystem& ws = owned->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws
+                    .writeAllBytes(
+                        eng::fs::Path{".import_tmp/quad.png"},
+                        std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                                  sizeof(kPng2x2)})
+                    .ok());
+    }
+    REQUIRE(browser->import(".import_tmp/quad.png", "textures", "quad").ok());
+
+    // Entidade em (0.5, -0.5), sprite região completa, ppu=1 → tamanho
+    // mundial 2x2 unidades (região 2px / ppu 1). Câmera padrão (0,0),
+    // zoom 48 (1 unidade = 48px; superfície 128x128): o CENTRO da tela
+    // cai no ponto (u=0.25, v=0.75) do sprite — 25% da esquerda, 75% de
+    // baixo — exatamente o canto SUPERIOR-ESQUERDO da imagem original.
+    auto entity = doc.createEntity("Sprite", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(doc.addComponent(entity.value(), "eng::editor::SpriteData").ok());
+    REQUIRE(doc
+                .setInspectorField(entity.value(), "eng::editor::SpriteData",
+                                   "textureAsset", "quad.png")
+                .ok());
+    REQUIRE(doc
+                .setInspectorField(entity.value(), "eng::editor::SpriteData",
+                                   "pixelsPerUnit", "1")
+                .ok());
+    REQUIRE(doc
+                .setInspectorField(entity.value(), "eng::math::Transform",
+                                   "position.x", "0.5")
+                .ok());
+    REQUIRE(doc
+                .setInspectorField(entity.value(), "eng::math::Transform",
+                                   "position.y", "-0.5")
+                .ok());
+
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    auto* renderer = owned->viewportRenderer();
+    REQUIRE(renderer != nullptr);
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+
+    // CONTRATO 1 — TAMANHO: topo do quad em world y = -0.5 + 1.0 = 0.5
+    // → tela y = 64 - 0.5*48 = 40 → clip = 1 - (40/128)*2 = 0.375.
+    // (Antes: 0.0 — o half-extent do sprite carregava um 0.5 espúrio e a
+    // imagem desenhava com METADE do tamanho mundial, menor que a própria
+    // borda de seleção.)
+    const auto& verts = renderer->lastFrameSpriteVertices();
+    REQUIRE(verts.size() == 6);
+    CHECK(verts[5].y == Catch::Approx(0.375f).margin(1e-3f));
+
+    // CONTRATO 2 — ORIENTAÇÃO: o pixel central da tela mostra o canto
+    // SUPERIOR-ESQUERDO da imagem = VERMELHO (não azul — ponta-cabeça).
+    std::uint8_t pixel[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixel).ok());
+    INFO("readback: " << +pixel[0] << " " << +pixel[1] << " " << +pixel[2]
+                      << " " << +pixel[3]);
+    CHECK(pixel[0] >= 200);  // R dominante
+    CHECK(pixel[1] <= 64);   // G baixo
+    CHECK(pixel[2] <= 64);   // B baixo
+    CHECK(pixel[3] == 255);  // opaco
+
+    // CONTRATO 3 — SELEÇÃO: toque perto da borda direita do sprite
+    // (world x≈1.29, y=-0.5 → tela (126, 88)) ACERTA — o hit box é o
+    // tamanho desenhado (±48px), não a escala local (±24px).
+    auto hit = doc.viewportTap(126.f, 88.f, &owned->textureCache());
+    CHECK(hit.has_value());
 }
 
 // =============================================================================

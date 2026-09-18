@@ -2,6 +2,9 @@
 
 /// eng::editor::TextureCache — implementação (evolução P0-2/P0-3).
 
+#include <cstring>
+#include <vector>
+
 #include "eng/editor/AssetBrowser.hpp"
 #include "eng/image/Image.hpp"
 #include "eng/log/Macros.hpp"
@@ -42,12 +45,32 @@ const TextureCache::GpuTexture* TextureCache::acquire(
     }
     const auto& image = decoded.value();
 
+    // 2.5) RECOVERY P0 — ORIENTAÇÃO: stb_image decodifica top-down (linha 0
+    // = TOPO da imagem), mas o espaço UV do GL tem v=0 na BASE. Sem este
+    // flip na fronteira de upload, o sprite sai DE PONTA-CABEÇA no viewport
+    // (o topo do quad amostrava a última linha de memória = base da imagem).
+    // Contrato estabelecido: textura GPU vive em convenção GL — v=0 é a
+    // base da imagem COMO EXIBIDA; o espaço UV do sprite significa
+    // "imagem em pé" (v=1 = topo). Um único lugar conhece a diferença.
+    std::vector<std::byte> glPixels;
+    const std::size_t rowBytes =
+        static_cast<std::size_t>(image.width) * 4u;
+    glPixels.resize(image.pixels.size());
+    for (std::uint32_t row = 0; row < image.height; ++row) {
+        const std::byte* src =
+            image.pixels.data() +
+            static_cast<std::size_t>(image.height - 1 - row) * rowBytes;
+        std::byte* dst = glPixels.data() +
+                         static_cast<std::size_t>(row) * rowBytes;
+        std::memcpy(dst, src, rowBytes);
+    }
+
     // 3) Upload GPU (RHI — textura imutável RGBA8; mips para sprites).
     eng::rhi::TextureDesc desc{};
     desc.width = image.width;
     desc.height = image.height;
     desc.format = eng::rhi::Format::R8G8B8A8Srgb;
-    desc.initialData = std::span{image.pixels};
+    desc.initialData = std::span{glPixels};
     desc.generateMipmaps = true;
     auto texture = renderer.createTexture(desc);
     if (texture.isError()) {

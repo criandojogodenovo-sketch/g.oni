@@ -87,7 +87,8 @@ public:
     [[nodiscard]] const GlesStats& stats() const noexcept { return stats_; }
     /// Readback do pixel central (VALIDAÇÃO REAL de output — missão §39).
     /// Requer contexto atual; RGBA8 em `outRgba` (4 bytes).
-    [[nodiscard]] eng::core::Result<void> readCenterPixel(std::uint8_t outRgba[4]);
+    [[nodiscard]] eng::core::Result<void> readCenterPixel(
+        std::uint8_t outRgba[4]) override;
 
 private:
     struct BufferEntry {
