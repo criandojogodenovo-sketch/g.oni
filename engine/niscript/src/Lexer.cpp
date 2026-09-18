@@ -7,9 +7,11 @@
 #include "eng/niscript/NiValue.hpp"
 #include "NiAst.hpp"
 
-#include <charconv>
 #include <cctype>
+#include <cerrno>
+#include <charconv> // from_chars<int64> — ok em libc++/NDK (só double falta)
 #include <cmath>
+#include <cstdlib>  // strtod — double (libc++/NDK sem from_chars<double>)
 #include <optional>
 #include <string>
 
@@ -217,15 +219,18 @@ std::vector<Token> lex(std::string_view source, std::vector<NiDiag>& diags)
             t.col = tokCol;
             t.text = digits;
             if (isFloat) {
+                // strtod (libc++/NDK não tem from_chars<double> — GCC tem;
+                // clang não). O motor NUNCA chama setlocale — o ponto
+                // decimal é sempre '.' do locale "C" (determinístico).
                 t.kind = TokKind::Float;
-                double value = 0.0;
-                const auto [ptr, ec] = std::from_chars(
-                    digits.data(), digits.data() + digits.size(), value);
-                if (ec == std::errc{} && ptr == digits.data() + digits.size()) {
+                errno = 0;
+                char* end = nullptr;
+                const double value = std::strtod(digits.c_str(), &end);
+                if (end != nullptr && *end == '\0' && errno != ERANGE) {
                     t.f = value;
                 } else {
                     error(tokLine, tokCol,
-                          "literal float inválido: " + digits);
+                          "literal float inválido/fora de range: " + digits);
                     t.f = 0.0;
                 }
             } else {
