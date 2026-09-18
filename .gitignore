@@ -62,3 +62,6 @@ secrets/
 # ferramentas de DEV compiladas (scripts/*.cpp ficam, binários não)
 scripts/nidbg
 scripts/nidbg*
+
+# Workspaces do teste host-sprite (evolução P0-3 — criados no cwd)
+sprite_host_test_*/
