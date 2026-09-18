@@ -57,3 +57,7 @@ Thumbs.db
 *.token
 *.key
 secrets/
+
+# ferramentas de DEV compiladas (scripts/*.cpp ficam, binários não)
+scripts/nidbg
+scripts/nidbg*
