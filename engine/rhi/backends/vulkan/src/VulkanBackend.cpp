@@ -565,6 +565,49 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
         }
     }
 
+    // --- texturas (evolução): layout de descriptor set + pool compartilhados ---------
+    // Set 0 com 1 combined image sampler (fragment). TODOS os pipelines
+    // recebem este layout — shaders que não amostram ignoram o binding
+    // (legal em Vulkan; unifica o modelo de bind).
+    VkDescriptorSetLayoutBinding samplerBinding{};
+    samplerBinding.binding = 0;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerBinding.descriptorCount = 1;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    samplerBinding.pImmutableSamplers = nullptr;
+    VkDescriptorSetLayoutCreateInfo setLayoutInfo{};
+    setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setLayoutInfo.bindingCount = 1;
+    setLayoutInfo.pBindings = &samplerBinding;
+    result = library_.functions().vkCreateDescriptorSetLayout(
+        device_, &setLayoutInfo, nullptr, &textureSetLayout_);
+    if (result != VK_SUCCESS) {
+        return eng::core::makeUnexpected(vkErr(
+            StatusCode::Unknown, "rhi.vulkan: vkCreateDescriptorSetLayout (textura)", result));
+    }
+
+    // Pool: sets NUNCA são liberados individualmente (cache por par
+    // textura+sampler; invalidação = destroy do pool inteiro quando vazio de
+    // uso — nesta escala o pool é destruído junto com o backend). 256 pares é
+    // folga honesta para sprites/UI; exaustão = erro preciso (não silêncio).
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 256;
+    VkDescriptorPoolCreateInfo descriptorPoolInfo{};
+    descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    descriptorPoolInfo.maxSets = 256;
+    descriptorPoolInfo.poolSizeCount = 1;
+    descriptorPoolInfo.pPoolSizes = &poolSize;
+    result = library_.functions().vkCreateDescriptorPool(
+        device_, &descriptorPoolInfo, nullptr, &textureDescriptorPool_);
+    if (result != VK_SUCCESS) {
+        library_.functions().vkDestroyDescriptorSetLayout(device_, textureSetLayout_,
+                                                           nullptr);
+        textureSetLayout_ = VK_NULL_HANDLE;
+        return eng::core::makeUnexpected(vkErr(
+            StatusCode::Unknown, "rhi.vulkan: vkCreateDescriptorPool (textura)", result));
+    }
+
     initialized_ = true;
     capabilities_ = caps;  // caps REAIS preenchidas na seleção da GPU
     capabilities_.presentation = hasSurface_;
@@ -621,6 +664,25 @@ void VulkanBackend::destroyAll() noexcept {
         for (auto entry : pipelines_.drainAll()) {
             library_.functions().vkDestroyPipeline(device_, entry.pipeline, nullptr);
             library_.functions().vkDestroyPipelineLayout(device_, entry.layout, nullptr);
+        }
+        for (auto entry : textures_.drainAll()) {
+            library_.functions().vkDestroyImageView(device_, entry.view, nullptr);
+            library_.functions().vkDestroyImage(device_, entry.image, nullptr);
+            library_.functions().vkFreeMemory(device_, entry.memory, nullptr);
+        }
+        for (auto entry : samplers_.drainAll()) {
+            library_.functions().vkDestroySampler(device_, entry.sampler, nullptr);
+        }
+        textureSetCache_.clear();
+        if (textureDescriptorPool_ != VK_NULL_HANDLE) {
+            library_.functions().vkDestroyDescriptorPool(device_, textureDescriptorPool_,
+                                                          nullptr);
+            textureDescriptorPool_ = VK_NULL_HANDLE;
+        }
+        if (textureSetLayout_ != VK_NULL_HANDLE) {
+            library_.functions().vkDestroyDescriptorSetLayout(device_, textureSetLayout_,
+                                                                nullptr);
+            textureSetLayout_ = VK_NULL_HANDLE;
         }
         library_.functions().vkDestroyDevice(device_, nullptr);
         device_ = VK_NULL_HANDLE;

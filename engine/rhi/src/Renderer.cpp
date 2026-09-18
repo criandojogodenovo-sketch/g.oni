@@ -421,6 +421,68 @@ eng::core::Result<void> Renderer::destroyGraphicsPipeline(GraphicsPipelineHandle
     return state_->backend->destroyGraphicsPipeline(handle);
 }
 
+// --- texturas/samplers (evolução) ---------------------------------------------
+
+eng::core::Result<TextureHandle> Renderer::createTexture(const TextureDesc& desc) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    if (desc.width == 0 || desc.height == 0) {
+        return eng::core::makeUnexpected(
+            makeError(eng::core::StatusCode::InvalidArgument,
+                      "rhi.texture: dimensões zero (" + std::to_string(desc.width) + "x" +
+                          std::to_string(desc.height) + ")"));
+    }
+    if (desc.format != Format::R8G8B8A8Unorm && desc.format != Format::R8G8B8A8Srgb) {
+        return eng::core::makeUnexpected(
+            makeError(eng::core::StatusCode::InvalidArgument,
+                      "rhi.texture: formato não suportado (apenas R8G8B8A8Unorm/Srgb nesta "
+                      "evolução)"));
+    }
+    if (desc.initialData.size() != desc.expectedDataSize()) {
+        return eng::core::makeUnexpected(
+            makeError(eng::core::StatusCode::InvalidArgument,
+                      "rhi.texture: initialData (" + std::to_string(desc.initialData.size()) +
+                          " bytes) != width*height*4 (" +
+                          std::to_string(desc.expectedDataSize()) + " bytes)"));
+    }
+    if (desc.width > 16384u || desc.height > 16384u) {
+        return eng::core::makeUnexpected(makeError(
+            eng::core::StatusCode::InvalidArgument,
+            "rhi.texture: dimensão acima do limite prático 16384"));
+    }
+    return state_->backend->createTexture(desc);
+}
+
+eng::core::Result<SamplerHandle> Renderer::createSampler(const SamplerDesc& desc) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    return state_->backend->createSampler(desc);
+}
+
+eng::core::Result<void> Renderer::destroyTexture(TextureHandle handle) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    if (!handle.isValid()) {
+        return eng::core::makeUnexpected(makeError(
+            eng::core::StatusCode::InvalidArgument, "rhi.texture: handle nulo em destroy"));
+    }
+    return state_->backend->destroyTexture(handle);
+}
+
+eng::core::Result<void> Renderer::destroySampler(SamplerHandle handle) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    if (!handle.isValid()) {
+        return eng::core::makeUnexpected(makeError(
+            eng::core::StatusCode::InvalidArgument, "rhi.sampler: handle nulo em destroy"));
+    }
+    return state_->backend->destroySampler(handle);
+}
+
 // =============================================================================
 // Frame
 // =============================================================================

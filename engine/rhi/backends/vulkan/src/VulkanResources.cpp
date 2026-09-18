@@ -1,6 +1,7 @@
 /// Backend Vulkan — recursos: buffers (staging REAL), shaders SPIR-V
 /// validados, pipelines com render pass clássico (FASE 5, missão §24–§27).
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -456,9 +457,14 @@ Result<GraphicsPipelineHandle> VulkanBackend::createGraphicsPipeline(
             ? fromVkFormat(swapchainFormat_)
             : desc.renderTarget.colorFormat;
 
-    // Layout vazio (sem descritores nesta fase — ADR-037).
+    // Layout com o set 0 de textura (combined image sampler, fragment).
+    // TODOS os pipelines compartilham o MESMO layout — shaders que não
+    // amostram apenas ignoram o binding (evolução: sprites/UI/preview).
+    VkDescriptorSetLayout setLayouts[1] = {textureSetLayout_};
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = setLayouts;
     VkResult result = fn.vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &entry.layout);
     if (result != VK_SUCCESS) {
         return eng::core::makeUnexpected(
@@ -582,6 +588,405 @@ Result<void> VulkanBackend::destroyGraphicsPipeline(GraphicsPipelineHandle handl
     library_.functions().vkDeviceWaitIdle(device_);
     library_.functions().vkDestroyPipeline(device_, entry.pipeline, nullptr);
     library_.functions().vkDestroyPipelineLayout(device_, entry.layout, nullptr);
+    return {};
+}
+
+// =============================================================================
+// Texturas e samplers (evolução — sprites/UI/preview)
+// =============================================================================
+
+namespace {
+
+[[nodiscard]] std::uint32_t mipLevelCount(std::uint32_t width, std::uint32_t height,
+                                          bool generate) noexcept {
+    if (!generate) {
+        return 1;
+    }
+    std::uint32_t levels = 1;
+    while (width > 1u || height > 1u) {
+        width = width > 1u ? width / 2u : 1u;
+        height = height > 1u ? height / 2u : 1u;
+        ++levels;
+    }
+    return levels;
+}
+
+/// Barreira de layout de imagem (uma subresource range completa por nível
+/// dado — usada no upload com mip).
+void imageBarrier(const VulkanFunctions& fn, VkCommandBuffer command, VkImage image,
+                  std::uint32_t mipBase, std::uint32_t mipCount,
+                  VkImageLayout oldLayout, VkImageLayout newLayout,
+                  VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage,
+                  VkAccessFlags srcAccess, VkAccessFlags dstAccess) noexcept {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = mipBase;
+    barrier.subresourceRange.levelCount = mipCount;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstAccessMask = dstAccess;
+    fn.vkCmdPipelineBarrier(command, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1,
+                            &barrier);
+}
+
+}  // namespace
+
+Result<TextureHandle> VulkanBackend::createTexture(const TextureDesc& desc) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    if (desc.width == 0 || desc.height == 0) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.texture: dimensões zero (" + std::to_string(desc.width) + "x" +
+                std::to_string(desc.height) + ")"));
+    }
+    if (desc.initialData.size() != desc.expectedDataSize()) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.texture: initialData (" + std::to_string(desc.initialData.size()) +
+                " bytes) != width*height*4 (" +
+                std::to_string(desc.expectedDataSize()) + " bytes)"));
+    }
+    const VkFormat format = toVkFormat(desc.format);
+    if (format == VK_FORMAT_UNDEFINED) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::NotSupported,
+            "rhi.vulkan.texture: formato sem mapeamento (use R8G8B8A8Unorm/Srgb)"));
+    }
+
+    const auto& fn = library_.functions();
+    const std::uint32_t mipLevels = mipLevelCount(desc.width, desc.height,
+                                                   desc.generateMipmaps);
+
+    // 1) Image DEVICE_LOCAL com TRANSFER_DST | SAMPLED.
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = format;
+    imageInfo.extent = {desc.width, desc.height, 1};
+    imageInfo.mipLevels = mipLevels;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                      VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    TextureEntry entry{};
+    entry.width = desc.width;
+    entry.height = desc.height;
+    entry.format = format;
+    entry.mipLevels = mipLevels;
+    VkResult result = fn.vkCreateImage(device_, &imageInfo, nullptr, &entry.image);
+    if (result != VK_SUCCESS) {
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: vkCreateImage", result));
+    }
+
+    // 2) Memória DEVICE_LOCAL + bind.
+    VkMemoryRequirements requirements{};
+    fn.vkGetImageMemoryRequirements(device_, entry.image, &requirements);
+    auto memoryType = pickMemoryType(requirements.memoryTypeBits,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "texture");
+    if (!memoryType) {
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        return eng::core::makeUnexpected(memoryType.error());
+    }
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = requirements.size;
+    allocInfo.memoryTypeIndex = memoryType.value();
+    result = fn.vkAllocateMemory(device_, &allocInfo, nullptr, &entry.memory);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::OutOfMemory, "rhi.vulkan.texture: vkAllocateMemory", result));
+    }
+    result = fn.vkBindImageMemory(device_, entry.image, entry.memory, 0);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: vkBindImageMemory", result));
+    }
+
+    // 3) Staging HOST_VISIBLE com os pixels (padrão do uploadToDeviceLocal).
+    VkBufferCreateInfo stagingInfo{};
+    stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    stagingInfo.size = desc.initialData.size();
+    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging = VK_NULL_HANDLE;
+    result = fn.vkCreateBuffer(device_, &stagingInfo, nullptr, &staging);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::OutOfMemory, "rhi.vulkan.texture: staging", result));
+    }
+    VkMemoryRequirements stagingRequirements{};
+    fn.vkGetBufferMemoryRequirements(device_, staging, &stagingRequirements);
+    auto stagingType = pickMemoryType(
+        stagingRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        "staging");
+    if (!stagingType) {
+        fn.vkDestroyBuffer(device_, staging, nullptr);
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(stagingType.error());
+    }
+    VkMemoryAllocateInfo stagingAlloc{};
+    stagingAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    stagingAlloc.allocationSize = stagingRequirements.size;
+    stagingAlloc.memoryTypeIndex = stagingType.value();
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    result = fn.vkAllocateMemory(device_, &stagingAlloc, nullptr, &stagingMemory);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyBuffer(device_, staging, nullptr);
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::OutOfMemory, "rhi.vulkan.texture: staging mem", result));
+    }
+    result = fn.vkBindBufferMemory(device_, staging, stagingMemory, 0);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyBuffer(device_, staging, nullptr);
+        fn.vkFreeMemory(device_, stagingMemory, nullptr);
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: staging bind", result));
+    }
+    void* mapped = nullptr;
+    result = fn.vkMapMemory(device_, stagingMemory, 0, desc.initialData.size(), 0, &mapped);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyBuffer(device_, staging, nullptr);
+        fn.vkFreeMemory(device_, stagingMemory, nullptr);
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: staging map", result));
+    }
+    std::memcpy(mapped, desc.initialData.data(), desc.initialData.size());
+    fn.vkUnmapMemory(device_, stagingMemory);
+
+    // 4) Comando dedicado + fence (espera REAL — mesmo padrão do buffer):
+    //    barrier UNDEFINED→TRANSFER_DST, copy buffer→image (mip 0),
+    //    blits para os mips (quando pedidos), barrier →SHADER_READ_ONLY.
+    VkCommandBufferAllocateInfo commandInfo{};
+    commandInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    commandInfo.commandPool = commandPool_;
+    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandInfo.commandBufferCount = 1;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    result = fn.vkAllocateCommandBuffers(device_, &commandInfo, &command);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyBuffer(device_, staging, nullptr);
+        fn.vkFreeMemory(device_, stagingMemory, nullptr);
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: cmd", result));
+    }
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = VK_NULL_HANDLE;
+    result = fn.vkCreateFence(device_, &fenceInfo, nullptr, &fence);
+    if (result != VK_SUCCESS) {
+        fn.vkFreeCommandBuffers(device_, commandPool_, 1, &command);
+        fn.vkDestroyBuffer(device_, staging, nullptr);
+        fn.vkFreeMemory(device_, stagingMemory, nullptr);
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: fence", result));
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    fn.vkBeginCommandBuffer(command, &beginInfo);
+
+    imageBarrier(fn, command, entry.image, 0, mipLevels, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {desc.width, desc.height, 1};
+    fn.vkCmdCopyBufferToImage(command, staging, entry.image,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    if (desc.generateMipmaps && mipLevels > 1) {
+        // Blit em cadeia: nível i-1 → i (linear), com barreira por nível.
+        for (std::uint32_t level = 1; level < mipLevels; ++level) {
+            const std::uint32_t srcW = std::max(1u, desc.width >> (level - 1u));
+            const std::uint32_t srcH = std::max(1u, desc.height >> (level - 1u));
+            const std::uint32_t dstW = std::max(1u, desc.width >> level);
+            const std::uint32_t dstH = std::max(1u, desc.height >> level);
+            imageBarrier(fn, command, entry.image, level - 1, 1,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            VkImageBlit blit{};
+            blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.srcSubresource.mipLevel = level - 1;
+            blit.srcSubresource.baseArrayLayer = 0;
+            blit.srcSubresource.layerCount = 1;
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {static_cast<std::int32_t>(srcW),
+                                  static_cast<std::int32_t>(srcH), 1};
+            blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit.dstSubresource.mipLevel = level;
+            blit.dstSubresource.baseArrayLayer = 0;
+            blit.dstSubresource.layerCount = 1;
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {static_cast<std::int32_t>(dstW),
+                                  static_cast<std::int32_t>(dstH), 1};
+            fn.vkCmdBlitImage(command, entry.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              entry.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                              VK_FILTER_LINEAR);
+        }
+    }
+
+    imageBarrier(fn, command, entry.image, 0, mipLevels,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                 VK_ACCESS_SHADER_READ_BIT);
+    fn.vkEndCommandBuffer(command);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &command;
+    result = fn.vkQueueSubmit(graphicsQueue_, 1, &submitInfo, fence);
+    if (result == VK_SUCCESS) {
+        result = fn.vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+    }
+    fn.vkDestroyFence(device_, fence, nullptr);
+    fn.vkFreeCommandBuffers(device_, commandPool_, 1, &command);
+    fn.vkDestroyBuffer(device_, staging, nullptr);
+    fn.vkFreeMemory(device_, stagingMemory, nullptr);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: submit/wait", result));
+    }
+
+    // 5) View (todos os mips) — sampling pronto.
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = entry.image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = mipLevels;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    result = fn.vkCreateImageView(device_, &viewInfo, nullptr, &entry.view);
+    if (result != VK_SUCCESS) {
+        fn.vkDestroyImage(device_, entry.image, nullptr);
+        fn.vkFreeMemory(device_, entry.memory, nullptr);
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.texture: vkCreateImageView", result));
+    }
+    return TextureHandle{textures_.insert(std::move(entry))};
+}
+
+Result<SamplerHandle> VulkanBackend::createSampler(const SamplerDesc& desc) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    const auto& fn = library_.functions();
+    using F = eng::rhi::FilterMode;
+    using A = eng::rhi::AddressMode;
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = desc.magFilter == F::Nearest ? VK_FILTER_NEAREST
+                                                         : VK_FILTER_LINEAR;
+    // Min com mip: nearest/linear por nível + nearest/linear ENTRE níveis.
+    const bool minNearest = desc.minFilter == F::Nearest;
+    const bool mipNearest = desc.mipFilter == F::Nearest;
+    samplerInfo.minFilter = minNearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = mipNearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST
+                                        : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = desc.addressU == A::ClampToEdge
+                                  ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+                                  : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = desc.addressV == A::ClampToEdge
+                                  ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+                                  : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = samplerInfo.addressModeU;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_TRANSPARENT_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    SamplerEntry entry{};
+    const VkResult result =
+        fn.vkCreateSampler(device_, &samplerInfo, nullptr, &entry.sampler);
+    if (result != VK_SUCCESS) {
+        return eng::core::makeUnexpected(
+            vkErr(StatusCode::Unknown, "rhi.vulkan.sampler: vkCreateSampler", result));
+    }
+    return SamplerHandle{samplers_.insert(std::move(entry))};
+}
+
+void VulkanBackend::invalidateTextureDescriptorCache() noexcept {
+    // Sets podem estar referenciados por frames em voo — espera REAL antes
+    // de reciclar o pool (simples e correto nesta escala; ADR-037).
+    library_.functions().vkDeviceWaitIdle(device_);
+    textureSetCache_.clear();
+    if (textureDescriptorPool_ != VK_NULL_HANDLE) {
+        (void)library_.functions().vkResetDescriptorPool(
+            device_, textureDescriptorPool_, 0);
+    }
+}
+
+Result<void> VulkanBackend::destroyTexture(TextureHandle handle) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    TextureEntry entry{};
+    if (!textures_.remove(handle.id, entry)) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument, "rhi.vulkan.texture: handle nulo/stale/double"));
+    }
+    invalidateTextureDescriptorCache();
+    const auto& fn = library_.functions();
+    fn.vkDestroyImageView(device_, entry.view, nullptr);
+    fn.vkDestroyImage(device_, entry.image, nullptr);
+    fn.vkFreeMemory(device_, entry.memory, nullptr);
+    return {};
+}
+
+Result<void> VulkanBackend::destroySampler(SamplerHandle handle) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    SamplerEntry entry{};
+    if (!samplers_.remove(handle.id, entry)) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument, "rhi.vulkan.sampler: handle nulo/stale/double"));
+    }
+    invalidateTextureDescriptorCache();
+    library_.functions().vkDestroySampler(device_, entry.sampler, nullptr);
     return {};
 }
 

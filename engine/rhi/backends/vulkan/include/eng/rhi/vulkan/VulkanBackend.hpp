@@ -64,6 +64,13 @@ public:
     eng::core::Result<void> destroyShader(ShaderHandle handle) override;
     eng::core::Result<void> destroyGraphicsPipeline(GraphicsPipelineHandle handle) override;
 
+    [[nodiscard]] eng::core::Result<TextureHandle> createTexture(
+        const TextureDesc& desc) override;
+    [[nodiscard]] eng::core::Result<SamplerHandle> createSampler(
+        const SamplerDesc& desc) override;
+    eng::core::Result<void> destroyTexture(TextureHandle handle) override;
+    eng::core::Result<void> destroySampler(SamplerHandle handle) override;
+
     [[nodiscard]] eng::core::Result<BeginFrameResult> beginFrame() override;
     eng::core::Result<void> frameClear(std::uint64_t frameId, const ClearDesc& clear) override;
     eng::core::Result<void> frameSetViewport(std::uint64_t frameId,
@@ -74,6 +81,8 @@ public:
                                                    BufferHandle buffer) override;
     eng::core::Result<void> frameBindIndexBuffer(std::uint64_t frameId, BufferHandle buffer,
                                                  IndexType indexType) override;
+    eng::core::Result<void> frameBindTexture(std::uint64_t frameId, TextureHandle texture,
+                                            SamplerHandle sampler, std::uint32_t slot) override;
     eng::core::Result<void> frameDraw(std::uint64_t frameId, std::uint32_t vertexCount,
                                       std::uint32_t firstVertex) override;
     eng::core::Result<void> frameDrawIndexed(std::uint64_t frameId, std::uint32_t indexCount,
@@ -104,6 +113,18 @@ private:
         VkPipelineLayout layout{VK_NULL_HANDLE};
         eng::rhi::Format colorFormat{eng::rhi::Format::Undefined};
     };
+    struct TextureEntry {
+        VkImage image{VK_NULL_HANDLE};
+        VkDeviceMemory memory{VK_NULL_HANDLE};
+        VkImageView view{VK_NULL_HANDLE};
+        std::uint32_t width{0};
+        std::uint32_t height{0};
+        VkFormat format{VK_FORMAT_UNDEFINED};
+        std::uint32_t mipLevels{1};
+    };
+    struct SamplerEntry {
+        VkSampler sampler{VK_NULL_HANDLE};
+    };
     /// Frame in flight (ADR-035/auditoria F5): um slot por frame pendente.
     struct FrameSlot {
         VkCommandBuffer command{VK_NULL_HANDLE};
@@ -115,6 +136,9 @@ private:
         std::uint64_t frameId{0};
         std::uint32_t imageIndex{0};
         VkFramebuffer framebuffer{VK_NULL_HANDLE};
+        /// Layout do pipeline em vigor nesta sessão (bind de descriptor set
+        // precisa do layout REAL — rastreado em frameSetPipeline).
+        VkPipelineLayout boundPipelineLayout{VK_NULL_HANDLE};
     };
 
     // --- helpers internos (definidos nos .cpp correspondentes) ------------------
@@ -126,6 +150,8 @@ private:
         const char* what) const;
     [[nodiscard]] eng::core::Result<void> uploadToDeviceLocal(
         BufferEntry& entry, std::size_t offset, std::span<const std::byte> data);
+    /// Sincroniza a destruição de texturas/samplers com frames em voo.
+    void invalidateTextureDescriptorCache() noexcept;
     [[nodiscard]] eng::core::Result<void> createSwapchain(std::uint32_t width,
                                                           std::uint32_t height);
     void destroySwapchain() noexcept;
@@ -159,6 +185,21 @@ private:
     HandleTable<BufferEntry> buffers_{};
     HandleTable<ShaderEntry> shaders_{};
     HandleTable<PipelineEntry> pipelines_{};
+    HandleTable<TextureEntry> textures_{};
+    HandleTable<SamplerEntry> samplers_{};
+
+    // --- texturas: descriptor set compartilhado (binding 0) ----------------------
+    /// Layout com 1 combined image sampler no set 0 (fragment). TODOS os
+    /// pipelines usam este layout — shaders que não amostram apenas ignoram
+    /// o binding (legal em Vulkan).
+    VkDescriptorSetLayout textureSetLayout_{VK_NULL_HANDLE};
+    /// Pool de sets (pares textura+sampler cacheados — sem update pós-criação,
+    /// então não há hazard com frames em voo).
+    VkDescriptorPool textureDescriptorPool_{VK_NULL_HANDLE};
+    /// Cache (textureHandle.id, samplerHandle.id) → set. Inválida por
+    /// completo em destroyTexture/destroySampler (simples e correto).
+    std::map<std::pair<std::uint64_t, std::uint64_t>, VkDescriptorSet>
+        textureSetCache_{};
 
     // --- frames ---------------------------------------------------------------------
     std::vector<FrameSlot> frameSlots_{};

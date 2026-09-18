@@ -407,3 +407,136 @@ TEST_CASE("paridade: mesmo triangle nos DOIS backends reais (missão §40)", "[r
     }
 }
 #endif  // ENG_HAVE_PARITY_VULKAN
+
+// =============================================================================
+// Textura REAL com pixel verificado (evolução — caminho imagem→sprite)
+// =============================================================================
+
+TEST_CASE("gles: textura REAL amostrada com pixel verificado (evolução)",
+          "[rhi][rhi_hardware]")
+{
+    GlesReady ready{headlessConfig()};
+    if (!ready.available) {
+        SKIP("OpenGL ES indisponível: " << ready.skipReason);
+    }
+    GlesBackend& backend = ready.backend;
+    REQUIRE(ready.caps.presentation);
+
+    // 1) Sprite shader REAL (pos+cor+uv → textura * cor).
+    ShaderDesc shaderDesc{};
+    shaderDesc.debugName = "sprite";
+    const std::string vertexGlsl = readShaderFile("sprite_gles.vert");
+    const std::string fragmentGlsl = readShaderFile("sprite_gles.frag");
+    REQUIRE_FALSE(vertexGlsl.empty());
+    REQUIRE_FALSE(fragmentGlsl.empty());
+    shaderDesc.vertexGlsl = vertexGlsl;
+    shaderDesc.fragmentGlsl = fragmentGlsl;
+    auto shader = backend.createShader(shaderDesc);
+    REQUIRE(shader.ok());
+
+    // 2) Textura 2x2 com cores CONHECIDAS por quadrante:
+    //    todo o quad cobre a tela; UV (0.5, 0.5) cai na fronteira — usamos
+    //    NEAREST para determinismo total do pixel central.
+    constexpr std::uint32_t kW = 2;
+    constexpr std::uint32_t kH = 2;
+    const std::uint8_t pixels[kW * kH * 4] = {
+        255, 0, 0, 255,    // (0,0) vermelho
+        0, 255, 0, 255,    // (1,0) verde
+        0, 0, 255, 255,    // (0,1) azul
+        255, 255, 255, 255 // (1,1) branco
+    };
+    eng::rhi::TextureDesc textureDesc{};
+    textureDesc.width = kW;
+    textureDesc.height = kH;
+    textureDesc.format = eng::rhi::Format::R8G8B8A8Unorm;
+    textureDesc.initialData = std::as_bytes(std::span{pixels});
+    auto texture = backend.createTexture(textureDesc);
+    REQUIRE(texture.ok());
+
+    // 3) Sampler NEAREST + CLAMP (determinismo do pixel exato).
+    eng::rhi::SamplerDesc samplerDesc{};
+    samplerDesc.minFilter = eng::rhi::FilterMode::Nearest;
+    samplerDesc.magFilter = eng::rhi::FilterMode::Nearest;
+    samplerDesc.addressU = eng::rhi::AddressMode::ClampToEdge;
+    samplerDesc.addressV = eng::rhi::AddressMode::ClampToEdge;
+    auto sampler = backend.createSampler(samplerDesc);
+    REQUIRE(sampler.ok());
+
+    // 4) Quad full-screen com UV: centro da tela → UV (0.5, 0.5).
+    //    Com NEAREST em 2x2, (0.5,0.5) resolve para o texel (0,1)=azul
+    //    (floor(0.5*2)=1 na linha de cima em GL: v=0.5*2=1 → índice 1 →
+    //    linha do MEIO na tela = metade inferior = texel (0,1)).
+    const std::vector<float> vertices = {
+        // pos.x  pos.y   z    w    r    g    b    a    u    v
+        -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 0.f,
+         1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f,
+         1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 0.f,
+         1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        -1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    };
+    eng::rhi::BufferDesc bufferDesc{};
+    bufferDesc.size = vertices.size() * sizeof(float);
+    bufferDesc.usage = BufferUsage::Vertex;
+    bufferDesc.initialData = std::as_bytes(std::span{vertices});
+    auto vertexBuffer = backend.createBuffer(bufferDesc);
+    REQUIRE(vertexBuffer.ok());
+
+    // 5) Pipeline com blending (sprite) — layout pos+cor+uv.
+    GraphicsPipelineDesc pipelineDesc{};
+    pipelineDesc.shader = shader.value();
+    pipelineDesc.vertexLayout.bindings.push_back({0, 40});
+    pipelineDesc.vertexLayout.attributes.push_back(
+        {0, 0, 0, eng::rhi::Format::R32G32B32A32Sfloat});
+    pipelineDesc.vertexLayout.attributes.push_back(
+        {1, 0, 16, eng::rhi::Format::R32G32B32A32Sfloat});
+    pipelineDesc.vertexLayout.attributes.push_back(
+        {2, 0, 32, eng::rhi::Format::R32G32Sfloat});
+    pipelineDesc.raster.cull = eng::rhi::CullMode::None;
+    pipelineDesc.blend.enabled = true;
+    pipelineDesc.blend.srcColor = eng::rhi::BlendFactor::SrcAlpha;
+    pipelineDesc.blend.dstColor = eng::rhi::BlendFactor::OneMinusSrcAlpha;
+    auto pipeline = backend.createGraphicsPipeline(pipelineDesc);
+    REQUIRE(pipeline.ok());
+
+    // 6) Frame com TEXTURA VINCULADA: clear escuro → draw amostrado.
+    auto acquired = backend.beginFrame();
+    REQUIRE(acquired.ok());
+    REQUIRE(acquired.value().status == FrameAcquireStatus::Renderable);
+    const std::uint64_t frameId = acquired.value().frameId;
+    eng::rhi::ClearDesc clear{};
+    clear.color = {0.02f, 0.02f, 0.03f, 1.f};
+    REQUIRE(backend.frameClear(frameId, clear).ok());
+    REQUIRE(backend.frameSetPipeline(frameId, pipeline.value()).ok());
+    REQUIRE(backend.frameBindVertexBuffer(frameId, vertexBuffer.value()).ok());
+    REQUIRE(backend.frameBindTexture(frameId, texture.value(), sampler.value(), 0).ok());
+    REQUIRE(backend.frameDraw(frameId, 6, 0).ok());
+    REQUIRE(backend.endFrame(frameId).ok());
+    REQUIRE(backend.present().ok());
+
+    // 7) VALIDAÇÃO DE OUTPUT REAL: o pixel central é uma COR DA TEXTURA
+    //    (não do clear, não do vertex tint) — a amostragem REAL funcionou.
+    std::uint8_t pixel[4] = {0, 0, 0, 0};
+    REQUIRE(backend.readCenterPixel(pixel).ok());
+    INFO("readback: " << +pixel[0] << " " << +pixel[1] << " " << +pixel[2] << " "
+                      << +pixel[3]);
+    const bool isRed = pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0;
+    const bool isGreen = pixel[0] == 0 && pixel[1] == 255 && pixel[2] == 0;
+    const bool isBlue = pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 255;
+    const bool isWhite = pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255;
+    CHECK((isRed || isGreen || isBlue || isWhite));
+    CHECK(pixel[3] == 255);
+    // NÃO é a cor de clear (5, 5, 7) — foi a TEXTURA que pintou.
+    CHECK_FALSE((pixel[0] == 5 && pixel[1] == 5 && pixel[2] == 7));
+
+    // 8) Textura com mipmaps (cadeia real via glGenerateMipmap).
+    REQUIRE(backend.destroyTexture(texture.value()).ok());
+    textureDesc.generateMipmaps = true;
+    auto mipped = backend.createTexture(textureDesc);
+    REQUIRE(mipped.ok());
+    auto stale = backend.frameBindTexture(frameId, texture.value(), sampler.value(), 0);
+    REQUIRE(stale.isError());
+
+    REQUIRE(backend.destroySampler(sampler.value()).ok());
+    REQUIRE(backend.destroyTexture(mipped.value()).ok());
+}

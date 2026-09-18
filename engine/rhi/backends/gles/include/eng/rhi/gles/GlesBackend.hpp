@@ -55,6 +55,13 @@ public:
     eng::core::Result<void> destroyShader(ShaderHandle handle) override;
     eng::core::Result<void> destroyGraphicsPipeline(GraphicsPipelineHandle handle) override;
 
+    [[nodiscard]] eng::core::Result<TextureHandle> createTexture(
+        const TextureDesc& desc) override;
+    [[nodiscard]] eng::core::Result<SamplerHandle> createSampler(
+        const SamplerDesc& desc) override;
+    eng::core::Result<void> destroyTexture(TextureHandle handle) override;
+    eng::core::Result<void> destroySampler(SamplerHandle handle) override;
+
     [[nodiscard]] eng::core::Result<BeginFrameResult> beginFrame() override;
     eng::core::Result<void> frameClear(std::uint64_t frameId, const ClearDesc& clear) override;
     eng::core::Result<void> frameSetViewport(std::uint64_t frameId,
@@ -65,6 +72,8 @@ public:
                                                    BufferHandle buffer) override;
     eng::core::Result<void> frameBindIndexBuffer(std::uint64_t frameId, BufferHandle buffer,
                                                  IndexType indexType) override;
+    eng::core::Result<void> frameBindTexture(std::uint64_t frameId, TextureHandle texture,
+                                            SamplerHandle sampler, std::uint32_t slot) override;
     eng::core::Result<void> frameDraw(std::uint64_t frameId, std::uint32_t vertexCount,
                                       std::uint32_t firstVertex) override;
     eng::core::Result<void> frameDrawIndexed(std::uint64_t frameId, std::uint32_t indexCount,
@@ -94,6 +103,16 @@ private:
         GLuint vao{0};
         eng::rhi::GraphicsPipelineDesc desc{};  // intenção aplicada no bind
     };
+    struct TextureEntry {
+        GLuint texture{0};
+        std::uint32_t width{0};
+        std::uint32_t height{0};
+        eng::rhi::Format format{eng::rhi::Format::Undefined};
+        bool mipmaps{false};
+    };
+    struct SamplerEntry {
+        eng::rhi::SamplerDesc desc{};
+    };
 
     void destroyAll() noexcept;
     [[nodiscard]] eng::core::Result<void> requireInitialized() const;
@@ -119,12 +138,21 @@ private:
     HandleTable<BufferEntry> buffers_{};
     HandleTable<ShaderEntry> shaders_{};
     HandleTable<PipelineEntry> pipelines_{};
+    HandleTable<TextureEntry> textures_{};
+    HandleTable<SamplerEntry> samplers_{};
 
     eng::rhi::IndexType currentIndexType_{eng::rhi::IndexType::Uint16};
     bool pipelineSet_{false};
     GLuint boundVbo_{0};
     GLuint boundEbo_{0};
     eng::rhi::GraphicsPipelineDesc activePipelineDesc_{};
+    /// Último (texture, sampler) aplicado por slot — evita redundância de
+    /// estado GL em rebinds do mesmo par.
+    struct AppliedTexture {
+        std::uint64_t texture{0};
+        std::uint64_t sampler{0};
+    };
+    AppliedTexture applied_[kMaxTextureSlots]{};
     bool initialized_{false};
     bool hasSurface_{false};
     bool surfaceLost_{false};

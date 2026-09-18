@@ -345,6 +345,11 @@ void GlesBackend::destroyAll() noexcept {
             fn.glDeleteProgram(entry.program);
             fn.glDeleteVertexArrays(1, &entry.vao);
         }
+        for (auto entry : textures_.drainAll()) {
+            fn.glDeleteTextures(1, &entry.texture);
+        }
+        // sampler GLES = parâmetros aplicados no bind (sem objeto GL).
+        (void)samplers_.drainAll();
         if (context_ != EGL_NO_CONTEXT) {
             fn.eglDestroyContext(display_, context_);
             context_ = EGL_NO_CONTEXT;
@@ -362,6 +367,9 @@ void GlesBackend::destroyAll() noexcept {
     contextLost_ = false;
     activeFrameId_ = 0;
     pendingPresents_ = 0;
+    for (auto& slot : applied_) {
+        slot = {};
+    }
 }
 
 GlesBackend::~GlesBackend() {
@@ -615,6 +623,121 @@ Result<void> GlesBackend::destroyGraphicsPipeline(GraphicsPipelineHandle handle)
 }
 
 // =============================================================================
+// Texturas e samplers (evolução — sprites/UI/preview)
+// =============================================================================
+
+Result<TextureHandle> GlesBackend::createTexture(const TextureDesc& desc) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    if (desc.width == 0 || desc.height == 0) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.gles.texture: dimensões zero (" + std::to_string(desc.width) + "x" +
+                std::to_string(desc.height) + ")"));
+    }
+    if (desc.initialData.size() != desc.expectedDataSize()) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.gles.texture: initialData (" + std::to_string(desc.initialData.size()) +
+                " bytes) != width*height*4 (" +
+                std::to_string(desc.expectedDataSize()) + " bytes)"));
+    }
+    const GLenum internalFormat = toGlFormat(desc.format);
+    if (internalFormat == 0) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::NotSupported,
+            "rhi.gles.texture: formato sem mapeamento GLES (use R8G8B8A8Unorm/Srgb)"));
+    }
+    auto current = makeContextCurrent(hasSurface_);
+    if (!current) {
+        return eng::core::makeUnexpected(current.error());
+    }
+    const auto& fn = library_.functions();
+
+    TextureEntry entry{};
+    entry.width = desc.width;
+    entry.height = desc.height;
+    entry.format = desc.format;
+    entry.mipmaps = desc.generateMipmaps;
+    fn.glGenTextures(1, &entry.texture);
+    if (fn.glGetError() != GL_NO_ERROR) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::OutOfMemory, "rhi.gles.texture: glGenTextures falhou"));
+    }
+    fn.glBindTexture(GL_TEXTURE_2D, entry.texture);
+    // Upload tight-packed: alinhamento de linha = 1 (RGBA8 já é alinhado,
+    // mas o contrato é explícito — sem padding de linha).
+    fn.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    fn.glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internalFormat),
+                    static_cast<GLsizei>(desc.width), static_cast<GLsizei>(desc.height), 0,
+                    GL_RGBA, GL_UNSIGNED_BYTE, desc.initialData.data());
+    const GLenum uploadError = fn.glGetError();
+    if (uploadError != GL_NO_ERROR) {
+        fn.glDeleteTextures(1, &entry.texture);
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::Unknown, "rhi.gles.texture: glTexImage2D falhou (" +
+                                     std::to_string(uploadError) + ")"));
+    }
+    if (desc.generateMipmaps) {
+        fn.glGenerateMipmap(GL_TEXTURE_2D);
+        if (fn.glGetError() != GL_NO_ERROR) {
+            fn.glDeleteTextures(1, &entry.texture);
+            return eng::core::makeUnexpected(
+                makeError(StatusCode::Unknown, "rhi.gles.texture: glGenerateMipmap falhou"));
+        }
+    }
+    fn.glBindTexture(GL_TEXTURE_2D, 0);
+    return TextureHandle{textures_.insert(std::move(entry))};
+}
+
+Result<SamplerHandle> GlesBackend::createSampler(const SamplerDesc& desc) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    // GLES: sampler = parâmetros aplicados no bind (sem objeto sampler —
+    // decisão documentada: interface pequena, estado por textura).
+    SamplerEntry entry{};
+    entry.desc = desc;
+    return SamplerHandle{samplers_.insert(std::move(entry))};
+}
+
+Result<void> GlesBackend::destroyTexture(TextureHandle handle) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    TextureEntry entry{};
+    if (!textures_.remove(handle.id, entry)) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument, "rhi.gles.texture: handle nulo/stale/double"));
+    }
+    auto current = makeContextCurrent(hasSurface_);
+    if (!current) {
+        return eng::core::makeUnexpected(current.error());
+    }
+    library_.functions().glDeleteTextures(1, &entry.texture);
+    for (auto& slot : applied_) {
+        slot = {};
+    }
+    return {};
+}
+
+Result<void> GlesBackend::destroySampler(SamplerHandle handle) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    SamplerEntry entry{};
+    if (!samplers_.remove(handle.id, entry)) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument, "rhi.gles.sampler: handle nulo/stale/double"));
+    }
+    for (auto& slot : applied_) {
+        slot = {};
+    }
+    return {};
+}
+
+// =============================================================================
 // Frame lifecycle (missão §12/§38)
 // =============================================================================
 
@@ -756,6 +879,57 @@ Result<void> GlesBackend::frameBindIndexBuffer(std::uint64_t frameId, BufferHand
     }
     boundEbo_ = entry->buffer;  // aplicado no drawIndexed (dentro do VAO)
     currentIndexType_ = indexType;
+    return {};
+}
+
+Result<void> GlesBackend::frameBindTexture(std::uint64_t frameId, TextureHandle texture,
+                                           SamplerHandle sampler, std::uint32_t slot) {
+    if (!isRecording(frameId)) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.gles.frame: sessão inválida"));
+    }
+    if (slot >= kMaxTextureSlots) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.gles.frame: slot de textura inválido (kMaxTextureSlots=" +
+                std::to_string(kMaxTextureSlots) + ")"));
+    }
+    TextureEntry* textureEntry = textures_.find(texture.id);
+    if (textureEntry == nullptr) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.gles.frame: textura nula/stale"));
+    }
+    SamplerEntry* samplerEntry = samplers_.find(sampler.id);
+    if (samplerEntry == nullptr) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.gles.frame: sampler nulo/stale"));
+    }
+    const auto& fn = library_.functions();
+    fn.glActiveTexture(GL_TEXTURE0 + slot);
+    fn.glBindTexture(GL_TEXTURE_2D, textureEntry->texture);
+
+    // Parâmetros do sampler aplicados na textura bound (modelo GL clássico;
+    // objetos sampler separados entram com materiais 3D).
+    using F = eng::rhi::FilterMode;
+    using A = eng::rhi::AddressMode;
+    const SamplerDesc& s = samplerEntry->desc;
+    const GLint mag = s.magFilter == F::Nearest ? GL_NEAREST : GL_LINEAR;
+    GLint min = s.minFilter == F::Nearest ? GL_NEAREST : GL_LINEAR;
+    if (textureEntry->mipmaps) {
+        // Filtro entre níveis só existe com a cadeia de mips.
+        min = s.mipFilter == F::Nearest
+                  ? (s.minFilter == F::Nearest ? GL_NEAREST_MIPMAP_NEAREST
+                                               : GL_LINEAR_MIPMAP_NEAREST)
+                  : (s.minFilter == F::Nearest ? GL_NEAREST_MIPMAP_LINEAR
+                                               : GL_LINEAR_MIPMAP_LINEAR);
+    }
+    fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag);
+    fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+    fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                       s.addressU == A::ClampToEdge ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+    fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                       s.addressV == A::ClampToEdge ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+    applied_[slot] = AppliedTexture{texture.id, sampler.id};
     return {};
 }
 

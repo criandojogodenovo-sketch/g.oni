@@ -97,6 +97,14 @@ eng::core::Result<void> Frame::bindIndexBuffer(BufferHandle buffer, IndexType in
     return state_->backend->frameBindIndexBuffer(frameId_, buffer, indexType);
 }
 
+eng::core::Result<void> Frame::bindTexture(TextureHandle texture, SamplerHandle sampler,
+                                            std::uint32_t slot) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    return state_->backend->frameBindTexture(frameId_, texture, sampler, slot);
+}
+
 eng::core::Result<void> Frame::draw(std::uint32_t vertexCount, std::uint32_t firstVertex) {
     if (auto usable = checkUsable(); !usable) {
         return eng::core::makeUnexpected(usable.error());

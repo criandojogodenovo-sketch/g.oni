@@ -409,6 +409,7 @@ Result<BeginFrameResult> VulkanBackend::beginFrame() {
     slot->inFlight = false;
     slot->imageIndex = imageIndex;
     slot->frameId = ++nextFrameId_;
+    slot->boundPipelineLayout = VK_NULL_HANDLE;  // pipeline define por frame
     return BeginFrameResult{eng::rhi::FrameAcquireStatus::Renderable, slot->frameId};
 }
 
@@ -468,6 +469,7 @@ Result<void> VulkanBackend::frameSetPipeline(std::uint64_t frameId,
     }
     library_.functions().vkCmdBindPipeline(slot->command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                             entry->pipeline);
+    slot->boundPipelineLayout = entry->layout;  // p/ bind de descriptor set
     return {};
 }
 
@@ -509,6 +511,78 @@ Result<void> VulkanBackend::frameBindIndexBuffer(std::uint64_t frameId, BufferHa
     }
     library_.functions().vkCmdBindIndexBuffer(slot->command, entry->buffer, 0,
                                               toVkIndexType(indexType));
+    return {};
+}
+
+Result<void> VulkanBackend::frameBindTexture(std::uint64_t frameId, TextureHandle texture,
+                                             SamplerHandle sampler, std::uint32_t slotIndex) {
+    FrameSlot* slot = findRecordingSlot(frameId);
+    if (slot == nullptr) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.vulkan.frame: sessão inválida"));
+    }
+    if (slot->boundPipelineLayout == VK_NULL_HANDLE) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.frame: bindTexture exige pipeline já definido (layout do bind)"));
+    }
+    if (slotIndex >= kMaxTextureSlots) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.frame: slot de textura inválido (kMaxTextureSlots=" +
+                std::to_string(kMaxTextureSlots) + ")"));
+    }
+    TextureEntry* textureEntry = textures_.find(texture.id);
+    if (textureEntry == nullptr) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.vulkan.frame: textura nula/stale"));
+    }
+    SamplerEntry* samplerEntry = samplers_.find(sampler.id);
+    if (samplerEntry == nullptr) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.vulkan.frame: sampler nulo/stale"));
+    }
+
+    const auto key = std::make_pair(texture.id, sampler.id);
+    auto cached = textureSetCache_.find(key);
+    if (cached == textureSetCache_.end()) {
+        // Aloca + escreve UM descriptor set por par (textura, sampler) —
+        // set imutável pós-criação (sem update enquanto em uso; resets só
+        // acontecem após vkDeviceWaitIdle em destroy*).
+        const auto& fn = library_.functions();
+        VkDescriptorSetAllocateInfo setInfo{};
+        setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        setInfo.descriptorPool = textureDescriptorPool_;
+        setInfo.descriptorSetCount = 1;
+        setInfo.pSetLayouts = &textureSetLayout_;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        const VkResult result = fn.vkAllocateDescriptorSets(device_, &setInfo, &set);
+        if (result != VK_SUCCESS) {
+            return eng::core::makeUnexpected(vkErr(
+                StatusCode::OutOfMemory,
+                "rhi.vulkan.frame: descriptor set de textura (pool exaurido?)", result));
+        }
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.sampler = samplerEntry->sampler;
+        imageInfo.imageView = textureEntry->view;
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set;
+        write.dstBinding = 0;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imageInfo;
+        fn.vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+        cached = textureSetCache_.emplace(key, set).first;
+    }
+
+    // Layout REAL do pipeline em vigor (rastreado em frameSetPipeline) —
+    // TODOS os pipelines do backend declaram o MESMO set 0 (textura).
+    library_.functions().vkCmdBindDescriptorSets(
+        slot->command, VK_PIPELINE_BIND_POINT_GRAPHICS, slot->boundPipelineLayout, 0, 1,
+        &cached->second, 0, nullptr);
     return {};
 }
 

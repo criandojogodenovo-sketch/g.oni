@@ -42,6 +42,7 @@ namespace eng::rhi::vulkan {
     case F::B8G8R8A8Unorm: return VK_FORMAT_B8G8R8A8_UNORM;
     case F::R8G8B8A8Srgb: return VK_FORMAT_R8G8B8A8_SRGB;
     case F::B8G8R8A8Srgb: return VK_FORMAT_B8G8R8A8_SRGB;
+    case F::R32G32Sfloat: return VK_FORMAT_R32G32_SFLOAT;
     case F::R32G32B32A32Sfloat: return VK_FORMAT_R32G32B32A32_SFLOAT;
     case F::R16G16B16A16Sfloat: return VK_FORMAT_R16G16B16A16_SFLOAT;
     case F::D32Sfloat: return VK_FORMAT_D32_SFLOAT;
@@ -60,6 +61,7 @@ namespace eng::rhi::vulkan {
     case VK_FORMAT_B8G8R8A8_UNORM: return F::B8G8R8A8Unorm;
     case VK_FORMAT_R8G8B8A8_SRGB: return F::R8G8B8A8Srgb;
     case VK_FORMAT_B8G8R8A8_SRGB: return F::B8G8R8A8Srgb;
+    case VK_FORMAT_R32G32_SFLOAT: return F::R32G32Sfloat;
     case VK_FORMAT_R32G32B32A32_SFLOAT: return F::R32G32B32A32Sfloat;
     case VK_FORMAT_R16G16B16A16_SFLOAT: return F::R16G16B16A16Sfloat;
     case VK_FORMAT_D32_SFLOAT: return F::D32Sfloat;

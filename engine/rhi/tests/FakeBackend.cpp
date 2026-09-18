@@ -105,7 +105,8 @@ FakeBackend::~FakeBackend() {
 }
 
 std::size_t FakeBackend::liveResources() const noexcept {
-    return buffers_.size() + shaders_.size() + pipelines_.size();
+    return buffers_.size() + shaders_.size() + pipelines_.size() + textures_.size() +
+           samplers_.size();
 }
 
 std::vector<std::byte> FakeBackend::bufferData(BufferHandle handle) const {
@@ -116,6 +117,19 @@ std::vector<std::byte> FakeBackend::bufferData(BufferHandle handle) const {
     }
     const auto it = buffers_.find(index);
     if (it == buffers_.end() || it->second.generation != generation) {
+        return {};
+    }
+    return it->second.data;
+}
+
+std::vector<std::byte> FakeBackend::textureData(TextureHandle handle) const {
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+    if (!decodeHandle(handle.id, index, generation)) {
+        return {};
+    }
+    const auto it = textures_.find(index);
+    if (it == textures_.end() || it->second.generation != generation) {
         return {};
     }
     return it->second.data;
@@ -368,6 +382,108 @@ eng::core::Result<void> FakeBackend::destroyGraphicsPipeline(GraphicsPipelineHan
     return {};
 }
 
+// --- texturas/samplers (evolução) --------------------------------------------
+
+eng::core::Result<TextureHandle> FakeBackend::createTexture(const TextureDesc& desc) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    if (desc.width == 0 || desc.height == 0) {
+        return eng::core::makeUnexpected(err("rhi.fake.texture: dimensões zero"));
+    }
+    if (desc.initialData.size() != desc.expectedDataSize()) {
+        return eng::core::makeUnexpected(
+            err("rhi.fake.texture: initialData != width*height*4"));
+    }
+    std::uint32_t index = 0;
+    std::uint32_t generation = 1;
+    if (!freeTextureSlots_.empty()) {
+        const auto it = freeTextureSlots_.begin();
+        index = it->first;
+        generation = it->second + 1;
+        freeTextureSlots_.erase(it);
+    } else {
+        index = nextTextureIndex_++;
+    }
+    TextureEntry entry{};
+    entry.generation = generation;
+    entry.width = desc.width;
+    entry.height = desc.height;
+    entry.format = desc.format;
+    entry.mipmaps = desc.generateMipmaps;
+    entry.data.assign(desc.initialData.begin(), desc.initialData.end());
+    textures_.emplace(index, std::move(entry));
+    record("createTexture:" + std::to_string(desc.width) + "x" +
+           std::to_string(desc.height));
+    return TextureHandle{encodeHandle(index, generation)};
+}
+
+eng::core::Result<SamplerHandle> FakeBackend::createSampler(const SamplerDesc& desc) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    std::uint32_t index = 0;
+    std::uint32_t generation = 1;
+    if (!freeSamplerSlots_.empty()) {
+        const auto it = freeSamplerSlots_.begin();
+        index = it->first;
+        generation = it->second + 1;
+        freeSamplerSlots_.erase(it);
+    } else {
+        index = nextSamplerIndex_++;
+    }
+    SamplerEntry entry{};
+    entry.generation = generation;
+    entry.desc = desc;
+    samplers_.emplace(index, std::move(entry));
+    record("createSampler");
+    return SamplerHandle{encodeHandle(index, generation)};
+}
+
+eng::core::Result<void> FakeBackend::destroyTexture(TextureHandle handle) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+    if (!decodeHandle(handle.id, index, generation)) {
+        return eng::core::makeUnexpected(err("rhi.fake.texture: handle nulo em destroy"));
+    }
+    const auto it = textures_.find(index);
+    if (it == textures_.end()) {
+        return eng::core::makeUnexpected(err("rhi.fake.texture: double-destroy"));
+    }
+    if (it->second.generation != generation) {
+        return eng::core::makeUnexpected(err("rhi.fake.texture: handle stale em destroy"));
+    }
+    freeTextureSlots_.emplace(index, it->second.generation);
+    textures_.erase(it);
+    record("destroyTexture");
+    return {};
+}
+
+eng::core::Result<void> FakeBackend::destroySampler(SamplerHandle handle) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+    if (!decodeHandle(handle.id, index, generation)) {
+        return eng::core::makeUnexpected(err("rhi.fake.sampler: handle nulo em destroy"));
+    }
+    const auto it = samplers_.find(index);
+    if (it == samplers_.end()) {
+        return eng::core::makeUnexpected(err("rhi.fake.sampler: double-destroy"));
+    }
+    if (it->second.generation != generation) {
+        return eng::core::makeUnexpected(err("rhi.fake.sampler: handle stale em destroy"));
+    }
+    freeSamplerSlots_.emplace(index, it->second.generation);
+    samplers_.erase(it);
+    record("destroySampler");
+    return {};
+}
+
 // =============================================================================
 // Frame
 // =============================================================================
@@ -406,6 +522,8 @@ eng::core::Result<BeginFrameResult> FakeBackend::beginFrame() {
     pipelineSet_ = false;
     vertexBound_ = false;
     indexBound_ = false;
+    boundTextures_.clear();
+    boundSamplers_.clear();
     ++activeFrameId_;
     record("begin");
     return BeginFrameResult{FrameAcquireStatus::Renderable, activeFrameId_};
@@ -502,6 +620,45 @@ eng::core::Result<void> FakeBackend::frameBindIndexBuffer(std::uint64_t frameId,
     }
     indexBound_ = true;
     record("ibo");
+    return {};
+}
+
+eng::core::Result<void> FakeBackend::frameBindTexture(std::uint64_t frameId,
+                                                       TextureHandle texture,
+                                                       SamplerHandle sampler,
+                                                       std::uint32_t slot) {
+    if (auto ready = requireInitialized(); !ready) {
+        return eng::core::makeUnexpected(ready.error());
+    }
+    if (auto recording = requireRecording(frameId); !recording) {
+        return eng::core::makeUnexpected(recording.error());
+    }
+    if (slot >= kMaxTextureSlots) {
+        return eng::core::makeUnexpected(err(
+            "rhi.fake.frame: slot de textura inválido (kMaxTextureSlots=" +
+            std::to_string(kMaxTextureSlots) + ")"));
+    }
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+    if (!decodeHandle(texture.id, index, generation) ||
+        textures_.find(index) == textures_.end() ||
+        textures_.at(index).generation != generation) {
+        return eng::core::makeUnexpected(
+            err("rhi.fake.frame: textura nula/stale em bindTexture"));
+    }
+    if (!decodeHandle(sampler.id, index, generation) ||
+        samplers_.find(index) == samplers_.end() ||
+        samplers_.at(index).generation != generation) {
+        return eng::core::makeUnexpected(
+            err("rhi.fake.frame: sampler nulo/stale em bindTexture"));
+    }
+    if (boundTextures_.size() <= slot) {
+        boundTextures_.resize(slot + 1);
+        boundSamplers_.resize(slot + 1);
+    }
+    boundTextures_[slot] = texture;
+    boundSamplers_[slot] = sampler;
+    record("texture:" + std::to_string(slot));
     return {};
 }
 

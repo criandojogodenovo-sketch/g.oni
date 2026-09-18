@@ -22,6 +22,8 @@
 
 #include "triangle_vk_frag_spirv.hpp"
 #include "triangle_vk_vert_spirv.hpp"
+#include "sprite_vk_frag_spirv.hpp"
+#include "sprite_vk_vert_spirv.hpp"
 
 namespace {
 
@@ -304,4 +306,145 @@ TEST_CASE("vulkan: registro no Renderer e Auto seleciona Vulkan real", "[rhi][rh
     INFO("device: " << renderer.capabilities().device.name);
     CHECK(renderer.capabilities().device.kind == eng::rhi::DeviceKind::Cpu);
     CHECK(renderer.capabilities().softwareRendering);
+}
+
+// =============================================================================
+// Textura REAL com draw amostrado (evolução — caminho imagem→sprite).
+// Sem readback no Vulkan headless (render target é a swapchain): a validação
+// é por SUBMISSÃO REAL + VALIDATION LAYERS ATIVAS (bind de descriptor set
+// incorreto seria reportado/capturado) — nível RENDERING do §47.
+// =============================================================================
+
+TEST_CASE("vulkan: textura REAL com draw amostrado e mips (evolução)",
+          "[rhi][rhi_hardware]")
+{
+    VulkanReady ready{headlessConfig()};
+    if (!ready.available) {
+        SKIP("Vulkan indisponível: " + ready.skipReason);
+    }
+    VulkanBackend& backend = ready.backend;
+    REQUIRE(ready.caps.presentation);
+
+    // 1) Sprite shader SPIR-V (set 0 / binding 0 = sampler2D).
+    ShaderDesc shaderDesc{};
+    shaderDesc.debugName = "sprite";
+    shaderDesc.vertexSpirv = eng::rhi::testing::kSpriteVertexSpirvBytes();
+    shaderDesc.fragmentSpirv = eng::rhi::testing::kSpriteFragmentSpirvBytes();
+    auto shader = backend.createShader(shaderDesc);
+    REQUIRE(shader.ok());
+
+    // 2) Textura 4x4 RGBA8 real (upload staging + barreira de layout).
+    constexpr std::uint32_t kW = 4;
+    constexpr std::uint32_t kH = 4;
+    std::vector<std::uint8_t> pixels(kW * kH * 4, 0);
+    for (std::uint32_t y = 0; y < kH; ++y) {
+        for (std::uint32_t x = 0; x < kW; ++x) {
+            const std::size_t i = (y * kW + x) * 4;
+            pixels[i + 0] = static_cast<std::uint8_t>(x * 60);
+            pixels[i + 1] = static_cast<std::uint8_t>(y * 60);
+            pixels[i + 2] = 180;
+            pixels[i + 3] = 255;
+        }
+    }
+    eng::rhi::TextureDesc textureDesc{};
+    textureDesc.width = kW;
+    textureDesc.height = kH;
+    textureDesc.format = eng::rhi::Format::R8G8B8A8Unorm;
+    textureDesc.generateMipmaps = true;  // 4x4 → 3 níveis (blit chain real)
+    textureDesc.initialData = std::as_bytes(std::span{pixels});
+    auto texture = backend.createTexture(textureDesc);
+    REQUIRE(texture.ok());
+
+    // 3) Sampler NEAREST/CLAMP.
+    eng::rhi::SamplerDesc samplerDesc{};
+    samplerDesc.minFilter = eng::rhi::FilterMode::Nearest;
+    samplerDesc.magFilter = eng::rhi::FilterMode::Nearest;
+    samplerDesc.mipFilter = eng::rhi::FilterMode::Nearest;
+    auto sampler = backend.createSampler(samplerDesc);
+    REQUIRE(sampler.ok());
+
+    // 4) Quad full-screen com UV (stride 40: pos vec4 + cor vec4 + uv vec2).
+    const std::vector<float> vertices = {
+        // pos.x  pos.y   z    w    r    g    b    a    u    v
+        -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 0.f,
+         1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f,
+         1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 0.f,
+         1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f,
+        -1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    };
+    eng::rhi::BufferDesc bufferDesc{};
+    bufferDesc.size = vertices.size() * sizeof(float);
+    bufferDesc.usage = BufferUsage::Vertex;
+    bufferDesc.initialData = std::as_bytes(std::span{vertices});
+    auto vertexBuffer = backend.createBuffer(bufferDesc);
+    REQUIRE(vertexBuffer.ok());
+
+    // 5) Pipeline com blending (sprite).
+    GraphicsPipelineDesc pipelineDesc{};
+    pipelineDesc.shader = shader.value();
+    pipelineDesc.vertexLayout.bindings.push_back({0, 40});
+    pipelineDesc.vertexLayout.attributes.push_back(
+        {0, 0, 0, eng::rhi::Format::R32G32B32A32Sfloat});
+    pipelineDesc.vertexLayout.attributes.push_back(
+        {1, 0, 16, eng::rhi::Format::R32G32B32A32Sfloat});
+    pipelineDesc.vertexLayout.attributes.push_back(
+        {2, 0, 32, eng::rhi::Format::R32G32Sfloat});
+    pipelineDesc.raster.cull = eng::rhi::CullMode::None;
+    pipelineDesc.blend.enabled = true;
+    pipelineDesc.blend.srcColor = eng::rhi::BlendFactor::SrcAlpha;
+    pipelineDesc.blend.dstColor = eng::rhi::BlendFactor::OneMinusSrcAlpha;
+    auto pipeline = backend.createGraphicsPipeline(pipelineDesc);
+    REQUIRE(pipeline.ok());
+
+    // 6) Frame com textura vinculada (descriptor set real).
+    auto acquired = backend.beginFrame();
+    REQUIRE(acquired.ok());
+    REQUIRE(acquired.value().status == FrameAcquireStatus::Renderable);
+    const std::uint64_t frameId = acquired.value().frameId;
+    eng::rhi::ClearDesc clear{};
+    clear.color = {0.02f, 0.02f, 0.03f, 1.f};
+    REQUIRE(backend.frameClear(frameId, clear).ok());
+    REQUIRE(backend.frameSetPipeline(frameId, pipeline.value()).ok());
+    REQUIRE(backend.frameBindVertexBuffer(frameId, vertexBuffer.value()).ok());
+    REQUIRE(backend.frameBindTexture(frameId, texture.value(), sampler.value(), 0).ok());
+    REQUIRE(backend.frameDraw(frameId, 6, 0).ok());
+    REQUIRE(backend.endFrame(frameId).ok());
+    REQUIRE(backend.present().ok());
+    CHECK(backend.stats().framesSubmitted >= 1);
+    CHECK(backend.stats().presentsOk >= 1);
+    CHECK(backend.stats().validationLayerActive);
+
+    // 7) Segundo frame reutilizando o descriptor set CACHEADO (par).
+    auto second = backend.beginFrame();
+    REQUIRE(second.ok());
+    const std::uint64_t secondId = second.value().frameId;
+    REQUIRE(backend.frameSetPipeline(secondId, pipeline.value()).ok());
+    REQUIRE(backend.frameBindVertexBuffer(secondId, vertexBuffer.value()).ok());
+    REQUIRE(backend.frameBindTexture(secondId, texture.value(), sampler.value(), 0).ok());
+    REQUIRE(backend.frameDraw(secondId, 6, 0).ok());
+    REQUIRE(backend.endFrame(secondId).ok());
+    REQUIRE(backend.present().ok());
+
+    // 8) Sem pipeline definido → erro preciso (layout do bind é do pipeline).
+    auto third = backend.beginFrame();
+    REQUIRE(third.ok());
+    auto noPipeline = backend.frameBindTexture(third.value().frameId, texture.value(),
+                                               sampler.value(), 0);
+    REQUIRE(noPipeline.isError());
+    CHECK(noPipeline.error().message.find("pipeline") != std::string::npos);
+    // Encerra a sessão de forma limpa para não abortar o frame pendente.
+    REQUIRE(backend.frameSetPipeline(third.value().frameId, pipeline.value()).ok());
+    REQUIRE(backend.frameDraw(third.value().frameId, 3, 0).ok());
+    REQUIRE(backend.endFrame(third.value().frameId).ok());
+    REQUIRE(backend.present().ok());
+
+    // 9) Destroy + stale contra o driver REAL.
+    REQUIRE(backend.destroySampler(sampler.value()).ok());
+    auto staleSampler = backend.frameBindTexture(frameId, texture.value(),
+                                                 sampler.value(), 0);
+    REQUIRE(staleSampler.isError());
+    REQUIRE(backend.destroyTexture(texture.value()).ok());
+    auto destroyedAgain = backend.destroyTexture(texture.value());
+    REQUIRE(destroyedAgain.isError());
 }

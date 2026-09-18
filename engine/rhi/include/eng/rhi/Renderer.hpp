@@ -74,6 +74,10 @@ public:
     [[nodiscard]] eng::core::Result<void> bindVertexBuffer(BufferHandle buffer);
     [[nodiscard]] eng::core::Result<void> bindIndexBuffer(BufferHandle buffer,
                                                           IndexType indexType);
+    /// Textura+sampler para os draws seguintes (slot 0 — kMaxTextureSlots).
+    [[nodiscard]] eng::core::Result<void> bindTexture(TextureHandle texture,
+                                                      SamplerHandle sampler,
+                                                      std::uint32_t slot = 0);
     [[nodiscard]] eng::core::Result<void> draw(std::uint32_t vertexCount,
                                               std::uint32_t firstVertex = 0);
     [[nodiscard]] eng::core::Result<void> drawIndexed(std::uint32_t indexCount,
@@ -162,6 +166,13 @@ public:
     [[nodiscard]] eng::core::Result<void> destroyShader(ShaderHandle handle);
     [[nodiscard]] eng::core::Result<void> destroyGraphicsPipeline(
         GraphicsPipelineHandle handle);
+
+    // --- texturas/samplers -------------------------------------------------------
+
+    [[nodiscard]] eng::core::Result<TextureHandle> createTexture(const TextureDesc& desc);
+    [[nodiscard]] eng::core::Result<SamplerHandle> createSampler(const SamplerDesc& desc);
+    [[nodiscard]] eng::core::Result<void> destroyTexture(TextureHandle handle);
+    [[nodiscard]] eng::core::Result<void> destroySampler(SamplerHandle handle);
 
     // --- frame (missão §12) ----------------------------------------------------
 

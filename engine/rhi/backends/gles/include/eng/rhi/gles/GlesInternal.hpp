@@ -29,6 +29,7 @@ namespace eng::rhi::gles {
     case F::B8G8R8A8Unorm: return GL_RGBA8;  // GLES é RGBA-first (sem BGRA nativo)
     case F::R8G8B8A8Srgb: return GL_SRGB8_ALPHA8;
     case F::B8G8R8A8Srgb: return GL_SRGB8_ALPHA8;
+    case F::R32G32Sfloat: return GL_RG32F;
     case F::R32G32B32A32Sfloat: return GL_RGBA32F;
     case F::R16G16B16A16Sfloat: return GL_RGBA16F;
     case F::D32Sfloat: return GL_DEPTH_COMPONENT32F;
@@ -47,6 +48,7 @@ namespace eng::rhi::gles {
     case F::B8G8R8A8Unorm: return GL_UNSIGNED_BYTE;
     case F::R8G8B8A8Srgb:
     case F::B8G8R8A8Srgb: return GL_UNSIGNED_BYTE;
+    case F::R32G32Sfloat: return GL_FLOAT;
     case F::R32G32B32A32Sfloat: return GL_FLOAT;
     case F::R16G16B16A16Sfloat: return GL_HALF_FLOAT;
     case F::D32Sfloat: return GL_FLOAT;
@@ -83,6 +85,7 @@ namespace eng::rhi::gles {
     case F::B8G8R8A8Srgb:
     case F::R32G32B32A32Sfloat:
     case F::R16G16B16A16Sfloat: return 4;
+    case F::R32G32Sfloat: return 2;  // RG — 2 componentes no atributo
     case F::D32Sfloat: return 1;
     case F::D24UnormS8Uint: return 2;
     case F::Undefined: return 0;

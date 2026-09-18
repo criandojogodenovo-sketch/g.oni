@@ -82,6 +82,18 @@ public:
     [[nodiscard]] virtual eng::core::Result<void> destroyGraphicsPipeline(
         GraphicsPipelineHandle handle) = 0;
 
+    // --- texturas/samplers (evolução — sprites/UI/preview) ---------------------
+
+    /// Textura 2D imutável — upload na criação (staging REAL). Dimensões
+    /// zero, tamanho de dados ≠ w*h*4 ou formato sem suporte REAL →
+    /// erro preciso.
+    [[nodiscard]] virtual eng::core::Result<TextureHandle> createTexture(
+        const TextureDesc& desc) = 0;
+    [[nodiscard]] virtual eng::core::Result<SamplerHandle> createSampler(
+        const SamplerDesc& desc) = 0;
+    [[nodiscard]] virtual eng::core::Result<void> destroyTexture(TextureHandle handle) = 0;
+    [[nodiscard]] virtual eng::core::Result<void> destroySampler(SamplerHandle handle) = 0;
+
     // --- frame (missão §12) ---------------------------------------------------
 
     /// Adquire o próximo frame. `OutOfDate`/`Minimized` são protocolo, não
@@ -98,6 +110,12 @@ public:
         std::uint64_t frameId, BufferHandle buffer) = 0;
     [[nodiscard]] virtual eng::core::Result<void> frameBindIndexBuffer(
         std::uint64_t frameId, BufferHandle buffer, IndexType indexType) = 0;
+    /// Vincula textura+sampler no slot (0..kMaxTextureSlots-1) para os
+    /// draws seguintes. Handles nulos/stale ou slot inválido → erro
+    /// preciso.
+    [[nodiscard]] virtual eng::core::Result<void> frameBindTexture(
+        std::uint64_t frameId, TextureHandle texture, SamplerHandle sampler,
+        std::uint32_t slot) = 0;
     [[nodiscard]] virtual eng::core::Result<void> frameDraw(std::uint64_t frameId,
                                                            std::uint32_t vertexCount,
                                                            std::uint32_t firstVertex) = 0;

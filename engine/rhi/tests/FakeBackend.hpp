@@ -78,6 +78,18 @@ public:
     [[nodiscard]] std::size_t bufferCount() const noexcept { return buffers_.size(); }
     /// Conteúdo atual do buffer (para validar update/cópia inicial).
     [[nodiscard]] std::vector<std::byte> bufferData(BufferHandle handle) const;
+    [[nodiscard]] std::size_t textureCount() const noexcept { return textures_.size(); }
+    [[nodiscard]] std::size_t samplerCount() const noexcept { return samplers_.size(); }
+    /// Última textura vinculada por slot (0 quando nenhuma) — para validar
+    /// frameBindTexture.
+    [[nodiscard]] TextureHandle boundTexture(std::uint32_t slot) const noexcept {
+        return slot < boundTextures_.size() ? boundTextures_[slot] : TextureHandle{};
+    }
+    [[nodiscard]] SamplerHandle boundSampler(std::uint32_t slot) const noexcept {
+        return slot < boundSamplers_.size() ? boundSamplers_[slot] : SamplerHandle{};
+    }
+    /// Conteúdo copiado de uma textura (upload na criação).
+    [[nodiscard]] std::vector<std::byte> textureData(TextureHandle handle) const;
 
     // ---------------------------------------------------------- RhiBackend impl
 
@@ -96,16 +108,25 @@ public:
     eng::core::Result<void> destroyShader(ShaderHandle handle) override;
     eng::core::Result<void> destroyGraphicsPipeline(GraphicsPipelineHandle handle) override;
 
+    [[nodiscard]] eng::core::Result<TextureHandle> createTexture(
+        const TextureDesc& desc) override;
+    [[nodiscard]] eng::core::Result<SamplerHandle> createSampler(
+        const SamplerDesc& desc) override;
+    eng::core::Result<void> destroyTexture(TextureHandle handle) override;
+    eng::core::Result<void> destroySampler(SamplerHandle handle) override;
+
     [[nodiscard]] eng::core::Result<BeginFrameResult> beginFrame() override;
     eng::core::Result<void> frameClear(std::uint64_t frameId, const ClearDesc& clear) override;
     eng::core::Result<void> frameSetViewport(std::uint64_t frameId,
                                              const Viewport& viewport) override;
     eng::core::Result<void> frameSetPipeline(std::uint64_t frameId,
                                               GraphicsPipelineHandle pipeline) override;
-    eng::core::Result<void> frameBindVertexBuffer(std::uint64_t frameId,
+    [[nodiscard]] eng::core::Result<void> frameBindVertexBuffer(std::uint64_t frameId,
                                                    BufferHandle buffer) override;
     eng::core::Result<void> frameBindIndexBuffer(std::uint64_t frameId, BufferHandle buffer,
                                                  IndexType indexType) override;
+    eng::core::Result<void> frameBindTexture(std::uint64_t frameId, TextureHandle texture,
+                                            SamplerHandle sampler, std::uint32_t slot) override;
     eng::core::Result<void> frameDraw(std::uint64_t frameId, std::uint32_t vertexCount,
                                       std::uint32_t firstVertex) override;
     eng::core::Result<void> frameDrawIndexed(std::uint64_t frameId, std::uint32_t indexCount,
@@ -132,6 +153,18 @@ private:
         std::uint32_t generation{1};
         ShaderHandle shader{};
     };
+    struct TextureEntry {
+        std::uint32_t generation{1};
+        std::uint32_t width{0};
+        std::uint32_t height{0};
+        Format format{Format::Undefined};
+        bool mipmaps{false};
+        std::vector<std::byte> data{};
+    };
+    struct SamplerEntry {
+        std::uint32_t generation{1};
+        SamplerDesc desc{};
+    };
 
     // Handles: índice em 32 bits baixos (+1), geração em 32 bits altos.
     [[nodiscard]] static std::uint64_t encodeHandle(std::uint32_t index,
@@ -153,12 +186,18 @@ private:
     std::map<std::uint32_t, BufferEntry> buffers_{};
     std::map<std::uint32_t, ShaderEntry> shaders_{};
     std::map<std::uint32_t, PipelineEntry> pipelines_{};
+    std::map<std::uint32_t, TextureEntry> textures_{};
+    std::map<std::uint32_t, SamplerEntry> samplers_{};
     std::map<std::uint32_t, std::uint32_t> freeBufferSlots_{};
     std::map<std::uint32_t, std::uint32_t> freeShaderSlots_{};
     std::map<std::uint32_t, std::uint32_t> freePipelineSlots_{};
+    std::map<std::uint32_t, std::uint32_t> freeTextureSlots_{};
+    std::map<std::uint32_t, std::uint32_t> freeSamplerSlots_{};
     std::uint32_t nextBufferIndex_{0};
     std::uint32_t nextShaderIndex_{0};
     std::uint32_t nextPipelineIndex_{0};
+    std::uint32_t nextTextureIndex_{0};
+    std::uint32_t nextSamplerIndex_{0};
 
     enum class Phase { Idle, Recording, Ended };
     Phase phase_{Phase::Idle};
@@ -168,6 +207,8 @@ private:
     bool pipelineSet_{false};
     bool vertexBound_{false};
     bool indexBound_{false};
+    std::vector<TextureHandle> boundTextures_{};
+    std::vector<SamplerHandle> boundSamplers_{};
 
     RendererCapabilities capabilities_{};
     std::vector<std::string> ops_{};

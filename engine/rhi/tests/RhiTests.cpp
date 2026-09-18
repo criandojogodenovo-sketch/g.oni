@@ -79,6 +79,35 @@ const std::byte* payload8() {
     return bytes;
 }
 
+/// Pipeline genérico com layout pos+cor+uv (para testes de bind de textura
+/// — o FakeBackend não valida o conteúdo do shader, apenas a presença).
+eng::core::Result<GraphicsPipelineHandle> makeTexturedPipeline(Renderer& renderer) {
+    static const std::byte fakeSpirv[24]{};
+    ShaderDesc shader{};
+    shader.debugName = "test.textured";
+    shader.vertexSpirv = fakeSpirv;
+    shader.fragmentSpirv = fakeSpirv;
+    shader.vertexGlsl = "v";
+    shader.fragmentGlsl = "f";
+    auto created = renderer.createShader(shader);
+    if (created.isError()) {
+        return eng::core::makeUnexpected(created.error());
+    }
+    GraphicsPipelineDesc pipeline{};
+    pipeline.shader = created.value();
+    pipeline.vertexLayout.bindings.push_back({0, 40});
+    pipeline.vertexLayout.attributes.push_back(
+        {0, 0, 0, eng::rhi::Format::R32G32B32A32Sfloat});
+    pipeline.vertexLayout.attributes.push_back(
+        {1, 0, 16, eng::rhi::Format::R32G32B32A32Sfloat});
+    pipeline.vertexLayout.attributes.push_back({2, 0, 32, eng::rhi::Format::R32G32Sfloat});
+    pipeline.raster.cull = eng::rhi::CullMode::None;
+    pipeline.blend.enabled = true;
+    pipeline.blend.srcColor = eng::rhi::BlendFactor::SrcAlpha;
+    pipeline.blend.dstColor = eng::rhi::BlendFactor::OneMinusSrcAlpha;
+    return renderer.createGraphicsPipeline(pipeline);
+}
+
 } // namespace
 
 // =============================================================================
@@ -848,4 +877,199 @@ TEST_CASE("rhi: Frame vivo mantém o backend vivo (sem UB pós-Renderer)", "[rhi
     // Estado final consistente (backend liberado só depois do frame).
     const auto tearDown = FakeBackend::lastTearDown();
     CHECK(tearDown.liveResources == 0);
+}
+
+// =============================================================================
+// Texturas e samplers (evolução — caminho crítico imagem→sprite)
+// =============================================================================
+
+TEST_CASE("rhi: texturas — criação, dados, destroy, geração", "[rhi]")
+{
+    resetRhi();
+    registerFakeBackends();
+    auto renderer = makeRenderer(surfaceConfig());
+
+    // 2x2 RGBA8 = 16 bytes.
+    std::vector<std::byte> pixels(16, std::byte{0xAB});
+    eng::rhi::TextureDesc desc{};
+    desc.width = 2;
+    desc.height = 2;
+    desc.format = eng::rhi::Format::R8G8B8A8Unorm;
+    desc.initialData = pixels;
+
+    auto created = renderer.renderer.createTexture(desc);
+    REQUIRE(created.ok());
+    const eng::rhi::TextureHandle handle = created.value();
+    CHECK(handle.isValid());
+    CHECK(renderer.fake->textureCount() == 1);
+
+    SECTION("dados iniciais persistem (upload na criação)") {
+        const auto data = renderer.fake->textureData(handle);
+        REQUIRE(data.size() == 16);
+        CHECK(std::memcmp(data.data(), pixels.data(), 16) == 0);
+    }
+
+    SECTION("destroy e double-destroy") {
+        REQUIRE(renderer.renderer.destroyTexture(handle).ok());
+        auto destroyed = renderer.renderer.destroyTexture(handle);
+        REQUIRE(destroyed.isError());
+        CHECK(destroyed.error().code == eng::core::StatusCode::InvalidArgument);
+        CHECK(renderer.fake->textureCount() == 0);
+    }
+
+    SECTION("stale handle detectado via geração") {
+        REQUIRE(renderer.renderer.destroyTexture(handle).ok());
+        auto recreated = renderer.renderer.createTexture(desc);
+        REQUIRE(recreated.ok());
+        CHECK(recreated.value().id != handle.id);
+    }
+
+    SECTION("mipmaps flag propagada") {
+        REQUIRE(renderer.renderer.destroyTexture(handle).ok());
+        desc.generateMipmaps = true;
+        auto mipped = renderer.renderer.createTexture(desc);
+        REQUIRE(mipped.ok());
+    }
+}
+
+TEST_CASE("rhi: texturas — validação de descritores no frontend", "[rhi]")
+{
+    resetRhi();
+    registerFakeBackends();
+    auto renderer = makeRenderer(surfaceConfig());
+
+    std::vector<std::byte> pixels(16, std::byte{1});
+
+    SECTION("dimensões zero") {
+        eng::rhi::TextureDesc desc{};
+        desc.width = 0;
+        desc.height = 0;
+        desc.initialData = {};
+        auto bad = renderer.renderer.createTexture(desc);
+        REQUIRE(bad.isError());
+        CHECK(bad.error().message.find("dimensões zero") != std::string::npos);
+    }
+
+    SECTION("tamanho de dados inconsistente") {
+        eng::rhi::TextureDesc desc{};
+        desc.width = 2;
+        desc.height = 2;
+        desc.initialData = std::span<const std::byte>{pixels.data(), 4};
+        auto bad = renderer.renderer.createTexture(desc);
+        REQUIRE(bad.isError());
+        CHECK(bad.error().message.find("width*height*4") != std::string::npos);
+    }
+
+    SECTION("formato não suportado nesta evolução") {
+        eng::rhi::TextureDesc desc{};
+        desc.width = 2;
+        desc.height = 2;
+        desc.format = eng::rhi::Format::R32G32B32A32Sfloat;
+        desc.initialData = pixels;
+        auto bad = renderer.renderer.createTexture(desc);
+        REQUIRE(bad.isError());
+        CHECK(bad.error().message.find("formato não suportado") != std::string::npos);
+    }
+
+    SECTION("handle nulo em destroy") {
+        auto destroyed = renderer.renderer.destroyTexture(eng::rhi::TextureHandle{});
+        REQUIRE(destroyed.isError());
+        CHECK(destroyed.error().message.find("nulo") != std::string::npos);
+    }
+}
+
+TEST_CASE("rhi: samplers — criação, destroy, validação", "[rhi]")
+{
+    resetRhi();
+    registerFakeBackends();
+    auto renderer = makeRenderer(surfaceConfig());
+
+    eng::rhi::SamplerDesc desc{};
+    desc.minFilter = eng::rhi::FilterMode::Nearest;
+    desc.magFilter = eng::rhi::FilterMode::Nearest;
+    desc.addressU = eng::rhi::AddressMode::Repeat;
+
+    auto created = renderer.renderer.createSampler(desc);
+    REQUIRE(created.ok());
+    const eng::rhi::SamplerHandle handle = created.value();
+    CHECK(handle.isValid());
+    CHECK(renderer.fake->samplerCount() == 1);
+
+    SECTION("destroy e double-destroy") {
+        REQUIRE(renderer.renderer.destroySampler(handle).ok());
+        auto destroyed = renderer.renderer.destroySampler(handle);
+        REQUIRE(destroyed.isError());
+        CHECK(destroyed.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+
+    SECTION("handle nulo") {
+        auto destroyed = renderer.renderer.destroySampler(eng::rhi::SamplerHandle{});
+        REQUIRE(destroyed.isError());
+    }
+}
+
+TEST_CASE("rhi: frameBindTexture — protocolo e validação", "[rhi]")
+{
+    resetRhi();
+    registerFakeBackends();
+    auto renderer = makeRenderer(surfaceConfig());
+
+    std::vector<std::byte> pixels(16, std::byte{0xCD});
+    eng::rhi::TextureDesc textureDesc{};
+    textureDesc.width = 2;
+    textureDesc.height = 2;
+    textureDesc.initialData = pixels;
+    auto texture = renderer.renderer.createTexture(textureDesc);
+    REQUIRE(texture.ok());
+
+    auto sampler = renderer.renderer.createSampler(eng::rhi::SamplerDesc{});
+    REQUIRE(sampler.ok());
+
+    auto pipeline = makeTexturedPipeline(renderer.renderer);
+    REQUIRE(pipeline.ok());
+
+    SECTION("bind válido registra no slot 0") {
+        auto acquired = renderer.renderer.beginFrame();
+        REQUIRE(acquired.ok());
+        auto& frame = acquired.value().frame;
+        REQUIRE(frame.setPipeline(pipeline.value()).ok());
+        REQUIRE(frame.bindTexture(texture.value(), sampler.value(), 0).ok());
+        CHECK(renderer.fake->boundTexture(0) == texture.value());
+        CHECK(renderer.fake->boundSampler(0) == sampler.value());
+        CHECK(frame.end().ok());
+    }
+
+    SECTION("slot inválido é rejeitado") {
+        auto acquired = renderer.renderer.beginFrame();
+        REQUIRE(acquired.ok());
+        auto& frame = acquired.value().frame;
+        REQUIRE(frame.setPipeline(pipeline.value()).ok());
+        auto bound = frame.bindTexture(texture.value(), sampler.value(), 1);
+        REQUIRE(bound.isError());
+        CHECK(bound.error().message.find("slot") != std::string::npos);
+        CHECK(frame.end().ok());
+    }
+
+    SECTION("handles stale/nulos são rejeitados") {
+        auto acquired = renderer.renderer.beginFrame();
+        REQUIRE(acquired.ok());
+        auto& frame = acquired.value().frame;
+        REQUIRE(frame.setPipeline(pipeline.value()).ok());
+        REQUIRE(frame.bindTexture(texture.value(), sampler.value(), 0).ok());
+        // Destroy durante o frame + rebind com handle stale → erro preciso.
+        REQUIRE(renderer.renderer.destroyTexture(texture.value()).ok());
+        auto bound = frame.bindTexture(texture.value(), sampler.value(), 0);
+        REQUIRE(bound.isError());
+        CHECK(bound.error().message.find("stale") != std::string::npos);
+        CHECK(frame.end().ok());
+    }
+
+    SECTION("fora de sessão de gravação é rejeitado") {
+        auto bound = renderer.renderer.beginFrame();
+        REQUIRE(bound.ok());
+        REQUIRE(bound.value().frame.end().ok());
+        // Frame já submetido: bind deve falhar (sessão inativa).
+        auto afterEnd = bound.value().frame.bindTexture(texture.value(), sampler.value(), 0);
+        REQUIRE(afterEnd.isError());
+    }
 }

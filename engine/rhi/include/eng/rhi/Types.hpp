@@ -89,6 +89,7 @@ enum class Format : std::uint8_t {
     B8G8R8A8Unorm,
     R8G8B8A8Srgb,
     B8G8R8A8Srgb,
+    R32G32Sfloat,
     R32G32B32A32Sfloat,
     R16G16B16A16Sfloat,
     D32Sfloat,
@@ -161,10 +162,14 @@ struct Handle {
 struct BufferTag;
 struct ShaderTag;
 struct GraphicsPipelineTag;
+struct TextureTag;
+struct SamplerTag;
 
 using BufferHandle = Handle<BufferTag>;
 using ShaderHandle = Handle<ShaderTag>;
 using GraphicsPipelineHandle = Handle<GraphicsPipelineTag>;
+using TextureHandle = Handle<TextureTag>;
+using SamplerHandle = Handle<SamplerTag>;
 
 // =============================================================================
 // Descritores de recursos
@@ -244,6 +249,51 @@ struct GraphicsPipelineDesc {
     DepthState depth{};
     BlendState blend{};
     RenderTargetDesc renderTarget{};
+};
+
+// =============================================================================
+// Texturas e samplers (evolução — caminho crítico imagem→sprite)
+// =============================================================================
+
+/// Filtragem de amostragem.
+enum class FilterMode : std::uint8_t { Nearest, Linear };
+
+/// Endereçamento fora de [0,1].
+enum class AddressMode : std::uint8_t { ClampToEdge, Repeat };
+
+/// Máximo de slots de textura por draw (interface pequena: 1 por enquanto —
+/// batching por textura; slots extras entram com materiais 3D).
+inline constexpr std::uint32_t kMaxTextureSlots = 1;
+
+/// Textura 2D IMUTÁVEL (upload único na criação — modelo de sprite/UI).
+///
+/// `initialData` é RGBA8 tight-packed (row-major, sem padding), tamanho
+/// EXATAMENTE `width * height * 4` bytes. Formatos suportados nesta
+/// evolução: `R8G8B8A8Unorm` e `R8G8B8A8Srgb` (backends validam suporte
+/// REAL e reportam erro preciso — nunca silencioso).
+struct TextureDesc {
+    std::uint32_t width{0};
+    std::uint32_t height{0};
+    Format format{Format::R8G8B8A8Unorm};
+    /// CONTRATO de lifetime: span precisa estar VÁLIDO durante a chamada
+    /// de createTexture (o backend copia/sincroniza o que precisa).
+    std::span<const std::byte> initialData{};
+    /// Cadeia de mips gerada na criação (filtros do backend).
+    bool generateMipmaps{false};
+
+    [[nodiscard]] constexpr std::size_t expectedDataSize() const noexcept {
+        return static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+    }
+};
+
+/// Estado de amostragem — separado da textura (combos distintos).
+struct SamplerDesc {
+    FilterMode minFilter{FilterMode::Linear};
+    FilterMode magFilter{FilterMode::Linear};
+    /// Filtro ENTRE mips (usado quando a textura tem mipmap).
+    FilterMode mipFilter{FilterMode::Nearest};
+    AddressMode addressU{AddressMode::ClampToEdge};
+    AddressMode addressV{AddressMode::ClampToEdge};
 };
 
 // =============================================================================

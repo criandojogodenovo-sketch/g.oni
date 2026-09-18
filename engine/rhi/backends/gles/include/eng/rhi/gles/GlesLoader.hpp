@@ -81,6 +81,15 @@ using GlDrawArraysFn = void (*)(GLenum, GLint, GLsizei);
 using GlDrawElementsFn = void (*)(GLenum, GLsizei, GLenum, const void*);
 using GlFinishFn = void (*)();
 using GlReadPixelsFn = void (*)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*);
+using GlGenTexturesFn = void (*)(GLsizei, GLuint*);
+using GlDeleteTexturesFn = void (*)(GLsizei, const GLuint*);
+using GlBindTextureFn = void (*)(GLenum, GLuint);
+using GlTexImage2DFn = void (*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum,
+                                 const void*);
+using GlTexParameteriFn = void (*)(GLenum, GLenum, GLint);
+using GlGenerateMipmapFn = void (*)(GLenum);
+using GlActiveTextureFn = void (*)(GLenum);
+using GlPixelStoreiFn = void (*)(GLenum, GLint);
 
 /// Tabela de funções EGL + GLES usadas pelo backend.
 struct GlesFunctions {
@@ -144,6 +153,14 @@ struct GlesFunctions {
     GlDrawElementsFn glDrawElements{nullptr};
     GlFinishFn glFinish{nullptr};
     GlReadPixelsFn glReadPixels{nullptr};
+    GlGenTexturesFn glGenTextures{nullptr};
+    GlDeleteTexturesFn glDeleteTextures{nullptr};
+    GlBindTextureFn glBindTexture{nullptr};
+    GlTexImage2DFn glTexImage2D{nullptr};
+    GlTexParameteriFn glTexParameteri{nullptr};
+    GlGenerateMipmapFn glGenerateMipmap{nullptr};
+    GlActiveTextureFn glActiveTexture{nullptr};
+    GlPixelStoreiFn glPixelStorei{nullptr};
 };
 
 /// Bibliotecas carregadas (EGL + GLESv2) + tabela.
