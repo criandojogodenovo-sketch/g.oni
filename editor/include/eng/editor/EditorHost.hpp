@@ -20,6 +20,7 @@
 /// este módulo é C++ puro, testável no Linux com backends reais.
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
 
@@ -28,6 +29,7 @@
 #include "eng/editor/TextureCache.hpp"
 #include "eng/editor/ViewportRenderer.hpp"
 #include "eng/fs/NativeFileSystem.hpp"
+#include "eng/fs/RootedFileSystem.hpp"
 #include "eng/rhi/Types.hpp"
 
 namespace eng::editor {
@@ -56,6 +58,14 @@ public:
     /// Registra as fábricas de backend (Vulkan+GLES reais — feito UMA vez,
     /// idempotente) e cria o documento com workspace no `workspaceRoot`.
     /// O Renderer só nasce quando a surface chega (§8.7/ADR-039).
+    ///
+    /// FRONTEIRA DO WORKSPACE (RECOVERY P0): `workspaceRoot` é o local
+    /// FÍSICO — absoluto no Android (filesDir/projects) ou relativo no
+    /// Linux. Ele NUNCA entra no documento: é absorvido pelo
+    /// RootedFileSystem AQUI, e o editor inteiro opera com paths
+    /// RELATIVOS ao workspace (contrato §8.1). É o que separa a
+    /// representação de armazenamento do Android (SAF/filesDir) da
+    /// abstração de projeto-relativo da engine.
     [[nodiscard]] static eng::core::Result<EditorHost*> create(
         const char* backend, const char* workspaceRoot);
 
@@ -101,8 +111,15 @@ public:
     /// Cache de texturas do host (upload GPU sob demanda — evolução P0-3).
     [[nodiscard]] TextureCache& textureCache() noexcept { return textureCache_; }
 
-    /// Filesystem do host (workspace — staging de import etc.).
+    /// Filesystem NATIVO do host (absoluto/CWD — NÃO é o que o documento
+    /// vê; use apenas para I/O de plataforma fora do workspace do editor).
     [[nodiscard]] eng::fs::NativeFileSystem& fileSystem() noexcept { return fs_; }
+
+    /// Filesystem do WORKSPACE (rooted — paths relativos ao workspaceRoot;
+    /// absoluto é rejeitado na fronteira). É o fs que o documento usa;
+    /// exposto para staging de import (o SAF copia para DENTRO do
+    /// workspace) e testes.
+    [[nodiscard]] eng::fs::FileSystem& workspace() noexcept { return *rooted_; }
 
     /// ViewportRenderer ativo (diagnóstico/testes; nullptr sem surface).
     [[nodiscard]] const ViewportRenderer* viewportRenderer() const noexcept
@@ -134,7 +151,11 @@ private:
 #endif
     }
 
-    eng::fs::NativeFileSystem fs_{};  ///< dono do I/O (documento empresta)
+    eng::fs::NativeFileSystem fs_{};  ///< dono do I/O real (base física)
+    /// Mapeamento workspace (RECOVERY P0): conversão absoluto↔relativo.
+    /// Declaração ANTES de document_ (destruição na ordem inversa:
+    /// documento morre primeiro — ele empresta o rooted, que empresta fs_).
+    std::unique_ptr<eng::fs::RootedFileSystem> rooted_{};
     eng::rhi::BackendType requested_{eng::rhi::BackendType::Auto};
     void* window_{nullptr};
     eng::rhi::NativeWindowKind windowKind_{eng::rhi::NativeWindowKind::None};

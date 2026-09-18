@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -1843,13 +1844,14 @@ TEST_CASE("editor: host renderiza sprite TEXTURIZADO (GLES/llvmpipe real)",
     REQUIRE(doc.newProject("SpriteGame").ok());
     REQUIRE(doc.saveProject().ok());
 
-    // Import via fs do host: escreve o staging PNG e importa.
+    // Import via fs do WORKSPACE (rooted — a mesma fronteira do Android):
+    // escreve o staging PNG e importa.
     auto* browser = doc.assets();
     REQUIRE(browser != nullptr);
     {
-        eng::fs::NativeFileSystem& hostFs = host->fileSystem();
-        REQUIRE(hostFs.mkdirs(eng::fs::Path{".import_tmp"}).ok());
-        REQUIRE(hostFs
+        eng::fs::FileSystem& ws = host->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws
                     .writeAllBytes(
                         eng::fs::Path{".import_tmp/hero.png"},
                         std::span{reinterpret_cast<const std::byte*>(kPng2x2),
@@ -1897,4 +1899,206 @@ TEST_CASE("editor: host renderiza sprite TEXTURIZADO (GLES/llvmpipe real)",
     CHECK(renderer->lastFrameTexturedSprites() == 1);
     REQUIRE(host->renderFrame(1.f / 60.f));
     doc.stop();
+}
+
+// =============================================================================
+// REGRESSÃO §26 (RECOVERY P0) — os bugs do APK Android:
+//   "InvalidArgument: AssetBrowser: destino absoluto é proibido"
+//   "InvalidArgument: EditorDocument: caminho absoluto proibido"
+//
+// Topologia ANDROID reproduzida no Linux: workspace FÍSICO ABSOLUTO (como
+// filesDir/projects) entra pelo EditorHost. A fronteira (RootedFileSystem)
+// converte; o editor opera relativo. Sem a correção, newProject até criava
+// a estrutura, mas import/scriptCreate morriam nas validações anti-absoluto
+// (o root absoluto vazava para dentro do documento).
+// =============================================================================
+
+namespace {
+
+/// Tmpdir RAII ABSOLUTO (o do FsTests é relativo ao CWD dos testes de fs;
+/// aqui o requisito é exatamente um root absoluto, como o Android entrega).
+struct AbsTmpDir {
+    std::filesystem::path dir;
+
+    AbsTmpDir()
+    {
+        std::error_code ec;
+        auto base = std::filesystem::temp_directory_path(ec);
+        if (ec || base.empty()) {
+            base = "/tmp";
+        }
+        static std::uint64_t counter = 0;
+        do {
+            dir = base / ("goni_editor_host_abs_" +
+                          std::to_string(++counter) + "_" +
+                          std::to_string(
+                              reinterpret_cast<std::uintptr_t>(this)));
+        } while (std::filesystem::exists(dir, ec));
+        std::filesystem::create_directories(dir, ec);
+    }
+
+    ~AbsTmpDir()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    AbsTmpDir(const AbsTmpDir&) = delete;
+    AbsTmpDir& operator=(const AbsTmpDir&) = delete;
+
+    [[nodiscard]] std::string str() const { return dir.generic_string(); }
+};
+
+} // namespace
+
+TEST_CASE("editor: host com workspace ABSOLUTO — import e script funcionam "
+          "(regressão Android §26)",
+          "[editor][rhi_hardware]")
+{
+    eng::rhi::Renderer::clearRegisteredBackends();
+    REQUIRE(eng::rhi::Renderer::registerBackend(
+                eng::rhi::BackendType::OpenGLES, &eng::rhi::gles::createBackend)
+                .ok());
+
+    AbsTmpDir tmp;
+    // filesDir/projects do Android: ABSOLUTO. É o que a EditorActivity
+    // passa por JNI (nativeEditorCreate("auto", workspace.absolutePath)).
+    const std::string workspaceRoot = tmp.str() + "/projects";
+    auto created = eng::editor::EditorHost::create("gles",
+                                                   workspaceRoot.c_str());
+    if (!created) {
+        SKIP("OpenGL ES indisponível: " << created.error().message);
+    }
+    std::unique_ptr<eng::editor::EditorHost> host{created.value()};
+    host->surfaceCreated(nullptr, eng::rhi::NativeWindowKind::Headless, 64,
+                         48);
+
+    auto& doc = host->document();
+
+    // --- 1. Ciclo de vida do projeto (§4) -----------------------------------
+    REQUIRE(doc.newProject("MeuJogo").ok());
+    REQUIRE(doc.hasProject());
+    CHECK(doc.projectName() == "MeuJogo");
+
+    // --- 2. Import de asset (o bug nº 1 do APK) -----------------------------
+    // SAF teria copiado para <workspace>/.import_tmp/ — staging relativo.
+    {
+        eng::fs::FileSystem& ws = host->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws.writeAllBytes(
+                    eng::fs::Path{".import_tmp/grass.png"},
+                    std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                              sizeof(kPng2x2)})
+                    .ok());
+    }
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    auto imported = browser->import(".import_tmp/grass.png", "textures",
+                                     "grass");
+    REQUIRE(imported.ok());  // ← ANTES: "destino absoluto é proibido"
+
+    // Import visível na listagem, com id do registry.
+    auto listed = browser->list("textures");
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0].name == "grass.png");
+    CHECK(listed.value()[0].registered);
+    CHECK(listed.value()[0].id == imported.value());
+
+    // --- 3. Criação de script (o bug nº 2 do APK) ---------------------------
+    REQUIRE(doc.scriptCreate("Movimento").ok());  // ← ANTES: "caminho absoluto proibido"
+    // Conteúdo maior que 512 bytes (§12 — sem buffer JNI truncando).
+    std::string big = "# comentário grande\n";
+    for (int i = 0; i < 40; ++i) {
+        big += "# linha de preenchimento " + std::to_string(i) + "\n";
+    }
+    REQUIRE(doc.scriptWrite("Big.nis", big).ok());
+    {
+        auto back = doc.scriptRead("Big.nis");
+        REQUIRE(back.ok());
+        CHECK(back.value().size() == big.size());
+        CHECK(back.value() == big);
+    }
+    {
+        auto scripts = doc.scriptList();
+        REQUIRE(scripts.ok());
+        REQUIRE(scripts.value().size() == 2);  // Movimento.nis + Big.nis
+    }
+
+    // --- 4. Cena: save → reload → conteúdo íntegro --------------------------
+    {
+        auto entity = doc.createEntity("Player", eng::scene::kNoEntity);
+        REQUIRE(entity.ok());
+        REQUIRE(doc.addComponent(entity.value(),
+                                 "eng::editor::SpriteData")
+                    .ok());
+        REQUIRE(doc.setInspectorField(entity.value(),
+                                      "eng::editor::SpriteData",
+                                      "textureAsset", "grass.png")
+                    .ok());
+        REQUIRE(doc.setTransform(entity.value(),
+                                 {{64.f, 32.f, 0.f},
+                                  {0.f, 45.f, 0.f},
+                                  {2.f, 2.f, 1.f}})
+                    .ok());
+    }
+    REQUIRE(doc.saveScene("main.json").ok());
+    {
+        // Round-trip: nova cena + recarrega o estado salvo.
+        REQUIRE(doc.newScene().ok());
+        REQUIRE(doc.loadScene("main.json").ok());
+        auto snapshot = doc.hierarchySnapshot();
+        REQUIRE(snapshot.size() == 1);
+        CHECK(snapshot[0].name == "Player");
+        auto transform = doc.transform(snapshot[0].entity);
+        REQUIRE(transform.ok());
+        // Round-trip Euler→Quat→Euler: precisão de FPU, não identidade bit
+        // a bit (mesma convenção dos testes de transform do documento).
+        CHECK(transform.value().rotationDegrees.y ==
+              Catch::Approx(45.f).margin(1e-3f));
+        CHECK(transform.value().scale.x == Catch::Approx(2.f).margin(1e-4f));
+    }
+
+    // --- 5. Persistência LIMPA: nada de absoluto nos arquivos (§2.6) ---------
+    REQUIRE(doc.saveProject().ok());
+    {
+        eng::fs::NativeFileSystem raw;
+        const std::string files[] = {
+            "/MeuJogo/project.goni.json",
+            "/MeuJogo/assets/asset_registry.json",
+            "/MeuJogo/scenes/main.json",
+        };
+        for (const std::string& rel : files) {
+            auto text = raw.readAllText(
+                eng::fs::Path{workspaceRoot + rel});
+            INFO("arquivo: " << rel);
+            REQUIRE(text.ok());
+            CHECK(text.value().find(tmp.str()) == std::string::npos);
+            CHECK(text.value().find(workspaceRoot) == std::string::npos);
+        }
+    }
+
+    // --- 6. Reabertura do projeto (segunda execução do app) ------------------
+    {
+        auto reopened = eng::editor::EditorHost::create("gles",
+                                                        workspaceRoot.c_str());
+        if (reopened) {
+            std::unique_ptr<eng::editor::EditorHost> second{reopened.value()};
+            auto& doc2 = second->document();
+            REQUIRE(doc2.openProject(eng::fs::Path{"MeuJogo"}).ok());
+            CHECK(doc2.projectName() == "MeuJogo");
+            // Assets e scripts sobreviveram à reabertura.
+            auto* browser2 = doc2.assets();
+            REQUIRE(browser2 != nullptr);
+            auto textures = browser2->list("textures");
+            REQUIRE(textures.ok());
+            REQUIRE(textures.value().size() == 1);
+            CHECK(textures.value()[0].name == "grass.png");
+            auto scripts = doc2.scriptList();
+            REQUIRE(scripts.ok());
+            REQUIRE(scripts.value().size() == 2);
+        }
+        // Backend indisponível não invalida a regressão de paths (o host 1
+        // já provou o pipeline); a reabertura é bônus de integração.
+    }
 }

@@ -1403,7 +1403,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     private fun openProjectDialog() {
         val workspace = File(filesDir, "projects")
-        val projects = workspace.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        // Diretórios ocultos (ex.: .import_tmp — staging do SAF) não são
+        // projetos: o seletor lista apenas pastas reais de projeto.
+        val projects = workspace.listFiles()
+            ?.filter { it.isDirectory && !it.name.startsWith(".") } ?: emptyList()
         if (projects.isEmpty()) {
             toast("Nenhum projeto em ${workspace.name}")
             return
@@ -1444,10 +1447,18 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     private fun loadSceneDialog() {
-        val scenesRoot = File(File(filesDir, "projects"), "scenes")
+        // Cenas vivem em <workspace>/<PROJETO>/scenes (§8.1 — scenesRoot do
+        // projeto), não em <workspace>/scenes. O nome do projeto é a fonte
+        // da verdade (o mesmo que o documento C++ resolve via ProjectPaths).
+        val project = EditorJni.nativeEditorProjectName(handle)
+        if (project.isNullOrEmpty()) {
+            toast("Nenhum projeto aberto")
+            return
+        }
+        val scenesRoot = File(File(File(filesDir, "projects"), project), "scenes")
         val files = scenesRoot.listFiles()?.filter { it.isFile } ?: emptyList()
         if (files.isEmpty()) {
-            toast("Nenhuma cena salva em scenes/")
+            toast("Nenhuma cena salva em ${project}/scenes")
             return
         }
         val names = files.map { it.name }.toTypedArray()

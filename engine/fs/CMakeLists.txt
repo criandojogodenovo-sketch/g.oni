@@ -4,6 +4,7 @@ eng_add_module(fs
     src/File.cpp
     src/MemoryFileSystem.cpp
     src/NativeFileSystem.cpp
+    src/RootedFileSystem.cpp
 )
 # Arestas do grafo da FASE 3 (missão §5.1): fs sobre core e log. fs NÃO
 # depende de platform (fronteira ADR-026). core é PUBLIC (Result aparece nos

@@ -406,3 +406,174 @@ TEST_CASE("fs: File RAII e move", "[fs][native]")
         CHECK(r.error().code == eng::core::StatusCode::NotFound);
     }
 }
+
+// =============================================================================
+// RootedFileSystem — fronteira do workspace (RECOVERY P0)
+//
+// Regressão dos bugs do APK Android:
+//   "AssetBrowser: destino absoluto é proibido"
+//   "EditorDocument: caminho absoluto proibido"
+// O root absoluto entra AQUI e morre AQUI; o editor só vê relativos.
+// =============================================================================
+
+TEST_CASE("fs: RootedFileSystem mapeia relativo → root absoluto", "[fs][native]")
+{
+    TmpDir tmp;
+    eng::fs::NativeFileSystem native;
+    // Simula o Android: workspace físico ABSOLUTO (filesDir/projects).
+    eng::fs::RootedFileSystem fs{native, tmp.path()};
+
+    REQUIRE(fs.mkdirs(eng::fs::Path{"MyGame/assets/textures"}));
+    REQUIRE(fs.writeAllText(eng::fs::Path{"MyGame/assets/textures/g.png"},
+                            "PNG"));
+
+    // O mesmo conteúdo existe no físico (root/x) e não no CWD.
+    {
+        auto viaRoot = native.readAllText(
+            tmp.path() / eng::fs::Path{"MyGame/assets/textures/g.png"});
+        REQUIRE(viaRoot.ok());
+        CHECK(viaRoot.value() == "PNG");
+    }
+    {
+        auto leak = native.exists(eng::fs::Path{"MyGame/assets/textures/g.png"});
+        REQUIRE(leak.ok());
+        CHECK_FALSE(leak.value()); // CWD: não vaza para fora do root
+    }
+
+    // Formas com "./" e redundâncias: mesma localização (join normalizado).
+    REQUIRE(fs.writeAllText(eng::fs::Path{"./MyGame/../MyGame/./a.txt"}, "A"));
+    {
+        auto text = fs.readAllText(eng::fs::Path{"MyGame/a.txt"});
+        REQUIRE(text.ok());
+        CHECK(text.value() == "A");
+    }
+
+    // exists(".") = o workspace inteiro.
+    {
+        auto all = fs.exists(eng::fs::Path{"."});
+        REQUIRE(all.ok());
+        CHECK(all.value());
+    }
+}
+
+TEST_CASE("fs: RootedFileSystem rejeita absoluto e escape (fronteira)",
+          "[fs][native]")
+{
+    TmpDir tmp;
+    eng::fs::NativeFileSystem native;
+    eng::fs::RootedFileSystem fs{native, tmp.path()};
+
+    // O bug do APK: path ABSOLUTO cruzando a fronteira → InvalidArgument.
+    // (Nunca foi para "aceitar absoluto" — a conversão é papel da fronteira.)
+    const auto absolute = tmp.path() / eng::fs::Path{"MyGame/x.txt"};
+    {
+        auto r = fs.writeAllText(absolute, "x");
+        REQUIRE(r.isError());
+        CHECK(r.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+    {
+        auto r = fs.readAllBytes(absolute);
+        REQUIRE(r.isError());
+        CHECK(r.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+    // Escape por ".." → InvalidArgument.
+    {
+        auto r = fs.mkdirs(eng::fs::Path{"../fora"});
+        REQUIRE(r.isError());
+        CHECK(r.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+    {
+        auto r = fs.writeAllText(eng::fs::Path{"a/../../escape"}, "x");
+        REQUIRE(r.isError());
+        CHECK(r.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+    // Vazio/inválido → InvalidArgument (contrato do FileSystem).
+    {
+        auto r = fs.exists(eng::fs::Path{""});
+        REQUIRE(r.isError());
+        CHECK(r.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+    // rename com destino absoluto → InvalidArgument (uma ponta basta p/ o
+    // todo falhar — o move nunca acontece parcialmente).
+    {
+        auto r = fs.rename(eng::fs::Path{"MyGame/a.txt"}, absolute);
+        REQUIRE(r.isError());
+        CHECK(r.error().code == eng::core::StatusCode::InvalidArgument);
+    }
+}
+
+TEST_CASE("fs: RootedFileSystem list devolve paths relativos (nunca o root)",
+          "[fs][native]")
+{
+    TmpDir tmp;
+    eng::fs::NativeFileSystem native;
+    eng::fs::RootedFileSystem fs{native, tmp.path()};
+
+    REQUIRE(fs.mkdirs(eng::fs::Path{"MyGame/assets/textures"}));
+    REQUIRE(fs.mkdirs(eng::fs::Path{"MyGame/assets/scripts"}));
+    REQUIRE(fs.writeAllText(eng::fs::Path{"MyGame/assets/textures/a.png"}, "1"));
+    REQUIRE(fs.writeAllText(eng::fs::Path{"MyGame/assets/textures/b.png"}, "2"));
+    REQUIRE(fs.writeAllText(eng::fs::Path{"MyGame/assets/scripts/m.nis"}, "3"));
+
+    // Raso: paths root-relativos normalizados — a forma que o AssetBrowser
+    // compara com meta.sourcePath.
+    {
+        auto listed = fs.list(eng::fs::Path{"MyGame/assets/textures"}, false);
+        REQUIRE(listed.ok());
+        REQUIRE(listed.value().size() == 2);
+        CHECK(listed.value()[0].path.str() ==
+              "MyGame/assets/textures/a.png");
+        CHECK(listed.value()[1].path.str() ==
+              "MyGame/assets/textures/b.png");
+        CHECK_FALSE(listed.value()[0].isDirectory);
+    }
+    // Recursivo: hierarquia inteira, tudo relativo ao root.
+    {
+        auto listed = fs.list(eng::fs::Path{"MyGame"}, true);
+        REQUIRE(listed.ok());
+        REQUIRE(listed.value().size() == 6); // 3 dirs (assets, scripts,
+        // textures) + 3 arquivos
+        for (const auto& entry : listed.value()) {
+            CHECK_FALSE(entry.path.isAbsolute());
+            CHECK(entry.path.str().rfind(tmp.path().str(), 0) != 0);
+        }
+    }
+    // Raiz do workspace: "." lista o topo.
+    {
+        auto listed = fs.list(eng::fs::Path{"."}, false);
+        REQUIRE(listed.ok());
+        REQUIRE(listed.value().size() == 1);
+        CHECK(listed.value()[0].path.str() == "MyGame");
+        CHECK(listed.value()[0].isDirectory);
+    }
+    // Ausente → NotFound (contrato preservado).
+    {
+        auto listed = fs.list(eng::fs::Path{"NaoExiste"}, false);
+        REQUIRE(listed.isError());
+        CHECK(listed.error().code == eng::core::StatusCode::NotFound);
+    }
+}
+
+TEST_CASE("fs: RootedFileSystem sobre MemoryFileSystem (paridade de base)",
+          "[fs]")
+{
+    // A base é qualquer FileSystem — a fronteira funciona igual sobre
+    // Memory (testes) e Native (Android/Linux real).
+    eng::fs::MemoryFileSystem mem;
+    eng::fs::RootedFileSystem fs{mem, eng::fs::Path{"/data/user/0/app/files"}};
+
+    REQUIRE(fs.mkdirs(eng::fs::Path{"projects/MyGame/assets"}));
+    REQUIRE(fs.writeAllText(
+        eng::fs::Path{"projects/MyGame/assets/asset_registry.json"}, "{}"));
+
+    auto listed = fs.list(eng::fs::Path{"projects/MyGame/assets"}, false);
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0].path.str() ==
+          "projects/MyGame/assets/asset_registry.json");
+
+    auto text = fs.readAllText(
+        eng::fs::Path{"projects/MyGame/assets/asset_registry.json"});
+    REQUIRE(text.ok());
+    CHECK(text.value() == "{}");
+}

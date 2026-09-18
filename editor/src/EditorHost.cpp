@@ -62,7 +62,7 @@ void registerBackendFactories()
 // =============================================================================
 
 eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
-                                                  const char* workspaceRoot)
+                                                  const char* workspaceRootCStr)
 {
     registerBackendFactories();
 #ifdef __ANDROID__
@@ -78,18 +78,26 @@ eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
 #endif
 
     EditorHost* host = new EditorHost{};
-    auto document = EditorDocument::create(
-        host->fs_, eng::fs::Path{
-                           workspaceRoot == nullptr ? std::string_view(".")
-                                                    : std::string_view(workspaceRoot)});
+    // FRONTEIRA DO WORKSPACE (RECOVERY P0 — bug do APK: "destino absoluto
+    // é proibido" / "caminho absoluto proibido"): o root físico (absoluto
+    // no Android) é absorvido AQUI, no RootedFileSystem. O documento vê
+    // apenas paths RELATIVOS ao workspace — as validações anti-absoluto do
+    // editor continuam intactas (nada foi enfraquecido; a conversão que
+    // faltava na arquitetura foi adicionada na fronteira certa).
+    const eng::fs::Path workspaceRoot{
+        workspaceRootCStr == nullptr ? std::string_view(".")
+                                    : std::string_view(workspaceRootCStr)};
+    host->rooted_ = std::make_unique<eng::fs::RootedFileSystem>(
+        host->fs_, workspaceRoot);
+    auto document = EditorDocument::create(*host->rooted_, eng::fs::Path{"."});
     if (document.isError()) {
         delete host;
         return eng::core::makeUnexpected(document.error());
     }
     host->requested_ = backendFromName(backend);
     host->document_ = std::move(document.value());
-    ENG_INFO("Editor host criado (backend '{}')",
-             backend == nullptr ? "auto" : backend);
+    ENG_INFO("Editor host criado (backend '{}', workspace root '{}')",
+             backend == nullptr ? "auto" : backend, workspaceRoot.str());
     return host;
 }
 
