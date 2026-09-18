@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "eng/ecs/Ecs.hpp"
@@ -35,6 +36,29 @@ struct EntityQuad {
     float rotation{0.f};           ///< radianos no plano XY
     std::uint32_t tint{0u};        ///< hue determinístico por entidade
     bool selected{false};
+
+    // --- sprite (evolução P0-3) — preenchido quando o nó tem SpriteData ---
+    /// Nome do asset de textura (vazio = quad de cor, caminho antigo).
+    std::string textureAsset{};
+    /// Região UV do sprite (respeita flip no renderer).
+    float u0{0.f};
+    float v0{0.f};
+    float u1{1.f};
+    float v1{1.f};
+    /// Tint multiplicativo RGBA (1,1,1,1 = sem tint).
+    float tintR{1.f};
+    float tintG{1.f};
+    float tintB{1.f};
+    float tintA{1.f};
+    bool flipX{false};
+    bool flipY{false};
+    /// Ordem de desenho (maior = frente — o renderer ordena sprites por isto).
+    float sort{0.f};
+    /// Pixels por unidade de mundo do sprite (do SpriteData).
+    float spritePpu{1.f};
+    /// Pivot do sprite [0..1] (0.5,0.5 = centrado).
+    float pivotX{0.5f};
+    float pivotY{0.5f};
 };
 
 /// Quad de PARTÍCULA viva (marcador de gameplay — FASE 10). Auditoria

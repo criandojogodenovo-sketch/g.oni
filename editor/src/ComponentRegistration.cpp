@@ -3,6 +3,7 @@
 #include "eng/editor/EditorDocument.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
+#include "eng/editor/SpriteData.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/scene/SceneSerializer.hpp"
@@ -29,6 +30,9 @@ const bool goni_editor_components_registered = [] {
         "eng::animation::Animator");
     (void)SceneSerializer::registerComponentType<
         eng::particles::ParticleEmitter>("eng::particles::ParticleEmitter");
+    // Evolução P0-3: sprite com textura real (workflow importar→ver na cena).
+    (void)SceneSerializer::registerComponentType<eng::editor::SpriteData>(
+        "eng::editor::SpriteData");
     // FASE 11: scripts NI-Script anexados a nós (ADR-043 — mesmo catálogo)
     (void)SceneSerializer::registerComponentType<
         eng::editor::NiScriptComponent>("eng::editor::NiScriptComponent");

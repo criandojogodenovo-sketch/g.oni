@@ -10,6 +10,8 @@
 #include <unordered_map>
 
 #include "eng/editor/EditorHost.hpp"
+#include "eng/editor/TextureCache.hpp"
+#include "eng/image/Image.hpp"
 
 /// EditorJni.cpp — fronteira JNI do EDITOR (FASE 8, missão §5).
 ///
@@ -241,8 +243,12 @@ Java_com_goni_runtime_EditorJni_nativeEditorNewProject(JNIEnv* env, jobject /*th
     if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
         return JNI_FALSE;
     }
-    return record(handle, host->document().newProject(nameBuf)) ? JNI_TRUE
-                                                               : JNI_FALSE;
+    if (record(handle, host->document().newProject(nameBuf))) {
+        // Projeto novo = assets novos: texturas em cache são do projeto anterior.
+        host->invalidateTextureCache();
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -258,9 +264,12 @@ Java_com_goni_runtime_EditorJni_nativeEditorOpenProject(JNIEnv* env, jobject /*t
     if (!copyJString(env, relPath, pathBuf, sizeof(pathBuf))) {
         return JNI_FALSE;
     }
-    return record(handle, host->document().openProject(eng::fs::Path{pathBuf}))
-               ? JNI_TRUE
-               : JNI_FALSE;
+    if (record(handle, host->document().openProject(eng::fs::Path{pathBuf}))) {
+        // Projeto aberto: texturas do projeto anterior não valem mais.
+        host->invalidateTextureCache();
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -921,7 +930,26 @@ Java_com_goni_runtime_EditorJni_nativeEditorAssetImport(JNIEnv* env,
         return JNI_FALSE;
     }
     auto imported = browser->import(tempBuf, catBuf, nameBuf);
-    return record(handle, imported) ? JNI_TRUE : JNI_FALSE;
+    if (record(handle, imported)) {
+        // VALIDAÇÃO de imagem no import (evolução P0-2): textura corrompida
+        // é rejeitada AQUI com erro preciso, não no primeiro render.
+        if (std::strcmp(catBuf, "textures") == 0) {
+            auto bytes = browser->read(catBuf, nameBuf);
+            if (bytes.isError()) {
+                return record(handle, bytes) ? JNI_TRUE : JNI_FALSE;
+            }
+            auto decoded = eng::image::decode(std::span{bytes.value()});
+            if (decoded.isError()) {
+                // Remove o arquivo importado inválido (não deixa lixo).
+                (void)browser->remove(catBuf, nameBuf);
+                return record(handle, decoded) ? JNI_TRUE : JNI_FALSE;
+            }
+        }
+        // Textura (re)importada: o cache pode ter uma versão antiga.
+        host->invalidateTextureCache();
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -948,9 +976,11 @@ Java_com_goni_runtime_EditorJni_nativeEditorAssetRename(JNIEnv* env,
     if (browser == nullptr) {
         return JNI_FALSE;
     }
-    return record(handle, browser->rename(catBuf, nameBuf, newNameBuf))
-               ? JNI_TRUE
-               : JNI_FALSE;
+    if (record(handle, browser->rename(catBuf, nameBuf, newNameBuf))) {
+        host->invalidateTextureCache();
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -974,8 +1004,11 @@ Java_com_goni_runtime_EditorJni_nativeEditorAssetDelete(JNIEnv* env,
     if (browser == nullptr) {
         return JNI_FALSE;
     }
-    return record(handle, browser->remove(catBuf, nameBuf)) ? JNI_TRUE
-                                                            : JNI_FALSE;
+    if (record(handle, browser->remove(catBuf, nameBuf))) {
+        host->invalidateTextureCache();
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -1053,6 +1086,67 @@ Java_com_goni_runtime_EditorJni_nativeEditorLastError(JNIEnv* env, jobject /*thi
         return nullptr;
     }
     return stringToJni(env, it->second);
+}
+
+// =============================================================================
+// Imagens/texturas (evolução P0 — metadados p/ o Asset Browser e picker)
+// =============================================================================
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAssetImageInfo(JNIEnv* env,
+                                                            jobject /*thiz*/,
+                                                            jlong handle,
+                                                            jstring category,
+                                                            jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    char catBuf[kMaxStringArg];
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, category, catBuf, sizeof(catBuf)) ||
+        !copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return nullptr;
+    }
+    auto* browser = host->document().assets();
+    if (browser == nullptr) {
+        return nullptr;
+    }
+    const auto info = host->textureCache().imageInfo(*browser, nameBuf);
+    if (!info.valid) {
+        return nullptr;  // não é imagem válida (ou decode falhou)
+    }
+    return stringToJni(env, std::to_string(info.width) + "x" +
+                                 std::to_string(info.height) +
+                                 (info.alpha ? " rgba" : " rgb"));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorListTextures(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto* browser = host->document().assets();
+    if (browser == nullptr) {
+        return nullptr;
+    }
+    auto listed = browser->list("textures");
+    if (listed.isError()) {
+        return nullptr;
+    }
+    std::string tsv{};
+    for (const auto& entry : listed.value()) {
+        if (!tsv.empty()) {
+            tsv.push_back('\n');
+        }
+        tsv += entry.name;
+    }
+    return stringToJni(env, tsv);
 }
 
 }  // extern "C"

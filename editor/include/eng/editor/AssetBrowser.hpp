@@ -80,6 +80,11 @@ public:
                                                std::string_view name,
                                                std::string_view toCategory);
 
+    /// Lê os BYTES de um asset da categoria (validação anti-traversal vem
+    /// do Path::isWithin — ADR-027). Para decode de imagem/preview/áudio.
+    [[nodiscard]] eng::core::Result<std::vector<std::byte>> read(
+        std::string_view category, std::string_view name) const;
+
     /// Persistência explícita (import/rename/remove já salvam).
     [[nodiscard]] eng::core::Result<void> saveRegistry() const;
     [[nodiscard]] eng::core::Result<void> loadRegistry();

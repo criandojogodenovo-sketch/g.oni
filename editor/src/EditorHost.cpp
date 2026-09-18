@@ -126,6 +126,15 @@ void EditorHost::releaseWindow(void* window) noexcept
 
 void EditorHost::destroyRendererAndWindow() noexcept
 {
+    // Texturas GPU MORREM ANTES do renderer (handles pertencem ao renderer
+    // vivo — ADR-035); o cache fica vazio para o próximo renderer.
+    if (eng::rhi::Renderer* renderer =
+            viewportRenderer_.has_value() ? viewportRenderer_->renderer() : nullptr;
+        renderer != nullptr) {
+        textureCache_.clear(*renderer);
+    } else {
+        textureCache_.discardAll();
+    }
     // Renderer PRIMEIRO (backend libera a VkSurfaceKHR/EGLSurface antes da
     // janela morrer — ADR-040); depois o release da referência própria.
     viewportRenderer_.reset();
@@ -134,6 +143,17 @@ void EditorHost::destroyRendererAndWindow() noexcept
         window_ = nullptr;
     }
     windowKind_ = eng::rhi::NativeWindowKind::None;
+}
+
+void EditorHost::invalidateTextureCache()
+{
+    if (eng::rhi::Renderer* renderer =
+            viewportRenderer_.has_value() ? viewportRenderer_->renderer() : nullptr;
+        renderer != nullptr) {
+        textureCache_.clear(*renderer);
+    } else {
+        textureCache_.discardAll();
+    }
 }
 
 void EditorHost::surfaceCreated(void* window,
@@ -286,13 +306,17 @@ bool EditorHost::renderFrame(float deltaSeconds)
     // 1) tick do runtime (Play) — FASE 8: contrato; FASES 9/10 preenchem.
     document_->tick(deltaSeconds);
 
-    // 2) render do foco (edição em Edit; clone em Play — §8.7).
+    // 2) render do foco (edição em Edit; clone em Play — §8.7). Sprites
+    // com textura real via TextureCache (evolução P0-3 — o documento é a
+    // fonte dos dados; o host é o dono do renderer/upload). Sem projeto →
+    // assets nulos: sprites caem no caminho de cor (honesto).
     const eng::scene::Scene* scene = document_->sceneInFocus();
     const auto quads = document_->viewport().buildQuads(
         *scene, document_->selection());
     const auto particles = document_->viewport().buildParticleQuads(*scene);
     const bool drew = viewportRenderer_->renderFrame(
-        document_->viewport(), quads, particles, document_->isPlaying());
+        document_->viewport(), quads, particles, document_->isPlaying(),
+        document_->assets(), textureCache_);
 
     if (drew) {
         ++stats_.framesSubmitted;

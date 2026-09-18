@@ -99,6 +99,13 @@ object EditorJni {
     external fun nativeEditorAssetDelete(handle: Long, category: String, name: String): Boolean
     external fun nativeEditorAssetMove(handle: Long, fromCategory: String, name: String, toCategory: String): Boolean
 
+    // --- imagens/texturas (evolução P0) -----------------------------------------------------
+
+    /** "WxH rgba|rgb" quando o asset é imagem válida (decode REAL); null caso contrário. */
+    external fun nativeEditorAssetImageInfo(handle: Long, category: String, name: String): String?
+    /** Nomes dos assets de textura (linhas \n) — p/ picker de SpriteData. */
+    external fun nativeEditorListTextures(handle: Long): String?
+
     /** Toque do JOGO em Play (§6.4 — separado dos gestos do editor). phase: 0=Down,1=Move,2=Up,3=Cancel. */
     external fun nativeEditorGameTouch(handle: Long, phase: Int, pointerId: Int,
                                        x: Float, y: Float, pressure: Float)

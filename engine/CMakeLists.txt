@@ -21,6 +21,9 @@ add_subdirectory(platform) # Info/Paths/Environment — sobre core/log/fs (ADR-0
 add_subdirectory(serial)   # JSON/envelope/migrations/codec — sobre core/reflect (ADR-030/031)
 add_subdirectory(assets)  # AssetId/Registry/Resolver/Manager — sobre core/fs/serial/reflect (ADR-028/029)
 add_subdirectory(project) # ProjectId/Config/Paths/File — sobre core/fs/serial/platform (ADR-032)
+# Evolução (P0-2): decodificação de imagens — pura sobre core (bytes→RGBA8);
+# consumida pelo editor p/ o caminho importar→textura→sprite.
+add_subdirectory(image)   # eng::image — decode PNG/JPEG em memória
 # FASE 4 (missão §5): renderer abstraction — interface de hardware gráfico.
 # Backends reais (backends/vulkan, backends/gles) entram nas FASES 5/6 como
 # targets separados linkados no executável final — eng::rhi permanece 100%

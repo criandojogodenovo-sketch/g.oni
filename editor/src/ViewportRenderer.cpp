@@ -5,9 +5,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <utility>
 
 #include "EditorShaders.hpp"
+#include "eng/editor/AssetBrowser.hpp"
+#include "eng/editor/TextureCache.hpp"
 #include "eng/log/Macros.hpp"
 #include "eng/rhi/RhiBackend.hpp"
 
@@ -82,6 +85,36 @@ void pushQuad(std::vector<ViewportRenderer::Vertex>& out, float cx, float cy,
     out.insert(out.end(), std::begin(quad), std::end(quad));
 }
 
+/// Um quad de sprite (2 triângulos, pos+cor+uv) em clip space.
+void pushSpriteQuad(std::vector<ViewportRenderer::SpriteVertex>& out, float cx,
+                    float cy, float halfW, float halfH, float rotation, float u0,
+                    float v0, float u1, float v1, float r, float g, float b,
+                    float a)
+{
+    const float cosR = std::cos(rotation);
+    const float sinR = std::sin(rotation);
+    // Cantos CCW com UV: (-,-)=uv00, (+,-)=uv10, (+,+)=uv11, (-,+)=uv01.
+    const float px[4] = {-halfW, halfW, halfW, -halfW};
+    const float py[4] = {-halfH, -halfH, halfH, halfH};
+    const float uu[4] = {u0, u1, u1, u0};
+    const float vv[4] = {v0, v0, v1, v1};
+    float vx[4];
+    float vy[4];
+    for (int i = 0; i < 4; ++i) {
+        vx[i] = cx + px[i] * cosR - py[i] * sinR;
+        vy[i] = cy + px[i] * sinR + py[i] * cosR;
+    }
+    const ViewportRenderer::SpriteVertex quad[6] = {
+        {vx[0], vy[0], 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
+        {vx[1], vy[1], 0.f, 1.f, r, g, b, a, uu[1], vv[1]},
+        {vx[2], vy[2], 0.f, 1.f, r, g, b, a, uu[2], vv[2]},
+        {vx[0], vy[0], 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
+        {vx[2], vy[2], 0.f, 1.f, r, g, b, a, uu[2], vv[2]},
+        {vx[3], vy[3], 0.f, 1.f, r, g, b, a, uu[3], vv[3]},
+    };
+    out.insert(out.end(), std::begin(quad), std::end(quad));
+}
+
 }  // namespace
 
 // =============================================================================
@@ -99,6 +132,12 @@ ViewportRenderer::ViewportRenderer(ViewportRenderer&& other) noexcept
       pipeline_(std::exchange(other.pipeline_, {})),
       vertexBuffer_(std::exchange(other.vertexBuffer_, {})),
       vertexCapacity_(std::exchange(other.vertexCapacity_, 0)),
+      spriteShader_(std::exchange(other.spriteShader_, {})),
+      spritePipeline_(std::exchange(other.spritePipeline_, {})),
+      spriteBuffer_(std::exchange(other.spriteBuffer_, {})),
+      spriteCapacity_(std::exchange(other.spriteCapacity_, 0)),
+      spriteVertices_(std::move(other.spriteVertices_)),
+      lastFrameTexturedSprites_(std::exchange(other.lastFrameTexturedSprites_, 0)),
       frameVertices_(std::move(other.frameVertices_)),
       framesSubmitted_(std::exchange(other.framesSubmitted_, 0)),
       framesPresented_(std::exchange(other.framesPresented_, 0)),
@@ -115,6 +154,12 @@ ViewportRenderer& ViewportRenderer::operator=(ViewportRenderer&& other) noexcept
         pipeline_ = std::exchange(other.pipeline_, {});
         vertexBuffer_ = std::exchange(other.vertexBuffer_, {});
         vertexCapacity_ = std::exchange(other.vertexCapacity_, 0);
+        spriteShader_ = std::exchange(other.spriteShader_, {});
+        spritePipeline_ = std::exchange(other.spritePipeline_, {});
+        spriteBuffer_ = std::exchange(other.spriteBuffer_, {});
+        spriteCapacity_ = std::exchange(other.spriteCapacity_, 0);
+        spriteVertices_ = std::move(other.spriteVertices_);
+        lastFrameTexturedSprites_ = std::exchange(other.lastFrameTexturedSprites_, 0);
         frameVertices_ = std::move(other.frameVertices_);
         framesSubmitted_ = std::exchange(other.framesSubmitted_, 0);
         framesPresented_ = std::exchange(other.framesPresented_, 0);
@@ -127,6 +172,15 @@ void ViewportRenderer::destroyResources() noexcept
 {
     // Renderer vivo destrói os handles via backend (ADR-035: RAII central).
     if (renderer_.has_value()) {
+        if (spriteBuffer_.isValid()) {
+            (void)renderer_->destroyBuffer(spriteBuffer_);
+        }
+        if (spritePipeline_.isValid()) {
+            (void)renderer_->destroyGraphicsPipeline(spritePipeline_);
+        }
+        if (spriteShader_.isValid()) {
+            (void)renderer_->destroyShader(spriteShader_);
+        }
         if (vertexBuffer_.isValid()) {
             (void)renderer_->destroyBuffer(vertexBuffer_);
         }
@@ -141,6 +195,10 @@ void ViewportRenderer::destroyResources() noexcept
     pipeline_ = {};
     shader_ = {};
     vertexCapacity_ = 0;
+    spriteBuffer_ = {};
+    spritePipeline_ = {};
+    spriteShader_ = {};
+    spriteCapacity_ = 0;
 }
 
 Result<ViewportRenderer> ViewportRenderer::create(
@@ -193,6 +251,47 @@ Result<ViewportRenderer> ViewportRenderer::create(
         return makeUnexpected(pipeline.error());
     }
     self.pipeline_ = pipeline.value();
+
+    // --- sprite pipeline (evolução P0-3): pos+cor+uv, BLENDING, textura no
+    // slot 0 — os mesmos fixtures canônicos (tests/shaders/sprite_*).
+    eng::rhi::ShaderDesc spriteShaderDesc;
+    spriteShaderDesc.debugName = "editor.sprite";
+    spriteShaderDesc.vertexSpirv = kSpriteVertexSpirvBytes();
+    spriteShaderDesc.fragmentSpirv = kSpriteFragmentSpirvBytes();
+    spriteShaderDesc.vertexGlsl = kSpriteVertexGlsl;
+    spriteShaderDesc.fragmentGlsl = kSpriteFragmentGlsl;
+    auto spriteShader = self.renderer_->createShader(spriteShaderDesc);
+    if (spriteShader.isError()) {
+        (void)self.renderer_->destroyGraphicsPipeline(self.pipeline_);
+        (void)self.renderer_->destroyShader(self.shader_);
+        return makeUnexpected(spriteShader.error());
+    }
+    self.spriteShader_ = spriteShader.value();
+
+    eng::rhi::GraphicsPipelineDesc spritePipelineDesc;
+    spritePipelineDesc.shader = self.spriteShader_;
+    spritePipelineDesc.vertexLayout.bindings.push_back({0, sizeof(SpriteVertex)});
+    spritePipelineDesc.vertexLayout.attributes.push_back(
+        {0, 0, 0, eng::rhi::Format::R32G32B32A32Sfloat});
+    spritePipelineDesc.vertexLayout.attributes.push_back(
+        {1, 0, 16, eng::rhi::Format::R32G32B32A32Sfloat});
+    spritePipelineDesc.vertexLayout.attributes.push_back(
+        {2, 0, 32, eng::rhi::Format::R32G32Sfloat});
+    spritePipelineDesc.raster.cull = eng::rhi::CullMode::None;
+    spritePipelineDesc.depth.test = false;
+    spritePipelineDesc.depth.write = false;
+    spritePipelineDesc.blend.enabled = true;  // alpha do sprite
+    spritePipelineDesc.blend.srcColor = eng::rhi::BlendFactor::SrcAlpha;
+    spritePipelineDesc.blend.dstColor = eng::rhi::BlendFactor::OneMinusSrcAlpha;
+    auto spritePipeline =
+        self.renderer_->createGraphicsPipeline(spritePipelineDesc);
+    if (spritePipeline.isError()) {
+        (void)self.renderer_->destroyShader(self.spriteShader_);
+        (void)self.renderer_->destroyGraphicsPipeline(self.pipeline_);
+        (void)self.renderer_->destroyShader(self.shader_);
+        return makeUnexpected(spritePipeline.error());
+    }
+    self.spritePipeline_ = spritePipeline.value();
     return self;
 }
 
@@ -246,12 +345,71 @@ bool ViewportRenderer::ensureCapacity(std::size_t vertexCount)
     return true;
 }
 
+bool ViewportRenderer::ensureSpriteCapacity(std::size_t vertexCount)
+{
+    if (!renderer_.has_value()) {
+        return false;
+    }
+    if (spriteBuffer_.isValid() && spriteCapacity_ >= vertexCount) {
+        return true;
+    }
+    std::size_t capacity = spriteCapacity_ == 0 ? 1024 : spriteCapacity_;
+    while (capacity < vertexCount) {
+        capacity = capacity + capacity / 2;
+    }
+    eng::rhi::BufferDesc desc;
+    desc.size = capacity * sizeof(SpriteVertex);
+    desc.usage = eng::rhi::BufferUsage::Vertex | eng::rhi::BufferUsage::CopyDst;
+    auto buffer = renderer_->createBuffer(desc);
+    if (buffer.isError()) {
+        ENG_WARN("viewport: falha ao crescer VBO de sprites ({})",
+                 buffer.error().message);
+        return false;
+    }
+    if (spriteBuffer_.isValid()) {
+        (void)renderer_->destroyBuffer(spriteBuffer_);
+    }
+    spriteBuffer_ = buffer.value();
+    spriteCapacity_ = capacity;
+    return true;
+}
+
 bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                                     const std::vector<EntityQuad>& quads,
                                     const std::vector<ParticleQuad>& particles,
-                                    bool playMode)
+                                    bool playMode, const AssetBrowser* assets,
+                                    TextureCache* textures)
 {
     frameVertices_.clear();
+    spriteVertices_.clear();
+    lastFrameTexturedSprites_ = 0;
+
+    // --- sprites resolvidos ANTES (agrupamento por textura p/ batching) -------
+    // Resolve cada sprite com textura via TextureCache; os que falham caem
+    // no caminho de cor (honesto: sem textura, marcador hue + log único).
+    struct ResolvedSprite {
+        const EntityQuad* quad{};
+        const TextureCache::GpuTexture* gpu{};
+    };
+    std::vector<ResolvedSprite> resolvedSprites{};
+    resolvedSprites.reserve(quads.size());
+    std::vector<const EntityQuad*> untexturedQuads{};
+    untexturedQuads.reserve(quads.size());
+    for (const EntityQuad& quad : quads) {
+        if (!quad.textureAsset.empty() && assets != nullptr && textures != nullptr) {
+            if (const auto* gpu = textures->acquire(*assets, *renderer_,
+                                                    quad.textureAsset)) {
+                resolvedSprites.push_back({&quad, gpu});
+                continue;
+            }
+        }
+        untexturedQuads.push_back(&quad);
+    }
+    // Ordenação por sort (estável — empates mantêm a hierarquia).
+    std::stable_sort(resolvedSprites.begin(), resolvedSprites.end(),
+                     [](const ResolvedSprite& a, const ResolvedSprite& b) {
+                         return a.quad->sort < b.quad->sort;
+                     });
 
     // --- grade ---------------------------------------------------------------
     // Linhas nos inteiros do mundo; passo 5 quando o zoom não comporta 1.
@@ -291,34 +449,37 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                  axis ? kAxisB : kGridB);
     }
 
-    // --- entidades -------------------------------------------------------------
+    // --- entidades SEM textura + BORDAS de sprites (pipeline pos+cor) -------
     // Ordem: play-indicator → seleção (borda) → quad. Sem blending: desenho
     // por sobreposição (ordem estável — quads em depth-first).
     const float zoom = viewport.camera().zoom;
-    for (const EntityQuad& quad : quads) {
+    auto pushEntityMarkers = [&](const EntityQuad& quad, float halfW, float halfH) {
         const float cx = worldToClipX(quad.worldX);
         const float cy = worldToClipY(quad.worldY);
+        if (playMode) {
+            pushQuad(frameVertices_, cx, cy, halfW + 8.f / w, halfH + 8.f / h,
+                     quad.rotation, 0.10f, 0.75f, 0.35f);
+        }
+        if (quad.selected) {
+            pushQuad(frameVertices_, cx, cy, halfW + 4.f / w, halfH + 4.f / h,
+                     quad.rotation, 0.95f, 0.96f, 0.98f);
+        }
+    };
+    for (const EntityQuad* quadPtr : untexturedQuads) {
+        const EntityQuad& quad = *quadPtr;
         const float halfW = std::max(quad.sizeX * zoom * 0.5f,
-                                      Viewport::kMinQuadPixels) / w;
+                                     Viewport::kMinQuadPixels) / w;
         const float halfH = std::max(quad.sizeY * zoom * 0.5f,
-                                      Viewport::kMinQuadPixels) / h;
+                                     Viewport::kMinQuadPixels) / h;
 
         float r = 0.f;
         float g = 0.f;
         float b = 0.f;
         hsvToRgb(quad.tint, r, g, b);
 
-        if (playMode) {
-            // Borda verde (estado Play visível — §8.7).
-            pushQuad(frameVertices_, cx, cy, halfW + 8.f / w, halfH + 8.f / h,
-                     quad.rotation, 0.10f, 0.75f, 0.35f);
-        }
-        if (quad.selected) {
-            // Borda branca de seleção.
-            pushQuad(frameVertices_, cx, cy, halfW + 4.f / w, halfH + 4.f / h,
-                     quad.rotation, 0.95f, 0.96f, 0.98f);
-        }
-        pushQuad(frameVertices_, cx, cy, halfW, halfH, quad.rotation, r, g, b);
+        pushEntityMarkers(quad, halfW, halfH);
+        pushQuad(frameVertices_, worldToClipX(quad.worldX),
+                 worldToClipY(quad.worldY), halfW, halfH, quad.rotation, r, g, b);
     }
 
     // --- partículas (drift D6 da FASE 10 — auditoria final) ------------------
@@ -334,7 +495,51 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                  1.f, 0.86f, 0.55f);
     }
 
+    // --- SPRITES: vértices pos+cor+uv (pipeline texturizado com blending) ----
+    // Tamanho real em mundo = escala local × (região em PIXELS / ppu).
+    // Pivot: desloca o centro do quad (pivot 0.5 = centrado).
+    for (const ResolvedSprite& sprite : resolvedSprites) {
+        const EntityQuad& quad = *sprite.quad;
+        const float regionPx =
+            static_cast<float>(sprite.gpu->width) * (quad.u1 - quad.u0);
+        const float regionPy =
+            static_cast<float>(sprite.gpu->height) * (quad.v1 - quad.v0);
+        const float worldW = std::max(quad.sizeX * regionPx / quad.spritePpu,
+                                      Viewport::kMinQuadPixels / zoom);
+        const float worldH = std::max(quad.sizeY * regionPy / quad.spritePpu,
+                                      Viewport::kMinQuadPixels / zoom);
+        // Borda de seleção/play no pipeline de cor (embaixo do sprite).
+        pushEntityMarkers(quad, worldW * zoom / w, worldH * zoom / h);
+
+        // Pivot: centro do quad desloca ((pivot - 0.5) * tamanho) nos eixos
+        // do sprite (respeita rotação).
+        const float pivotOffX = (quad.pivotX - 0.5f) * worldW;
+        const float pivotOffY = (quad.pivotY - 0.5f) * worldH;
+        const float cosR = std::cos(quad.rotation);
+        const float sinR = std::sin(quad.rotation);
+        const float centerWX = quad.worldX + pivotOffX * cosR - pivotOffY * sinR;
+        const float centerWY = quad.worldY + pivotOffX * sinR + pivotOffY * cosR;
+        const float cx = worldToClipX(centerWX);
+        const float cy = worldToClipY(centerWY);
+
+        // UV com flip (região trocada por eixo flipado).
+        const float u0 = quad.flipX ? quad.u1 : quad.u0;
+        const float u1 = quad.flipX ? quad.u0 : quad.u1;
+        // v: origem do UV no canto SUPERIOR da imagem (stb/GL) — flipY
+        // inverte a região verticalmente.
+        const float v0 = quad.flipY ? quad.v1 : quad.v0;
+        const float v1 = quad.flipY ? quad.v0 : quad.v1;
+
+        pushSpriteQuad(spriteVertices_, cx, cy, worldW * zoom * 0.5f / w,
+                       worldH * zoom * 0.5f / h, quad.rotation, u0, v0, u1, v1,
+                       quad.tintR, quad.tintG, quad.tintB, quad.tintA);
+        ++lastFrameTexturedSprites_;
+    }
+
     if (!ensureCapacity(frameVertices_.size())) {
+        return false;
+    }
+    if (!spriteVertices_.empty() && !ensureSpriteCapacity(spriteVertices_.size())) {
         return false;
     }
 
@@ -352,21 +557,61 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     if (playMode) {
         clear.color = {0.10f, 0.13f, 0.11f, 1.f}; // tom levemente esverdeado
     }
+    bool frameOk = true;
     auto cleared = frame.clear(clear);
+    frameOk = frameOk && cleared.ok();
     auto viewportSet = frame.setViewport({0.f, 0.f, w, h, 0.f, 1.f});
-    auto pipelined = frame.setPipeline(pipeline_);
-    auto bound = frame.bindVertexBuffer(vertexBuffer_);
-    // Upload do frame inteiro (offset 0) — VBO é dinâmico.
-    auto uploaded = renderer_->updateBuffer(
-        vertexBuffer_, 0,
-        {reinterpret_cast<const std::byte*>(frameVertices_.data()),
-         frameVertices_.size() * sizeof(Vertex)});
-    auto drawn = frame.draw(
-        static_cast<std::uint32_t>(frameVertices_.size()), 0);
+    frameOk = frameOk && viewportSet.ok();
+
+    // Lote 1: quads de cor (grade/entidades/bordas/partículas).
+    if (frameOk && !frameVertices_.empty()) {
+        auto pipelined = frame.setPipeline(pipeline_);
+        auto bound = frame.bindVertexBuffer(vertexBuffer_);
+        auto uploaded = renderer_->updateBuffer(
+            vertexBuffer_, 0,
+            {reinterpret_cast<const std::byte*>(frameVertices_.data()),
+             frameVertices_.size() * sizeof(Vertex)});
+        auto drawn = frame.draw(
+            static_cast<std::uint32_t>(frameVertices_.size()), 0);
+        frameOk = pipelined.ok() && bound.ok() && uploaded.ok() && drawn.ok();
+    }
+
+    // Lote 2: sprites texturizados — agrupados por TEXTURA (bind 1× por
+    // grupo; draw por grupo). Batching real, não bind por sprite.
+    if (frameOk && !spriteVertices_.empty()) {
+        auto pipelined = frame.setPipeline(spritePipeline_);
+        frameOk = frameOk && pipelined.ok();
+        auto bound = frame.bindVertexBuffer(spriteBuffer_);
+        frameOk = frameOk && bound.ok();
+        auto uploaded = renderer_->updateBuffer(
+            spriteBuffer_, 0,
+            {reinterpret_cast<const std::byte*>(spriteVertices_.data()),
+             spriteVertices_.size() * sizeof(SpriteVertex)});
+        frameOk = frameOk && uploaded.ok();
+
+        std::size_t begin = 0;
+        while (frameOk && begin < resolvedSprites.size()) {
+            const TextureCache::GpuTexture* current =
+                resolvedSprites[begin].gpu;
+            std::size_t end = begin;
+            std::size_t vertices = 0;
+            while (end < resolvedSprites.size() &&
+                   resolvedSprites[end].gpu == current) {
+                vertices += kVerticesPerQuad;
+                ++end;
+            }
+            auto boundTexture = frame.bindTexture(current->texture,
+                                                  current->sampler, 0);
+            auto drawn = frame.draw(static_cast<std::uint32_t>(vertices),
+                                    static_cast<std::uint32_t>(begin * kVerticesPerQuad));
+            frameOk = boundTexture.ok() && drawn.ok();
+            begin = end;
+        }
+    }
+
     auto ended = frame.end();
-    if (cleared.isError() || viewportSet.isError() || pipelined.isError() ||
-        bound.isError() || uploaded.isError() || drawn.isError() ||
-        ended.isError()) {
+    frameOk = frameOk && ended.ok();
+    if (!frameOk) {
         ENG_WARN("viewport: comando rejeitado (frame abortado)");
         return false;
     }
@@ -391,7 +636,19 @@ bool ViewportRenderer::renderFrame(const Viewport& viewport,
     if (!renderer_.has_value() || !pipeline_.isValid()) {
         return false;
     }
-    return buildAndDraw(viewport, quads, particles, playMode);
+    return buildAndDraw(viewport, quads, particles, playMode, nullptr, nullptr);
+}
+
+bool ViewportRenderer::renderFrame(const Viewport& viewport,
+                                   const std::vector<EntityQuad>& quads,
+                                   const std::vector<ParticleQuad>& particles,
+                                   bool playMode, const AssetBrowser* assets,
+                                   TextureCache& textures)
+{
+    if (!renderer_.has_value() || !pipeline_.isValid()) {
+        return false;
+    }
+    return buildAndDraw(viewport, quads, particles, playMode, assets, &textures);
 }
 
 eng::rhi::BackendType ViewportRenderer::activeBackend() const noexcept

@@ -9,7 +9,9 @@
 ///   - SPIR-V: tests/shaders/triangle_vk_{vert,frag}_spirv.hpp
 ///     (glslangValidator 15.1 --target-env vulkan1.1 -V + spirv-val).
 /// PROCEDÊNCIA dos dados: cópias EXATAS dos fixtures acima (tests/shaders)
-/// — este header é a fonte única no repositório. NOTA (auditoria final
+/// — este header é a fonte única no repositório. Sprite (evolução P0-3):
+/// tests/shaders/sprite_vk_{{vert,frag}}_spirv.hpp + sprite_gles.{{vert,frag}}
+/// (glslangValidator 16.6.0 --target-env vulkan1.1 -V). NOTA (auditoria final
 /// 4–10): o script `gen_editor_shaders.py` citado antes NÃO existe no
 /// repositório; a referência de regeneração era falsa e foi removida.
 
@@ -121,6 +123,135 @@ inline constexpr std::array<std::uint32_t, 94> kEditorFragmentSpirv = {
 [[nodiscard]] inline std::span<const std::byte> kEditorFragmentSpirvBytes() {
     return {reinterpret_cast<const std::byte*>(kEditorFragmentSpirv.data()),
             kEditorFragmentSpirv.size() * sizeof(std::uint32_t)};
+}
+
+// =============================================================================
+// Sprite texturizado (evolução P0-3)
+// =============================================================================
+
+/// GLSL ES 300 — vertex do sprite (espelho de tests/shaders/sprite_gles.vert).
+inline constexpr std::string_view kSpriteVertexGlsl = R"GLSL(#version 300 es
+// Sprite texturizado (GLES) — vértice: pos vec4 + cor vec4 + uv vec2.
+// Espelho do tests/shaders/sprite_vk.vert (paridade, missão §40).
+// Nota ES 3.00: inter-stage (out/in) vincula por NOME (lição FASE 6).
+layout(location = 0) in vec4 inPosition;
+layout(location = 1) in vec4 inColor;
+layout(location = 2) in vec2 inUv;
+out vec4 vColor;
+out vec2 vUv;
+void main() {
+    vColor = inColor;
+    vUv = inUv;
+    gl_Position = vec4(inPosition.xy, 0.0, 1.0);
+}
+)GLSL";
+
+/// GLSL ES 300 — fragment do sprite (espelho de tests/shaders/sprite_gles.frag).
+inline constexpr std::string_view kSpriteFragmentGlsl = R"GLSL(#version 300 es
+// Sprite texturizado (GLES) — fragmento: textura * cor do vértice.
+// Espelho do tests/shaders/sprite_vk.frag (paridade, missão §40).
+// uniform sampler2D: unidade 0 (padrão) — frameBindTexture(slot 0).
+precision mediump float;
+in vec4 vColor;
+in vec2 vUv;
+layout(location = 0) out vec4 outColor;
+uniform sampler2D uTexture;
+void main() {
+    outColor = vColor * texture(uTexture, vUv);
+}
+)GLSL";
+
+/// SPIR-V — vertex do sprite (286 words; cópia de sprite_vk_vert_spirv.hpp).
+inline constexpr std::array<std::uint32_t, 286> kSpriteVertexSpirv = {
+0x07230203u, 0x00010300u, 0x0008000bu, 0x00000024u, 0x00000000u, 0x00020011u,
+    0x00000001u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu,
+    0x00000000u, 0x0003000eu, 0x00000000u, 0x00000001u, 0x000b000fu, 0x00000000u,
+    0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u, 0x0000000bu, 0x0000000fu,
+    0x00000011u, 0x00000018u, 0x0000001bu, 0x00030003u, 0x00000002u, 0x000001c2u,
+    0x00040005u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00040005u, 0x00000009u,
+    0x6c6f4376u, 0x0000726fu, 0x00040005u, 0x0000000bu, 0x6f436e69u, 0x00726f6cu,
+    0x00030005u, 0x0000000fu, 0x00765576u, 0x00040005u, 0x00000011u, 0x76556e69u,
+    0x00000000u, 0x00060005u, 0x00000016u, 0x505f6c67u, 0x65567265u, 0x78657472u,
+    0x00000000u, 0x00060006u, 0x00000016u, 0x00000000u, 0x505f6c67u, 0x7469736fu,
+    0x006e6f69u, 0x00070006u, 0x00000016u, 0x00000001u, 0x505f6c67u, 0x746e696fu,
+    0x657a6953u, 0x00000000u, 0x00070006u, 0x00000016u, 0x00000002u, 0x435f6c67u,
+    0x4470696cu, 0x61747369u, 0x0065636eu, 0x00070006u, 0x00000016u, 0x00000003u,
+    0x435f6c67u, 0x446c6c75u, 0x61747369u, 0x0065636eu, 0x00030005u, 0x00000018u,
+    0x00000000u, 0x00050005u, 0x0000001bu, 0x6f506e69u, 0x69746973u, 0x00006e6fu,
+    0x00040047u, 0x00000009u, 0x0000001eu, 0x00000000u, 0x00040047u, 0x0000000bu,
+    0x0000001eu, 0x00000001u, 0x00040047u, 0x0000000fu, 0x0000001eu, 0x00000001u,
+    0x00040047u, 0x00000011u, 0x0000001eu, 0x00000002u, 0x00030047u, 0x00000016u,
+    0x00000002u, 0x00050048u, 0x00000016u, 0x00000000u, 0x0000000bu, 0x00000000u,
+    0x00050048u, 0x00000016u, 0x00000001u, 0x0000000bu, 0x00000001u, 0x00050048u,
+    0x00000016u, 0x00000002u, 0x0000000bu, 0x00000003u, 0x00050048u, 0x00000016u,
+    0x00000003u, 0x0000000bu, 0x00000004u, 0x00040047u, 0x0000001bu, 0x0000001eu,
+    0x00000000u, 0x00020013u, 0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u,
+    0x00030016u, 0x00000006u, 0x00000020u, 0x00040017u, 0x00000007u, 0x00000006u,
+    0x00000004u, 0x00040020u, 0x00000008u, 0x00000003u, 0x00000007u, 0x0004003bu,
+    0x00000008u, 0x00000009u, 0x00000003u, 0x00040020u, 0x0000000au, 0x00000001u,
+    0x00000007u, 0x0004003bu, 0x0000000au, 0x0000000bu, 0x00000001u, 0x00040017u,
+    0x0000000du, 0x00000006u, 0x00000002u, 0x00040020u, 0x0000000eu, 0x00000003u,
+    0x0000000du, 0x0004003bu, 0x0000000eu, 0x0000000fu, 0x00000003u, 0x00040020u,
+    0x00000010u, 0x00000001u, 0x0000000du, 0x0004003bu, 0x00000010u, 0x00000011u,
+    0x00000001u, 0x00040015u, 0x00000013u, 0x00000020u, 0x00000000u, 0x0004002bu,
+    0x00000013u, 0x00000014u, 0x00000001u, 0x0004001cu, 0x00000015u, 0x00000006u,
+    0x00000014u, 0x0006001eu, 0x00000016u, 0x00000007u, 0x00000006u, 0x00000015u,
+    0x00000015u, 0x00040020u, 0x00000017u, 0x00000003u, 0x00000016u, 0x0004003bu,
+    0x00000017u, 0x00000018u, 0x00000003u, 0x00040015u, 0x00000019u, 0x00000020u,
+    0x00000001u, 0x0004002bu, 0x00000019u, 0x0000001au, 0x00000000u, 0x0004003bu,
+    0x0000000au, 0x0000001bu, 0x00000001u, 0x0004002bu, 0x00000006u, 0x0000001eu,
+    0x00000000u, 0x0004002bu, 0x00000006u, 0x0000001fu, 0x3f800000u, 0x00050036u,
+    0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u,
+    0x0004003du, 0x00000007u, 0x0000000cu, 0x0000000bu, 0x0003003eu, 0x00000009u,
+    0x0000000cu, 0x0004003du, 0x0000000du, 0x00000012u, 0x00000011u, 0x0003003eu,
+    0x0000000fu, 0x00000012u, 0x0004003du, 0x00000007u, 0x0000001cu, 0x0000001bu,
+    0x0007004fu, 0x0000000du, 0x0000001du, 0x0000001cu, 0x0000001cu, 0x00000000u,
+    0x00000001u, 0x00050051u, 0x00000006u, 0x00000020u, 0x0000001du, 0x00000000u,
+    0x00050051u, 0x00000006u, 0x00000021u, 0x0000001du, 0x00000001u, 0x00070050u,
+    0x00000007u, 0x00000022u, 0x00000020u, 0x00000021u, 0x0000001eu, 0x0000001fu,
+    0x00050041u, 0x00000008u, 0x00000023u, 0x00000018u, 0x0000001au, 0x0003003eu,
+    0x00000023u, 0x00000022u, 0x000100fdu, 0x00010038u,
+};
+
+/// SPIR-V — fragment do sprite (165 words; cópia de sprite_vk_frag_spirv.hpp).
+inline constexpr std::array<std::uint32_t, 165> kSpriteFragmentSpirv = {
+0x07230203u, 0x00010300u, 0x0008000bu, 0x00000018u, 0x00000000u, 0x00020011u,
+    0x00000001u, 0x0006000bu, 0x00000001u, 0x4c534c47u, 0x6474732eu, 0x3035342eu,
+    0x00000000u, 0x0003000eu, 0x00000000u, 0x00000001u, 0x0008000fu, 0x00000004u,
+    0x00000004u, 0x6e69616du, 0x00000000u, 0x00000009u, 0x0000000bu, 0x00000014u,
+    0x00030010u, 0x00000004u, 0x00000007u, 0x00030003u, 0x00000002u, 0x000001c2u,
+    0x00040005u, 0x00000004u, 0x6e69616du, 0x00000000u, 0x00050005u, 0x00000009u,
+    0x4374756fu, 0x726f6c6fu, 0x00000000u, 0x00040005u, 0x0000000bu, 0x6c6f4376u,
+    0x0000726fu, 0x00050005u, 0x00000010u, 0x78655475u, 0x65727574u, 0x00000000u,
+    0x00030005u, 0x00000014u, 0x00765576u, 0x00040047u, 0x00000009u, 0x0000001eu,
+    0x00000000u, 0x00040047u, 0x0000000bu, 0x0000001eu, 0x00000000u, 0x00040047u,
+    0x00000010u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000010u, 0x00000022u,
+    0x00000000u, 0x00040047u, 0x00000014u, 0x0000001eu, 0x00000001u, 0x00020013u,
+    0x00000002u, 0x00030021u, 0x00000003u, 0x00000002u, 0x00030016u, 0x00000006u,
+    0x00000020u, 0x00040017u, 0x00000007u, 0x00000006u, 0x00000004u, 0x00040020u,
+    0x00000008u, 0x00000003u, 0x00000007u, 0x0004003bu, 0x00000008u, 0x00000009u,
+    0x00000003u, 0x00040020u, 0x0000000au, 0x00000001u, 0x00000007u, 0x0004003bu,
+    0x0000000au, 0x0000000bu, 0x00000001u, 0x00090019u, 0x0000000du, 0x00000006u,
+    0x00000001u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u,
+    0x0003001bu, 0x0000000eu, 0x0000000du, 0x00040020u, 0x0000000fu, 0x00000000u,
+    0x0000000eu, 0x0004003bu, 0x0000000fu, 0x00000010u, 0x00000000u, 0x00040017u,
+    0x00000012u, 0x00000006u, 0x00000002u, 0x00040020u, 0x00000013u, 0x00000001u,
+    0x00000012u, 0x0004003bu, 0x00000013u, 0x00000014u, 0x00000001u, 0x00050036u,
+    0x00000002u, 0x00000004u, 0x00000000u, 0x00000003u, 0x000200f8u, 0x00000005u,
+    0x0004003du, 0x00000007u, 0x0000000cu, 0x0000000bu, 0x0004003du, 0x0000000eu,
+    0x00000011u, 0x00000010u, 0x0004003du, 0x00000012u, 0x00000015u, 0x00000014u,
+    0x00050057u, 0x00000007u, 0x00000016u, 0x00000011u, 0x00000015u, 0x00050085u,
+    0x00000007u, 0x00000017u, 0x0000000cu, 0x00000016u, 0x0003003eu, 0x00000009u,
+    0x00000017u, 0x000100fdu, 0x00010038u,
+};
+
+[[nodiscard]] inline std::span<const std::byte> kSpriteVertexSpirvBytes() {
+    return {reinterpret_cast<const std::byte*>(kSpriteVertexSpirv.data()),
+            kSpriteVertexSpirv.size() * sizeof(std::uint32_t)};
+}
+[[nodiscard]] inline std::span<const std::byte> kSpriteFragmentSpirvBytes() {
+    return {reinterpret_cast<const std::byte*>(kSpriteFragmentSpirv.data()),
+            kSpriteFragmentSpirv.size() * sizeof(std::uint32_t)};
 }
 
 }  // namespace eng::editor

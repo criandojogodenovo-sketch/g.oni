@@ -22,6 +22,7 @@ add_library(eng_editor STATIC
     src/EditorHost.cpp
     src/ComponentRegistration.cpp
     src/NiRuntime.cpp
+    src/TextureCache.cpp
 )
 add_library(eng::editor ALIAS eng_editor)
 
@@ -40,6 +41,7 @@ target_link_libraries(eng_editor PUBLIC
     eng::serial
     eng::project
     eng::assets
+    eng::image
     eng::reflect
     eng::input
     eng::physics

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "eng/editor/SpriteData.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/scene/Name.hpp"
 
@@ -105,6 +106,31 @@ std::vector<EntityQuad> Viewport::buildQuads(
         quad.rotation = std::atan2(world.at(0, 1), world.at(0, 0));
         quad.tint = hueOf(node);
         quad.selected = selection.has_value() && *selection == node;
+
+        // Sprite (evolução P0-3): SpriteData REAL substitui o marcador hue.
+        // Tamanho do sprite em mundo = escala local × (região em PIXELS do
+        // arquivo / pixelsPerUnit) — os pixels da textura vêm do cache do
+        // HOST (aqui é camada de dados, sem renderer); sem metadados, a
+        // região UV × 1 unidade de mundo serve de estimativa e o renderer
+        // corrige na escala final.
+        if (const auto* sprite = scene.world().get<eng::editor::SpriteData>(node)) {
+            quad.textureAsset = sprite->textureAsset;
+            quad.u0 = sprite->u0;
+            quad.v0 = sprite->v0;
+            quad.u1 = sprite->u1;
+            quad.v1 = sprite->v1;
+            quad.tintR = sprite->tintR;
+            quad.tintG = sprite->tintG;
+            quad.tintB = sprite->tintB;
+            quad.tintA = sprite->opacity;
+            quad.flipX = sprite->flipX;
+            quad.flipY = sprite->flipY;
+            quad.sort = sprite->sort;
+            quad.spritePpu = sprite->pixelsPerUnit > 0.f ? sprite->pixelsPerUnit
+                                                         : 1.f;
+            quad.pivotX = sprite->pivotX;
+            quad.pivotY = sprite->pivotY;
+        }
         quads.push_back(quad);
         (void)depth; // profundidade não muda o quad — reserva de API futura
 

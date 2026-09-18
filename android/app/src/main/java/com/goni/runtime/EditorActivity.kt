@@ -23,6 +23,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
@@ -562,6 +563,30 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         parent: LinearLayout, component: String, path: String,
         typeName: String, value: String
     ) {
+        // Campo de textura do SpriteData: PICKER real (lista de texturas do
+        // projeto — evolução P0: "assign texture to sprite" funciona).
+        if (component == "eng::editor::SpriteData" && path == "textureAsset") {
+            parent.addView(labelView("Textura"))
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val current = TextView(this).apply {
+                text = value.ifEmpty { "(nenhuma)" }
+                setTextColor(0xFF8AB4F8.toInt())
+                setPadding(dp(8), dp(12), dp(8), dp(12))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            }
+            row.addView(current, LinearLayout.LayoutParams(0, dp(48), 1f))
+            row.addView(
+                Button(this).apply {
+                    text = "Escolher…"
+                    minHeight = dp(48)
+                    setOnClickListener { pickTextureFor(current) }
+                },
+                LinearLayout.LayoutParams(0, dp(48), 0.8f)
+            )
+            parent.addView(row)
+            return
+        }
+
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(
             labelView(path.substringAfterLast('.').let { "$it ($typeName)" }),
@@ -587,6 +612,30 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             LinearLayout.LayoutParams(0, dp(48), 1f)
         )
         parent.addView(row)
+    }
+
+    /** Picker de textura: lista os assets de textura e atribui no campo. */
+    private fun pickTextureFor(field: TextView) {
+        val tsv = EditorJni.nativeEditorListTextures(handle) ?: return
+        val names = tsv.lines().filter { it.isNotBlank() }
+        if (names.isEmpty()) {
+            toast("Nenhuma textura importada (Assets → textures → Importar)")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Textura")
+            .setItems(names.toTypedArray()) { _, which ->
+                val ok = EditorJni.nativeEditorSetComponentField(
+                    handle, selection, "eng::editor::SpriteData", "textureAsset",
+                    names[which]
+                )
+                if (ok) {
+                    field.text = names[which]
+                } else {
+                    toast(lastErrorText())
+                }
+            }
+            .show()
     }
 
     private fun fmtFloat(v: Float): String =
@@ -1178,7 +1227,17 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             val view = super.getView(position, convertView, parent)
             val entry = entries[position]
             (view as? TextView)?.apply {
-                text = if (entry.registered) {
+                // Metadados de imagem (evolução P0): "name · WxH rgba" via
+                // decode REAL no C++ — o browser RECONHECE imagens.
+                val imageInfo =
+                    if (assetCategory.selectedItem?.toString() == "textures") {
+                        EditorJni.nativeEditorAssetImageInfo(
+                            handle, "textures", entry.name
+                        )
+                    } else null
+                text = if (imageInfo != null) {
+                    "[IMG] ${entry.name}  ·  $imageInfo"
+                } else if (entry.registered) {
                     "${entry.name}  ·  ${entry.id.take(8)}…"
                 } else {
                     "${entry.name}  ·  (não catalogado)"
@@ -1189,14 +1248,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
             view.setOnClickListener {
                 selected = entry
-                AlertDialog.Builder(this@EditorActivity)
-                    .setTitle(entry.name)
-                    .setMessage(
-                        "id: ${entry.id}\nregistrado: ${entry.registered}\n" +
-                            "caminho: ${entry.path}"
-                    )
-                    .setPositiveButton("OK", null)
-                    .show()
+                assetPreviewDialog(entry)
             }
             view.setOnLongClickListener {
                 selected = entry
@@ -1205,6 +1257,38 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
             return view
         }
+    }
+
+    /** Preview do asset: imagem REAL decodificada em bitmap (thumbnails
+     * nativos do Android — evolução P0: duplo-toque MOSTRA o conteúdo). */
+    private fun assetPreviewDialog(entry: AssetEntry) {
+        val category = assetCategory.selectedItem?.toString() ?: return
+        val info = EditorJni.nativeEditorAssetImageInfo(handle, category, entry.name)
+        val project = EditorJni.nativeEditorProjectName(handle) ?: ""
+        val file = File(File(File(filesDir, "projects"), project),
+                        "assets/$category/${entry.name}")
+        val message = StringBuilder("id: ${entry.id}\nregistrado: ${entry.registered}\n" +
+                            "caminho: ${entry.path}")
+        if (info != null) {
+            message.append("\nimagem: $info")
+        }
+        val builder = AlertDialog.Builder(this)
+            .setTitle(entry.name)
+            .setMessage(message.toString())
+            .setPositiveButton("OK", null)
+        if (info != null && file.isFile) {
+            val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+            if (bitmap != null) {
+                val preview = ImageView(this).apply {
+                    adjustViewBounds = true
+                    scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                    setImageBitmap(bitmap)
+                    setPadding(dp(16), dp(16), dp(16), dp(16))
+                }
+                builder.setView(preview)
+            }
+        }
+        builder.show()
     }
 
     companion object {

@@ -286,6 +286,19 @@ Result<void> AssetBrowser::remove(std::string_view category,
     return persist();
 }
 
+Result<std::vector<std::byte>> AssetBrowser::read(std::string_view category,
+                                                 std::string_view name) const
+{
+    if (assetTypeFor(category) == nullptr) {
+        return makeUnexpected(browserError(StatusCode::InvalidArgument,
+                                           "categoria desconhecida"));
+    }
+    // categoryDir é relativo ao assetsRoot do projeto; Path::operator/
+    // valida contra traversal (ADR-027) — "../" não escapa.
+    const eng::fs::Path path = categoryDir(category) / eng::fs::Path{std::string{name}};
+    return fs_->readAllBytes(path);
+}
+
 Result<void> AssetBrowser::move(std::string_view fromCategory,
                                 std::string_view name,
                                 std::string_view toCategory)

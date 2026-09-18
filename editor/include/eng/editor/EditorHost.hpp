@@ -25,6 +25,7 @@
 
 #include "eng/core/Result.hpp"
 #include "eng/editor/EditorDocument.hpp"
+#include "eng/editor/TextureCache.hpp"
 #include "eng/editor/ViewportRenderer.hpp"
 #include "eng/fs/NativeFileSystem.hpp"
 #include "eng/rhi/Types.hpp"
@@ -97,6 +98,22 @@ public:
     [[nodiscard]] const eng::rhi::RendererCapabilities* capabilities() const
         noexcept;
 
+    /// Cache de texturas do host (upload GPU sob demanda — evolução P0-3).
+    [[nodiscard]] TextureCache& textureCache() noexcept { return textureCache_; }
+
+    /// Filesystem do host (workspace — staging de import etc.).
+    [[nodiscard]] eng::fs::NativeFileSystem& fileSystem() noexcept { return fs_; }
+
+    /// ViewportRenderer ativo (diagnóstico/testes; nullptr sem surface).
+    [[nodiscard]] const ViewportRenderer* viewportRenderer() const noexcept
+    {
+        return viewportRenderer_.has_value() ? &viewportRenderer_.value() : nullptr;
+    }
+
+    /// Invalida o cache de texturas (troca de projeto/reimport — chamado
+    /// pela fronteira JNI nos comandos que mudam assets/textures).
+    void invalidateTextureCache();
+
 private:
     EditorHost() = default;
 
@@ -128,6 +145,7 @@ private:
 
     std::unique_ptr<EditorDocument> document_{};
     std::optional<ViewportRenderer> viewportRenderer_{};
+    TextureCache textureCache_{};  ///< texturas GPU por nome de asset (P0-3)
     HostStats stats_{};
 };
 

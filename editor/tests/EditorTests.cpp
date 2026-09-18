@@ -20,6 +20,8 @@
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/editor/EditorHost.hpp"
 #include "eng/editor/Inspector.hpp"
+#include "eng/editor/SpriteData.hpp"
+#include "eng/editor/TextureCache.hpp"
 #include "eng/editor/ViewportRenderer.hpp"
 #include "eng/fs/MemoryFileSystem.hpp"
 #include "eng/fs/NativeFileSystem.hpp"
@@ -1190,4 +1192,210 @@ TEST_CASE("editor: viewport desenha partículas vivas como quads (drift D6)",
     CHECK(quads.size() == 5);
     doc->stop();
     CHECK(viewport.buildParticleQuads(*doc->sceneInFocus()).empty());
+}
+
+// =============================================================================
+// 15. Sprite com TEXTURA REAL (evolução P0 — o fim do retângulo colorido)
+// =============================================================================
+
+namespace {
+
+/// PNG 2x2 RGBA (vermelho/verde/azul/branco) — cópia EXATA do fixture
+/// kPng2x2 de engine/image/tests/ImageFixtures.hpp (gerado por
+/// scripts/gen_image_fixtures.py — procedência única).
+constexpr unsigned char kPng2x2[86] = {
+    137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,
+    0,0,0,2,0,0,0,2,8,6,0,0,0,114,182,13,
+    36,0,0,0,29,73,68,65,84,120,1,1,18,0,237,255,
+    0,255,0,0,255,0,255,0,255,4,1,0,255,0,255,0,
+    0,0,62,255,6,0,112,227,74,153,0,0,0,0,73,69,
+    78,68,174,66,96,130,
+};
+
+void writePngTemp(eng::fs::FileSystem& fs)
+{
+    REQUIRE(fs.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+    REQUIRE(fs.writeAllBytes(
+                eng::fs::Path{".import_tmp/grass.png"},
+                std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                          sizeof(kPng2x2)})
+                .ok());
+}
+
+}  // namespace
+
+TEST_CASE("editor: sprite — importar imagem, atribuir, quads e persistência",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+    writePngTemp(*f.fs);
+
+    // 1) Import REAL: bytes PNG válidos catalogados em textures/.
+    auto* browser = f.doc->assets();
+    REQUIRE(browser != nullptr);
+    auto imported = browser->import(".import_tmp/grass.png", "textures", "grass");
+    REQUIRE(imported.ok());
+
+    // 2) Metadados decodificados SEM GPU (dimensões/alfa do arquivo real).
+    eng::editor::TextureCache cache;
+    const auto info = cache.imageInfo(*browser, "grass.png");
+    CHECK(info.valid);
+    CHECK(info.width == 2);
+    CHECK(info.height == 2);
+    CHECK(info.alpha);
+
+    // 3) Entidade com componente SpriteData (catálogo ÚNICO — ADR-043).
+    auto created = f.doc->createEntity("Player", eng::scene::kNoEntity);
+    REQUIRE(created.ok());
+    const eng::ecs::Entity player = created.value();
+    REQUIRE(f.doc->addComponent(player, "eng::editor::SpriteData").ok());
+
+    // 4) Atribuição da textura por CAMPO (mesma via do Inspector/JNI).
+    REQUIRE(f.doc
+                ->setInspectorField(player, "eng::editor::SpriteData",
+                                   "textureAsset", "grass.png")
+                .ok());
+    // Campos do workflow: região + flip + tint + ppu.
+    REQUIRE(f.doc
+                ->setInspectorField(player, "eng::editor::SpriteData",
+                                   "pixelsPerUnit", "0.5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(player, "eng::editor::SpriteData", "flipX",
+                                   "true")
+                .ok());
+
+    // 5) O QUAD carrega o sprite (não é mais o marcador hue puro).
+    const auto* scene = f.doc->sceneInFocus();
+    const auto quads = f.doc->viewport().buildQuads(*scene, player);
+    REQUIRE(quads.size() == 1);
+    CHECK(quads[0].textureAsset == "grass.png");
+    CHECK(quads[0].u0 == 0.f);
+    CHECK(quads[0].u1 == 1.f);
+    CHECK(quads[0].flipX);
+    CHECK(quads[0].tintR == 1.f);
+    CHECK(quads[0].spritePpu == 0.5f);
+
+    // 6) Persistência: save/load preserva o SpriteData COMPLETO.
+    REQUIRE(f.doc->saveScene("sprites.json").ok());
+    REQUIRE(f.doc->loadScene("sprites.json").ok());
+    const auto* sprite = f.doc->sceneInFocus()->world().get<eng::editor::SpriteData>(
+        player);
+    REQUIRE(sprite != nullptr);
+    CHECK(sprite->textureAsset == "grass.png");
+    CHECK(sprite->pixelsPerUnit == 0.5f);
+    CHECK(sprite->flipX);
+    CHECK(sprite->flipY == false);
+
+    // 7) Componente no catálogo do inspector (aparece para o usuário).
+    const auto componentsTsv = f.doc->inspectorFields(player, "eng::editor::SpriteData");
+    REQUIRE_FALSE(componentsTsv.empty());
+}
+
+TEST_CASE("editor: sprite com textura AUSENTE cai no caminho de cor (honesto)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    auto created = f.doc->createEntity("Ghost", eng::scene::kNoEntity);
+    REQUIRE(created.ok());
+    REQUIRE(f.doc->addComponent(created.value(), "eng::editor::SpriteData").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(created.value(), "eng::editor::SpriteData",
+                                   "textureAsset", "nao_existe.png")
+                .ok());
+
+    // Quad marcado como sprite, mas o acquire falha → renderiza como quad
+    // de cor (sem crash, sem placeholder falso — log único no cache).
+    const auto* scene = f.doc->sceneInFocus();
+    const auto quads = f.doc->viewport().buildQuads(*scene, created.value());
+    REQUIRE(quads.size() == 1);
+    CHECK(quads[0].textureAsset == "nao_existe.png");
+    // O TextureCache SEM renderer não sobe nada — imageInfo invalida.
+    eng::editor::TextureCache cache;
+    const auto info = cache.imageInfo(*f.doc->assets(), "nao_existe.png");
+    CHECK_FALSE(info.valid);
+}
+
+TEST_CASE("editor: host renderiza sprite TEXTURIZADO (GLES/llvmpipe real)",
+          "[editor][rhi_hardware]")
+{
+    eng::rhi::Renderer::clearRegisteredBackends();
+    REQUIRE(eng::rhi::Renderer::registerBackend(
+                eng::rhi::BackendType::OpenGLES, &eng::rhi::gles::createBackend)
+                .ok());
+
+    // Host em disco REAL (workspace temporário isolado por caso).
+    const std::string root = "sprite_host_test_" +
+                             std::to_string(reinterpret_cast<std::uintptr_t>(&root));
+    auto created = eng::editor::EditorHost::create("gles", root.c_str());
+    if (!created) {
+        SKIP("OpenGL ES indisponível: " << created.error().message);
+    }
+    std::unique_ptr<eng::editor::EditorHost> host{created.value()};
+    host->surfaceCreated(nullptr, eng::rhi::NativeWindowKind::Headless, 64, 48);
+    if (host->viewportRenderer() == nullptr) {
+        SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
+    }
+
+    auto& doc = host->document();
+    REQUIRE(doc.newProject("SpriteGame").ok());
+    REQUIRE(doc.saveProject().ok());
+
+    // Import via fs do host: escreve o staging PNG e importa.
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    {
+        eng::fs::NativeFileSystem& hostFs = host->fileSystem();
+        REQUIRE(hostFs.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(hostFs
+                    .writeAllBytes(
+                        eng::fs::Path{".import_tmp/hero.png"},
+                        std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                                  sizeof(kPng2x2)})
+                    .ok());
+    }
+    // import() usa path relativo ao ROOT do projeto — o staging do host é
+    // criado FORA do projeto (filesDir/.import_tmp): o documento do host
+    // aponta o workspace p/ root/, então o import resolve .import_tmp/hero.png
+    // relativo ao workspace. (Contrato §8.5: staging DENTRO do workspace.)
+    auto imported = browser->import(".import_tmp/hero.png", "textures", "hero");
+    REQUIRE(imported.ok());
+
+    auto entity = doc.createEntity("Hero", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(doc.addComponent(entity.value(), "eng::editor::SpriteData").ok());
+    REQUIRE(doc.setInspectorField(entity.value(), "eng::editor::SpriteData",
+                                 "textureAsset", "hero.png")
+                .ok());
+
+    // Frame com o sprite: textura REAL subiu (decode→RHI→bind→draw).
+    REQUIRE(host->renderFrame(1.f / 60.f));
+    const auto* renderer = host->viewportRenderer();
+    REQUIRE(renderer != nullptr);
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+    const auto& spriteVerts = renderer->lastFrameSpriteVertices();
+    REQUIRE(spriteVerts.size() == 6);
+    // UV completo no quad (0,0)→(1,1): a amostragem cobre a textura.
+    CHECK(spriteVerts[0].u == 0.f);
+    CHECK(spriteVerts[0].v == 0.f);
+    CHECK(spriteVerts[1].u == 1.f);
+    CHECK(spriteVerts[1].v == 0.f);
+    CHECK(spriteVerts[2].u == 1.f);
+    CHECK(spriteVerts[2].v == 1.f);
+    CHECK(spriteVerts[5].u == 0.f);
+    CHECK(spriteVerts[5].v == 1.f);
+
+    // Segundo frame: cache HIT (mesma textura — sem novo upload) e Play
+    // com sprites no clone (separação editor×runtime mantida).
+    REQUIRE(host->renderFrame(1.f / 60.f));
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+
+    REQUIRE(doc.play().ok());
+    REQUIRE(host->renderFrame(1.f / 60.f));
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+    REQUIRE(host->renderFrame(1.f / 60.f));
+    doc.stop();
 }

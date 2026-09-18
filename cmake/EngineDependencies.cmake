@@ -59,6 +59,29 @@ if(ENG_NLOHMANN_INC)
         INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${ENG_NLOHMANN_INC}")
 endif()
 
+# --- stb_image (evolução P0-2: decodificação PNG/JPEG) -----------------------
+# Public domain (nothings/stb). Tarball do COMMIT exato (codeload GitHub,
+# hash SHA-256 verificado); o header usado é stb_image.h na RAIZ do tarball.
+# Confinada ao módulo eng::image (TU único StbImageImpl.cpp com -w).
+set(ENG_STB_IMAGE_COMMIT "2c980bb59875b0d32144a71867fbdebb2f77cd20")
+
+FetchContent_Declare(
+    stb_image
+    URL "https://codeload.github.com/nothings/stb/tar.gz/${ENG_STB_IMAGE_COMMIT}"
+    URL_HASH SHA256=9a955b1b49a4410088a2e0ee2a9c057c3c907d0c1d75454144cb980aca0ba515
+)
+FetchContent_MakeAvailable(stb_image)
+
+# Alvo INTERFACE: consumidores linkam stb_image e incluem <stb_image.h>;
+# include SYSTEM para os warnings de terceiro não vazarem (ADR-020). O
+# tarball do codeload desempacota em stb-<commit>/ — a raiz do repo tem o
+# header (FetchContent aponta o SOURCE_DIR lá).
+if(NOT TARGET stb_image)
+    add_library(stb_image INTERFACE)
+    target_include_directories(stb_image SYSTEM INTERFACE
+        "${stb_image_SOURCE_DIR}")
+endif()
+
 # --- Catch2 (FASE 1; testes) --------------------------------------------------
 if(NOT ENG_BUILD_TESTS)
     message(STATUS "ENG_BUILD_TESTS=OFF — Catch2 não será obtido")
