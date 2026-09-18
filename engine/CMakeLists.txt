@@ -40,3 +40,6 @@ add_subdirectory(particles) # Emitter/pool CPU determinística — sobre scene
 # Núcleo puro sobre core/math/ecs/reflect; bindings de gameplay ficam no
 # CONSUMIDOR (editor), igual ao catálogo do SceneSerializer (ADR-043).
 add_subdirectory(niscript) # Lexer/Parser/Sema/Compiler + NI VM + bindings
+# FASE 12 (ADR-050): Build & Export — pipeline de DADOS (manifest → cook
+# GONI → cache determinístico → bundle verificado → export por alvo).
+add_subdirectory(build)    # eng::build — sobre project/assets/serial/niscript

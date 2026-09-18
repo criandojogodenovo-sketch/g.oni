@@ -50,7 +50,7 @@ Os binários ficam em `build/<preset>/` (ignorado pelo git), com
 
 ## Testes
 
-Um executável por módulo, registrados no CTest (FASE 11: **27 suites**):
+Um executável por módulo, registrados no CTest (FASE 12: **28 suites**):
 
 | Teste | Módulo coberto |
 |---|---|
@@ -109,7 +109,7 @@ ctest --preset linux-debug -L rhi_hardware --output-on-failure
 ```
 
 Para rodar TUDO de uma vez (Vulkan + GLES + paridade), exporte as variáveis
-acima e execute `ctest --preset linux-debug` completo (27 suites).
+acima e execute `ctest --preset linux-debug` completo (28 suites).
 
 Notas: lavapipe/llvmpipe é renderização por SOFTWARE — os testes reportam
 `softwareRendering` verdadeiro e nunca declaram suporte de hardware. O

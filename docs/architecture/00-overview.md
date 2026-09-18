@@ -120,7 +120,7 @@ graph TD
     animation["eng::animation (FASE 10)"] --> scene & math & reflect
     particles["eng::particles (FASE 10)"] --> scene & math & reflect
     niscript["eng::niscript — NI-Script (FASE 11)"] --> core & math & ecs & reflect
-    build["eng::build — build/export (FASE 12, PLANEJADO)"] --> project & assets & serial
+    build["eng::build — build/export (FASE 12)"] --> project & assets & serial & niscript
 ```
 
 Regras que mantêm o grafo acíclico conforme os módulos entram:

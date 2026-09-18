@@ -5,8 +5,9 @@
 
 Engine de jogos **mobile-first** escrita em **C++20**, com alvo principal
 **Android** (Vulkan 1.3, GLES 3.2 como compatibilidade). Projeto conduzido
-por fases com contrato técnico formal; as **FASES 1–11 estão concluídas** —
-a **FASE 12 (Build & Export)** segue no roadmap.
+por fases com contrato técnico formal — **as 12 fases do roadmap estão
+CONCLUÍDAS** (núcleo → RHI/backends → Android → editor → gameplay →
+NI-Script → build/export).
 
 Pilha: **C++20** (engine), **Kotlin** (integração Android), **JNI**
 (ponte nativa), **Vulkan/GLES** (rendering), **CMake** (build nativo),
@@ -144,9 +145,26 @@ não Python).
 - [x] Docs: `docs/ni-script/` (8 arquivos) + `architecture/19` +
       ADR-049; UI de script no editor ADIADA e declarada
 
-## Testes (estado pós-FASE 11)
+## Estado — FASE 12 (concluída) — Build & Export
 
-**27 suites** — 100% verdes em `linux-debug` (ASan+UBSan+LSan, `-Werror`)
+- [x] `eng::build` (ADR-050): pipeline de DADOS completo — build.json
+      (paths RELATIVOS) → manifesto determinístico (FNV-1a 64) → grafo +
+      scan de referências (AssetId em texto — agnóstico) → validação
+      BLOQUEANTE (fonte ausente, ids duplicados, script que não compila,
+      JSON inválido, target/manifest inválidos; não-usado = WARN)
+- [x] Cook em envelope GONI por asset (reuso ADR-030; SOURCE/DERIVED no
+      formato desde v1) + cache conteúdo-endereçado (invalidação por
+      conteúdo/versão — sem timestamps); scripts validados por COMPILAÇÃO
+      no build e empacotados como fonte (ADR-049)
+- [x] Bundle verificado (CRC em duas camadas + cruzamento manifest↔
+      entradas + contentHash) e EXPORT: **android-arm64** (prioritário —
+      INSTALL.md com caminho no APK existente) + **linux-dev** (README)
+- [x] Determinismo byte-a-byte testado; engine × dados SEPARADOS (nunca
+      recompila o motor, nunca conhece um projeto específico)
+
+## Testes (estado pós-FASE 12)
+
+**28 suites** — 100% verdes em `linux-debug` (ASan+UBSan+LSan, `-Werror`)
 e `linux-release` (LTO), zero warnings; CI Linux executa os 27 com drivers
 (lavapipe/EGL), CI Android monta e inspeciona o APK arm64-v8a. Contagens:
 core 74 casos, rhi 16/410 (FakeBackend), vulkan 6, gles 5, android_runtime
@@ -154,8 +172,10 @@ core 74 casos, rhi 16/410 (FakeBackend), vulkan 6, gles 5, android_runtime
 play de scripts NI-Script), input 12/76, ui 8/40, audio 14/75, physics
 15/59, animation 6/32, particles 6/33, **niscript 58 casos/516 asserções**
 (semântica formal §5, E2E `.nis→ECS`, determinismo byte-a-byte,
-segurança), + demais suites de fase. Auditoria 4–10 com classificação
-[A]–[F], 18 bugs e remediação: `docs/final_phase4_10_audit.md`.
+segurança), **build 23 casos/232 asserções** (lista obrigatória da missão
++ determinismo + E2E export), + demais suites de fase. Auditoria 4–10
+com classificação [A]–[F], 18 bugs e remediação:
+`docs/final_phase4_10_audit.md`.
 
 ## Pré-requisitos
 
@@ -177,7 +197,7 @@ ctest --preset linux-release --output-on-failure  # release com LTO
 
 Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-android.md](docs/build-android.md).
 
-## Estrutura (FASE 11)
+## Estrutura (FASE 12)
 
 ```
 ├── .devcontainer/         # camadas base/graphics/android + verify.sh
@@ -214,7 +234,8 @@ Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-andro
 │   ├── physics/           # RigidBody/Collider/CharacterBody (FASE 10)
 │   ├── animation/         # clips/animator/cross-fade (FASE 10)
 │   ├── particles/         # emitter CPU determinístico (FASE 10)
-│   └── niscript/          # NI-Script: lexer→sema→bytecode→VM+bindings (FASE 11)
+│   ├── niscript/          # NI-Script: lexer→sema→bytecode→VM+bindings (FASE 11)
+│   └── build/             # Build & Export: manifest→cook GONI→cache→bundle (FASE 12)
 ├── editor/                # FASE 8: núcleo C++ do editor (consumidor)
 ├── android/               # FASES 7/8: runtime + editor Android (Gradle/APK)
 └── tests/                 # integração e2e (compõe scene+assets+project)

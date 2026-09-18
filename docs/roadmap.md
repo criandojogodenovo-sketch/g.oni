@@ -16,7 +16,7 @@
 | 9 | input+ui+audio — `eng::input` canônico/ações, `eng::ui` draw-list/fonte pontilhada, `eng::audio` mixer pull/AAudio dlopen (ADRs 045–047) | ✅ concluída (`969ac2d`) |
 | 10 | physics+animation+particles — esfera/AABB+timestep fixo+raycast; clips TRS/cross-fade; emitter CPU determinístico (ADR-048) | ✅ concluída (`f8314d8`) |
 | 11 | **NI-Script** — linguagem de script própria: lexer/parser/AST/sema/compiler/bytecode/VM determinística com orçamento/bindings ECS refletidos/`add &BL`/eventos `up`+`emit`/`link to`/semântica formal de `repeat`/`repair`/`timeout` (ADR-049) | ✅ concluída |
-| 12 | **Build & Export Pipeline** — configuração de build/manifesto determinístico/grafo de dependências+scanner de referências/cook de assets/cache derivado/validação bloqueante/export Android (APK reproducível) e Linux (bundle) | planejada |
+| 12 | **Build & Export Pipeline** — build.json (paths relativos)/manifesto determinístico/grafo+scan de referências/cook em envelope GONI (SOURCE/DERIVED)/cache conteúdo-endereçado/validação bloqueante (scripts compilam!)/bundle verificado/export android-arm64 + linux-dev (ADR-050) | ✅ concluída |
 
 A auditoria final independente das FASES 4–10 (com remediação dos bugs
 críticos) está em `docs/final_phase4_10_audit.md`.
@@ -43,14 +43,39 @@ críticos) está em `docs/final_phase4_10_audit.md`.
 - **Ferramentas**: diagnósticos linha/coluna em toda etapa; hook de
   trace; UI de script ADIADA e declarada (`docs/ni-script/08`).
 
-## FASE 12 — o que herda pronto
+## FASE 12 — concluída (resumo de evidências)
 
-- **Identidade estável**: AssetId/ProjectId/SceneEntityId (ADR-028) —
-  renomeações/movimentos não quebram referências; nada de path-hash.
-- **Envelope binário**: `GONI` + CRC-32 (ADR-030) — contêiner do asset
-  cozido e do bundle de runtime.
-- **Cena/projeto serializados**: `SceneSerializer` + `project.goni.json`
-  (ADRs 032/033) — a fonte do scanner de dependências.
-- **Runtime Android pronto**: APK arm64-v8a com engine+editor embutidos
-  (FASES 7/8) — o export injeta os dados do projeto em vez de
-  recompilá-los no engine.
+- **Pipeline de DADOS** (`engine/build`, ADR-050): as 10 etapas da missão
+  (projeto→config→manifest→grafo→scan→validação→cook→cache→bundle→
+  verify/export); paths RELATIVOS obrigatórios; engine × dados separados;
+- **Cook + cache**: envelope GONI por asset (reuso ADR-030) com
+  classificação SOURCE/DERIVED no formato (v1: tudo SOURCE); cache por
+  FNV-1a 64 (cookerVersion ‖ type ‖ conteúdo) — invalidação automática;
+- **Validação bloqueante**: fonte ausente, ids duplicados, script que
+  não compila (embutido OU standalone), cena JSON inválida, target/
+  manifest inválidos; não-usado = WARN listado no report;
+- **Determinismo**: manifest e bundle byte-a-byte idênticos entre
+  builds limpos (testado); verify em duas camadas antes de exportar;
+- **Export**: android-arm64 (prioritário — INSTALL.md com caminho no
+  APK existente) + linux-dev (README); loader no runtime = FUTURO
+  declarado (honesto);
+- **Testes**: 23 casos/232 asserções cobrindo TODA a lista obrigatória
+  da missão (vazio/mínimo, ausente/não-usado/duplicado, scripts,
+  manifest/target, cache hit/miss/invalidação, clean/incremental,
+  E2E export).
+
+---
+
+## Pós-FASE 12 — estado geral
+
+**As 12 fases do roadmap estão CONCLUÍDAS.** Próximos passos são
+PLANEJADOS (sem data, sem compromisso de escopo):
+
+- Loader de bundles + browsing de projetos na Activity do runtime
+  Android (consumidor do export da FASE 12);
+- UI de edição de script no editor (a fonte .nis é editável via
+  Inspector hoje — docs/ni-script/08);
+- Cooks DERIVED (texturas/malhas) e asset loaders das categorias
+  reservadas (ADR-029);
+- Serialização de bytecode NI-Script (cache de compilação — ADR-049);
+- Skeletal animation, gamepad/mouse reais, audio streaming, LOD.
