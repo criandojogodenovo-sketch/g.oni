@@ -26,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "eng/core/Result.hpp"
@@ -316,6 +317,15 @@ private:
     /// Garantia de modo: TODA escrita de edição passa por aqui.
     [[nodiscard]] eng::core::Result<void> requireEditMode() const;
 
+    /// Traduz handle de EDIÇÃO → handle da cena em FOCO (bug do clone
+    /// aleatório: save ordena por SceneEntityId/UUID — ADR-033 — e o
+    /// clone recria nessa ordem, que não casa com os índices da edição).
+    /// Em Edit: identidade. Em Play: o clone correspondente quando o
+    /// handle veio da edição (seleção pré-Play, JNI); handles NATIVOS do
+    /// clone (tap em Play) passam direto — pass-through é o fallback.
+    [[nodiscard]] eng::ecs::Entity toFocus(
+        eng::ecs::Entity entity) const noexcept;
+
     eng::fs::FileSystem* fs_ = nullptr;  ///< emprestado
     eng::fs::Path workspaceRoot_{};
     std::optional<eng::project::ProjectFile> project_{};
@@ -329,6 +339,10 @@ private:
     Mode mode_{Mode::Edit};
 
     std::optional<eng::ecs::Entity> selection_{};
+
+    /// Edição → runtime (construído no play() via SceneIdentity; vivo
+    /// enquanto o clone existir — ver toFocus()).
+    std::unordered_map<eng::ecs::Entity, eng::ecs::Entity> editToRuntime_{};
 
     /// Espelha a câmera de jogo ativa no viewport (P0-5, ADR-051): copia
     /// posX/posY/zoom para `gameCamera_` e entrega ao viewport, ou devolve

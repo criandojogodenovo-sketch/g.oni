@@ -18,6 +18,7 @@
 #include "eng/editor/NiScriptComponent.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/scene/Name.hpp"
+#include "eng/scene/SceneIdentity.hpp"
 #include "eng/scene/SceneSerializer.hpp"
 #include "eng/serial/Json.hpp"
 
@@ -639,7 +640,9 @@ std::vector<Inspector::Field> EditorDocument::inspectorFields(
     if (scene == nullptr) {
         return {};
     }
-    auto fields = Inspector::fieldsOf(*scene, entity, component);
+    // Handles de EDIÇÃO chegam aqui (seleção pré-Play, JNI); o clone tem
+    // os PRÓPRIOS — traduz na fronteira (bug do clone aleatório).
+    auto fields = Inspector::fieldsOf(*scene, toFocus(entity), component);
     if (fields.isError()) {
         ENG_WARN("inspector: {} (entity {}.{})", fields.error().message,
                  entity.index, entity.generation);
@@ -763,6 +766,40 @@ Result<void> EditorDocument::play()
     niRuntime_->start(*runtimeScene_);
     niRuntime_->fireStart();
 
+    // BUG DO CLONE ALEATÓRIO (pego pelo teste §10 — flaky ~40%): o save
+    // ordena entidades por SceneEntityId (ADR-033, byte-estável) e o
+    // load recria nessa ordem — UUID é aleatório, então os ÍNDICES do
+    // clone NÃO correspondem aos da edição. Handles de edição usados
+    // contra o clone endereçavam a entidade ERRADA (inspector/move em
+    // Play liam outra entidade). Correção na fronteira CERTA: o mapa
+    // edição→runtime vivo enquanto o clone existir; leitores do foco
+    // traduzem por toFocus(). A seleção pré-Play é REMAPEADA (continua
+    // selecionada no clone — o que o usuário esperava ao apertar Play).
+    editToRuntime_.clear();
+    {
+        std::unordered_map<eng::scene::SceneEntityId, eng::ecs::Entity>
+            runtimeById;
+        runtimeScene_->world().each<eng::scene::SceneIdentity>(
+            [&](eng::ecs::Entity runtimeEntity,
+                const eng::scene::SceneIdentity& identity) {
+                runtimeById[identity.id] = runtimeEntity;
+            });
+        scene_->world().each<eng::scene::SceneIdentity>(
+            [&](eng::ecs::Entity editEntity,
+                const eng::scene::SceneIdentity& identity) {
+                const auto it = runtimeById.find(identity.id);
+                if (it != runtimeById.end()) {
+                    editToRuntime_[editEntity] = it->second;
+                }
+            });
+    }
+    if (selection_.has_value()) {
+        const auto mapped = editToRuntime_.find(*selection_);
+        if (mapped != editToRuntime_.end()) {
+            selection_ = mapped->second;
+        }
+    }
+
     // Evolução P0-5 (ADR-051): o frame do jogo é o TICK SCHEDULER —
     // sistemas ordenados por (fase, ordem, inserção). Mesma ordem de
     // execução de antes (física → animação → partículas → scripts →
@@ -805,6 +842,11 @@ void EditorDocument::stop() noexcept
         niRuntime_->shutdown(); // `up destroy` + descarte (bindings morrem
                                 // JUNTOS com o clone — ADR-044)
         runtimeScene_.reset();
+        // Seleção pode apontar o CLONE (tap em Play) — handle órfão na
+        // edição. O contrato documentado do viewportTap ("stop reseta")
+        // agora é REAL: seleção limpa no retorno à edição.
+        selection_.reset();
+        editToRuntime_.clear();
         ENG_INFO("STOP: runtime descartado — edição intacta");
     }
 }
@@ -917,14 +959,16 @@ Result<void> EditorDocument::moveEntityScreen(eng::ecs::Entity entity,
         return makeUnexpected(
             documentError(StatusCode::InvalidState, "sem cena"));
     }
-    if (!scene->isNode(entity)) {
+    // Handle de edição → handle do clone (mesma tradução do inspector).
+    const eng::ecs::Entity focusEntity = toFocus(entity);
+    if (!scene->isNode(focusEntity)) {
         return makeUnexpected(documentError(StatusCode::NotFound,
                                            "entidade obsoleta"));
     }
     const float worldDx = screenDx / viewport_.camera().zoom;
     const float worldDy = -screenDy / viewport_.camera().zoom;
     auto* local =
-        const_cast<eng::scene::Scene*>(scene)->localTransform(entity);
+        const_cast<eng::scene::Scene*>(scene)->localTransform(focusEntity);
     if (local == nullptr) {
         return makeUnexpected(documentError(StatusCode::Internal,
                                            "sem Transform"));
@@ -935,6 +979,19 @@ Result<void> EditorDocument::moveEntityScreen(eng::ecs::Entity entity,
         sceneDirty_ = true;
     }
     return {};
+}
+
+// =============================================================================
+// Tradução de handles (bug do clone aleatório — play/stop)
+// =============================================================================
+
+eng::ecs::Entity EditorDocument::toFocus(eng::ecs::Entity entity) const noexcept
+{
+    if (mode_ != Mode::Play || editToRuntime_.empty()) {
+        return entity;
+    }
+    const auto it = editToRuntime_.find(entity);
+    return it != editToRuntime_.end() ? it->second : entity;
 }
 
 // =============================================================================

@@ -368,11 +368,6 @@ TEST_CASE("editor: inspector emite kind/options de enum (P0-6)", "[editor]")
 
     const auto fields = f.doc->inspectorFields(
         entity.value(), "eng::physics::Collider");
-    for (const auto& field : fields) {
-        std::cout << "DBG path=[" << field.path << "] kind=[" << field.kind
-                  << "] type=[" << field.typeName << "] value=[" << field.value
-                  << "]\n";
-    }
     const auto* shape = fieldByPath(fields, "shape");
     REQUIRE(shape != nullptr);
     CHECK(shape->kind == "enum");
@@ -2290,20 +2285,32 @@ TEST_CASE("editor: §10 — player com collider CAI no chão e PARA (física "
     for (int i = 0; i < 360; ++i) {
         f.doc->tick(1.f / 120.f);
     }
-    // OBSERVÁVEL: parou EM CIMA do chão (top do box = y 1; centro do
-    // player = 1 + 0.5) — nem atravessou, nem ficou flutuando longe.
-    auto y = eng::editor::Inspector::getField(
-        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
-        "position.y");
-    REQUIRE(y.ok());
-    CHECK(std::stof(y.value()) ==
-          Catch::Approx(1.5f).margin(0.05f));
+    // OBSERVÁVEL pelo CAMINHO REAL do usuário (doc.inspectorFields — o
+    // mesmo que o painel do Android lê em Play): parou EM CIMA do chão
+    // (top do box = y 1; centro do player = 1 + 0.5).
+    // NOTA: este é o teste que PEGOU o bug do clone aleatório — o save
+    // ordena por UUID e o handle de edição apontava outra entidade no
+    // clone; agora toFocus() traduz na fronteira do documento.
+    {
+        const auto fields = f.doc->inspectorFields(
+            player.value(), "eng::math::Transform");
+        REQUIRE(fields.size() > 0);
+        const auto* yField = fieldByPath(fields, "position.y");
+        REQUIRE(yField != nullptr);
+        CHECK(std::stof(yField->value) ==
+              Catch::Approx(1.5f).margin(0.05f));
+    }
 
     f.doc->stop();
-    // Authoring intacto (§8.7): player volta para y=5.
-    auto editY = eng::editor::Inspector::getField(
-        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
-        "position.y");
-    REQUIRE(editY.ok());
-    CHECK(editY.value() == "5");
+    // Authoring intacto (§8.7): player volta para y=5 — e a seleção pós-
+    // stop foi RESETADA (handle de clone não vaza para a edição).
+    {
+        const auto fields = f.doc->inspectorFields(
+            player.value(), "eng::math::Transform");
+        REQUIRE(fields.size() > 0);
+        const auto* yField = fieldByPath(fields, "position.y");
+        REQUIRE(yField != nullptr);
+        CHECK(yField->value == "5");
+    }
+    CHECK_FALSE(f.doc->selection().has_value());
 }
