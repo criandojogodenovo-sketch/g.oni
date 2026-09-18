@@ -172,6 +172,7 @@ private:
     std::unique_ptr<EditorDocument> document_{};
     std::optional<ViewportRenderer> viewportRenderer_{};
     TextureCache textureCache_{};  ///< texturas GPU por nome de asset (P0-3)
+    GizmoDrawData gizmoDraw_{};   ///< geometria do gizmo do frame (P1)
     HostStats stats_{};
 };
 

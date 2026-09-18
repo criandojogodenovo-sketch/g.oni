@@ -64,6 +64,24 @@ object EditorJni {
     ): Boolean
     external fun nativeEditorSelection(handle: Long): Long
 
+    // --- seleção direta / ferramentas / gizmo (P1) ------------------------------------
+
+    /** Seleciona a entidade no DOCUMENTO (borda no viewport, alvo do gizmo). */
+    external fun nativeEditorSelect(handle: Long, packed: Long): Boolean
+    /** Revisão do estado de seleção/transform — poll para live sync da UI. */
+    external fun nativeEditorSelectionRevision(handle: Long): Long
+    /** tool: 0=Select, 1=Move, 2=Rotate, 3=Scale. */
+    external fun nativeEditorSetTool(handle: Long, tool: Int)
+    external fun nativeEditorGetTool(handle: Long): Int
+    /** Handle do gizmo sob o toque (0=nenhum, 1=centro, 2=eixoX, 3=eixoY,
+     * 4=rotação, 5-8=cantos) — e INICIA o drag quando acerta. */
+    external fun nativeEditorGizmoDragBegin(handle: Long, x: Float, y: Float): Int
+    /** Arraste do gizmo até a posição ABSOLUTA do pointer (aplica ao ECS). */
+    external fun nativeEditorGizmoDragTo(handle: Long, x: Float, y: Float): Boolean
+    external fun nativeEditorGizmoDragEnd(handle: Long)
+    /** ADD → Sprite: entidade com SpriteData default, selecionada. */
+    external fun nativeEditorCreateSprite(handle: Long, name: String): Long
+
     // --- componentes / inspector (§8.4) --------------------------------------------
 
     /** TSV: typeName \t removable(0/1). */

@@ -189,16 +189,20 @@ Result<std::string> AssetBrowser::import(std::string_view tempRelPath,
     }
 
     // Nome final: preserva a extensão do original quando existe.
-    // RECOVERY P0: o guard era `size() >= ext.size() + 1`, que NEGAVA a
-    // extensão a todo nome com comprimento ≤ da extensão (ex.: "hero"
-    // com 4 chars vs ".png" com 4) — o arquivo era salvo SEM extensão e a
-    // fronteira que validava pelo nome com extensão falhava. O guard real
-    // (evitar compare fora dos limites) exige apenas `size() >= ext.size()`.
+    // RECOVERY P0 (duas passadas): o guard `size() >= ext.size() + 1`
+    // negava a extensão a nomes com comprimento ≤ da extensão ("hero" vs
+    // ".png", 4=4); a primeira correção (`>= ext.size()`) ainda NEGAVA
+    // nomes MAIS CURTOS que a extensão ("art", 3 < 4 — descoberto pelo
+    // vertical slice P1: o arquivo salvava como "art" e o upload da
+    // textura morria em "No such file"). O guard do compare é de LIMITE
+    // (só existe para compare in-bounds); o append é para TODO nome que
+    // não TERMINA com a extensão.
     std::string finalName(name);
     const std::string ext = from.extension().str();
-    if (!ext.empty() && finalName.size() >= ext.size() &&
-        finalName.compare(finalName.size() - ext.size(), ext.size(), ext) !=
-            0) {
+    const bool alreadyEndsWithExt =
+        finalName.size() >= ext.size() &&
+        finalName.compare(finalName.size() - ext.size(), ext.size(), ext) == 0;
+    if (!ext.empty() && !alreadyEndsWithExt) {
         finalName += ext;
     }
     if (outFinalName != nullptr) {

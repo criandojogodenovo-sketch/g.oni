@@ -317,14 +317,16 @@ bool EditorHost::renderFrame(float deltaSeconds)
     // 2) render do foco (edição em Edit; clone em Play — §8.7). Sprites
     // com textura real via TextureCache (evolução P0-3 — o documento é a
     // fonte dos dados; o host é o dono do renderer/upload). Sem projeto →
-    // assets nulos: sprites caem no caminho de cor (honesto).
+    // assets nulos: sprites caem no caminho de cor (honesto). Gizmo P1:
+    // desenhado por cima (tool ativa + seleção; Edit apenas).
     const eng::scene::Scene* scene = document_->sceneInFocus();
     const auto quads = document_->viewport().buildQuads(
         *scene, document_->selection());
     const auto particles = document_->viewport().buildParticleQuads(*scene);
+    gizmoDraw_ = document_->gizmoDraw(&textureCache_);
     const bool drew = viewportRenderer_->renderFrame(
         document_->viewport(), quads, particles, document_->isPlaying(),
-        document_->assets(), textureCache_);
+        document_->assets(), textureCache_, &gizmoDraw_);
 
     if (drew) {
         ++stats_.framesSubmitted;

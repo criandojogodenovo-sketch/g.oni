@@ -15,6 +15,7 @@
 
 add_library(eng_editor STATIC
     src/EditorDocument.cpp
+    src/Gizmo.cpp
     src/Inspector.cpp
     src/AssetBrowser.cpp
     src/Viewport.cpp

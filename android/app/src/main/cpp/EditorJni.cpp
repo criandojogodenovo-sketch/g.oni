@@ -602,6 +602,139 @@ Java_com_goni_runtime_EditorJni_nativeEditorSelection(JNIEnv* /*env*/,
 }
 
 // =============================================================================
+// Seleção direta / ferramentas / gizmo (P1)
+// =============================================================================
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSelect(JNIEnv* /*env*/,
+                                                   jobject /*thiz*/,
+                                                   jlong handle, jlong packed)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().select(
+                              EditorDocument::unpackEntity(
+                                  static_cast<std::uint64_t>(packed))))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSelectionRevision(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr
+               ? static_cast<jlong>(host->document().selectionRevision())
+               : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetTool(JNIEnv* /*env*/,
+                                                    jobject /*thiz*/,
+                                                    jlong handle, jint tool)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return;
+    }
+    using eng::editor::EditorTool;
+    switch (tool) {
+    case 1: host->document().setTool(EditorTool::Move); break;
+    case 2: host->document().setTool(EditorTool::Rotate); break;
+    case 3: host->document().setTool(EditorTool::Scale); break;
+    default: host->document().setTool(EditorTool::Select); break;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGetTool(JNIEnv* /*env*/,
+                                                    jobject /*thiz*/,
+                                                    jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return 0;
+    }
+    using eng::editor::EditorTool;
+    switch (host->document().tool()) {
+    case EditorTool::Move: return 1;
+    case EditorTool::Rotate: return 2;
+    case EditorTool::Scale: return 3;
+    default: return 0;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGizmoDragBegin(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jfloat x, jfloat y)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return 0;
+    }
+    // Bounds do gizmo precisam das dimensões REAIS das texturas (tamanho
+    // desenhado — mesmo estado do render/hit-test).
+    using eng::editor::GizmoHandle;
+    switch (host->document().gizmoDragBegin(x, y, &host->textureCache())) {
+    case GizmoHandle::MoveCenter: return 1;
+    case GizmoHandle::MoveAxisX: return 2;
+    case GizmoHandle::MoveAxisY: return 3;
+    case GizmoHandle::RotateRing: return 4;
+    case GizmoHandle::ScaleNE: return 5;
+    case GizmoHandle::ScaleNW: return 6;
+    case GizmoHandle::ScaleSE: return 7;
+    case GizmoHandle::ScaleSW: return 8;
+    default: return 0;
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGizmoDragTo(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jfloat x, jfloat y)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().gizmoDragTo(x, y)) ? JNI_TRUE
+                                                             : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGizmoDragEnd(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host != nullptr) {
+        host->document().gizmoDragEnd();
+    }
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorCreateSprite(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle,
+                                                         jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return 0;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return 0;
+    }
+    auto sprite = host->document().createSprite(nameBuf);
+    if (!record(handle, sprite)) {
+        return 0;
+    }
+    return static_cast<jlong>(EditorDocument::packEntity(sprite.value()));
+}
+
+// =============================================================================
 // Componentes / Inspector (§8.4)
 // =============================================================================
 

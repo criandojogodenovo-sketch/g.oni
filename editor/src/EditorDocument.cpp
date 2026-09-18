@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <unordered_map>
 #include <utility>
 
@@ -16,6 +17,7 @@
 #include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectPaths.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
+#include "eng/editor/SpriteData.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneIdentity.hpp"
@@ -428,6 +430,7 @@ Result<void> EditorDocument::deleteEntity(eng::ecs::Entity entity)
     }
     if (selection_.has_value() && *selection_ == entity) {
         selection_.reset();
+        ++selectionRevision_;  // seleção morreu com a entidade (P1.8)
     }
     sceneDirty_ = true;
     return {};
@@ -536,6 +539,7 @@ Result<eng::ecs::Entity> EditorDocument::duplicateEntity(
     }
 
     sceneDirty_ = true;
+    ++selectionRevision_;  // clone entrou na cena → hierarquia/inspector (P1.7)
     return remap.at(entity);
 }
 
@@ -598,6 +602,7 @@ Result<void> EditorDocument::setTransform(eng::ecs::Entity entity,
     local->rotation = quatFromDegrees(desc.rotationDegrees);
     local->scale = desc.scale;
     sceneDirty_ = true;
+    ++selectionRevision_;  // Inspector → viewport: mudou transform (P1.9)
     return {};
 }
 
@@ -613,20 +618,216 @@ Result<void> EditorDocument::select(eng::ecs::Entity entity)
     }
     if (entity == eng::scene::kNoEntity) {
         selection_.reset();
+        ++selectionRevision_;
         return {};
     }
     selection_ = entity;
+    ++selectionRevision_;  // hierarquia selecionou → UI sincroniza (P1.9)
     return {};
 }
 
 void EditorDocument::deselect() noexcept
 {
     selection_.reset();
+    ++selectionRevision_;
 }
 
 bool EditorDocument::isSelected(eng::ecs::Entity entity) const noexcept
 {
     return selection_.has_value() && *selection_ == entity;
+}
+
+// =============================================================================
+// Ferramentas + gizmo (P1.3–P1.6) + sprite (P1.10)
+// =============================================================================
+
+GizmoBounds EditorDocument::selectionBounds(TextureCache* textures) const
+{
+    GizmoBounds bounds;
+    if (!selection_.has_value() || mode_ != Mode::Edit) {
+        return bounds;  // sem seleção/em Play: inválido (sem gizmo)
+    }
+    const eng::scene::Scene* scene = sceneInFocus();
+    if (scene == nullptr || !scene->isNode(*selection_)) {
+        return bounds;  // stale: seleção morreu (regressão P1.1)
+    }
+    auto quads = viewport_.buildQuads(*scene, selection_);
+    for (const EntityQuad& quad : quads) {
+        if (quad.entity != *selection_) {
+            continue;
+        }
+        // P1.2: tamanho DESENHADO = escala × (região em px / ppu) para
+        // sprites texturizados — o MESMO número do renderer/hit-test.
+        float worldHalfW = quad.sizeX * 0.5f;
+        float worldHalfH = quad.sizeY * 0.5f;
+        if (!quad.textureAsset.empty() && textures != nullptr &&
+            assets_ != nullptr) {
+            const auto info =
+                textures->imageInfo(*assets_, quad.textureAsset);
+            if (info.valid) {
+                const float regionPx =
+                    static_cast<float>(info.width) * (quad.u1 - quad.u0);
+                const float regionPy =
+                    static_cast<float>(info.height) * (quad.v1 - quad.v0);
+                const float ppu = quad.spritePpu > 0.f ? quad.spritePpu : 1.f;
+                worldHalfW = quad.sizeX * regionPx / ppu * 0.5f;
+                worldHalfH = quad.sizeY * regionPy / ppu * 0.5f;
+            }
+        }
+        // Pivot desloca o centro visual do sprite (o renderer desenha o
+        // quad com o offset do pivot — o bounds tem de casar).
+        const float pivotOffX = (quad.pivotX - 0.5f) * worldHalfW * 2.f;
+        const float pivotOffY = (quad.pivotY - 0.5f) * worldHalfH * 2.f;
+        const float cosR = std::cos(quad.rotation);
+        const float sinR = std::sin(quad.rotation);
+        bounds.worldX = quad.worldX + pivotOffX * cosR - pivotOffY * sinR;
+        bounds.worldY = quad.worldY + pivotOffX * sinR + pivotOffY * cosR;
+        bounds.halfW = std::max(worldHalfW, pxToWorldMin());
+        bounds.halfH = std::max(worldHalfH, pxToWorldMin());
+        bounds.rotation = quad.rotation;
+        bounds.valid = true;
+        return bounds;
+    }
+    return bounds;
+}
+
+/// Meio-tamanho mínimo visível em mundo (handle sempre tocável).
+float EditorDocument::pxToWorldMin() const noexcept
+{
+    const float zoom = viewport_.effectiveCamera().zoom;
+    return zoom > 0.f ? Viewport::kMinQuadPixels * 0.5f / zoom : 0.5f;
+}
+
+GizmoHandle EditorDocument::gizmoDragBegin(float screenX, float screenY,
+                                            TextureCache* textures)
+{
+    if (mode_ != Mode::Edit) {
+        return GizmoHandle::None;  // edição é rejeitada em Play (§8.7)
+    }
+    const GizmoBounds bounds = selectionBounds(textures);
+    if (!bounds.valid) {
+        return GizmoHandle::None;
+    }
+    const GizmoHandle handle =
+        gizmo_.hitTest(viewport_, tool_, bounds, screenX, screenY);
+    if (handle == GizmoHandle::None) {
+        return GizmoHandle::None;
+    }
+    // Transform INICIAL da EDIÇÃO (só em Edit — o gizmo não toca o clone).
+    auto transform = this->transform(*selection_);
+    if (transform.isError()) {
+        return GizmoHandle::None;  // seleção stale no meio da operação
+    }
+    GizmoTransform start{};
+    start.posX = transform.value().position.x;
+    start.posY = transform.value().position.y;
+    start.rotationDeg = transform.value().rotationDegrees.z;
+    start.scaleX = transform.value().scale.x;
+    start.scaleY = transform.value().scale.y;
+    gizmo_.beginDrag(handle, start, viewport_, bounds, screenX, screenY);
+    return handle;
+}
+
+Result<void> EditorDocument::gizmoDragTo(float screenX, float screenY)
+{
+    if (!gizmo_.dragging() || mode_ != Mode::Edit) {
+        return {};
+    }
+    if (!selection_.has_value()) {
+        gizmoDragEnd();
+        return makeUnexpected(
+            documentError(StatusCode::NotFound, "seleção perdida no drag"));
+    }
+    const GizmoBounds bounds = selectionBounds(nullptr);
+    if (!bounds.valid) {
+        gizmoDragEnd();
+        return makeUnexpected(
+            documentError(StatusCode::NotFound, "entidade obsoleta"));
+    }
+    const GizmoTransform target =
+        gizmo_.dragTo(viewport_, bounds, screenX, screenY);
+
+    // Aplica ao ECS REAL (posição/rotZ/escala XY — plano 2D).
+    auto current = transform(*selection_);
+    if (current.isError()) {
+        gizmoDragEnd();
+        return makeUnexpected(current.error());
+    }
+    TransformDesc desc = current.value();
+    desc.position.x = target.posX;
+    desc.position.y = target.posY;
+    desc.rotationDegrees.z = target.rotationDeg;
+    desc.scale.x = target.scaleX;
+    desc.scale.y = target.scaleY;
+    auto applied = setTransform(*selection_, desc);
+    if (applied.isError()) {
+        gizmoDragEnd();
+        return applied;
+    }
+    ++selectionRevision_;  // Inspector atualiza ao vivo (P1.9)
+    return {};
+}
+
+void EditorDocument::gizmoDragEnd() noexcept
+{
+    gizmo_.endDrag();
+}
+
+GizmoDrawData EditorDocument::gizmoDraw(TextureCache* textures) const
+{
+    GizmoDrawData draw;
+    if (mode_ != Mode::Edit || tool_ == EditorTool::Select) {
+        return draw;
+    }
+    const GizmoBounds bounds = selectionBounds(textures);
+    if (!bounds.valid) {
+        return draw;
+    }
+    draw.quads = gizmo_.layoutQuads(viewport_, tool_, bounds);
+    draw.segments = gizmo_.layoutSegments(viewport_, tool_, bounds);
+    return draw;
+}
+
+Result<eng::ecs::Entity> EditorDocument::createSprite(std::string_view name)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    // Numeração automática: Sprite, Sprite 2, Sprite 3… (varre a
+    // hierarquia — nomes únicos mantêm a UI legível; P1.10).
+    std::string base{name.empty() ? "Sprite" : std::string(name)};
+    auto nodes = hierarchySnapshot();
+    if (std::any_of(nodes.begin(), nodes.end(),
+                    [&](const HierarchyNode& n) { return n.name == base; })) {
+        for (int suffix = 2;; ++suffix) {
+            const std::string candidate = base + " " + std::to_string(suffix);
+            if (!std::any_of(nodes.begin(), nodes.end(),
+                             [&](const HierarchyNode& n) {
+                                 return n.name == candidate;
+                             })) {
+                base = candidate;
+                break;
+            }
+        }
+    }
+    auto entity = createEntity(base, eng::scene::kNoEntity);
+    if (entity.isError()) {
+        return makeUnexpected(entity.error());
+    }
+    // SpriteData default: ppu 48 (1 texel : 1 px no zoom padrão), sem
+    // textura → o renderer desenha o PLACEHOLDER xadrez (P1.10 — não
+    // confundir placeholder com sprite renderizado).
+    if (scene_->world().emplace<eng::editor::SpriteData>(
+            entity.value(), eng::editor::SpriteData{}) == nullptr) {
+        (void)scene_->destroyNode(entity.value());
+        return makeUnexpected(documentError(StatusCode::Internal,
+                                            "SpriteData não emplantou"));
+    }
+    selection_ = entity.value();
+    ++selectionRevision_;
+    sceneDirty_ = true;
+    return entity;
 }
 
 // =============================================================================
@@ -661,8 +862,105 @@ Result<void> EditorDocument::setInspectorField(eng::ecs::Entity entity,
     if (guard.isError()) {
         return makeUnexpected(guard.error());
     }
+    // P1.9 (BUG REAL): Transform é TRS com rotação em QUAT — escrever
+    // "rotation.z=30" direto no campo produzia um quat inválido que
+    // decomponha para ~178° (graus viravam componente de quat). TODA
+    // escrita de Transform pela UI passa pela API TRS (graus ↔ quat na
+    // MESMA convenção do gizmo/setTransform) — uma fonte de verdade.
+    if (component == "eng::math::Transform") {
+        return setTransformField(entity, fieldPath, value);
+    }
     auto written =
         Inspector::setField(*scene_, entity, component, fieldPath, value);
+    if (written.isError()) {
+        return makeUnexpected(written.error());
+    }
+    sceneDirty_ = true;
+    return {};
+}
+
+namespace {
+
+/// Campo TRS de "eng::math::Transform" (posição/rotação/escala × x/y/z).
+[[nodiscard]] bool parseTransformField(std::string_view fieldPath,
+                                       std::string_view value, int& axis,
+                                       float& out)
+{
+    // fieldPath vem como "position.x" | "rotation.y" | "scale.z".
+    constexpr std::string_view kPrefixes[3] = {"position.", "rotation.",
+                                              "scale."};
+    int group = -1;
+    for (int i = 0; i < 3; ++i) {
+        if (fieldPath.substr(0, kPrefixes[i].size()) == kPrefixes[i]) {
+            group = i;
+            fieldPath.remove_prefix(kPrefixes[i].size());
+            break;
+        }
+    }
+    if (group < 0 || fieldPath.size() != 1) {
+        return false;
+    }
+    const char c = fieldPath[0];
+    if (c != 'x' && c != 'y' && c != 'z') {
+        return false;
+    }
+    axis = (group << 2) | (c == 'x' ? 0 : (c == 'y' ? 1 : 2));
+    // Parse float estrito SEM exceções (lib é -fno-exceptions — ADR-004):
+    // strtof + fim-da-string; rejeita lixo/NaN/inf (contrato Inspector).
+    const std::string text{value};
+    const char* begin = text.c_str();
+    char* end = nullptr;
+    out = std::strtof(begin, &end);
+    return end != begin && *end == '\0' && std::isfinite(out);
+}
+
+}  // namespace
+
+Result<void> EditorDocument::setTransformField(eng::ecs::Entity entity,
+                                                std::string_view fieldPath,
+                                                std::string_view value)
+{
+    int axis = -1;
+    float v = 0.f;
+    if (parseTransformField(fieldPath, value, axis, v)) {
+        auto current = transform(entity);
+        if (current.isError()) {
+            return makeUnexpected(current.error());
+        }
+        TransformDesc desc = current.value();
+        switch (axis) {
+        // position (0-2)
+        case (0 << 2) | 0: desc.position.x = v; break;
+        case (0 << 2) | 1: desc.position.y = v; break;
+        case (0 << 2) | 2: desc.position.z = v; break;
+        // rotation em GRAUS (3-5) — quatFromDegrees na escrita
+        case (1 << 2) | 0: desc.rotationDegrees.x = v; break;
+        case (1 << 2) | 1: desc.rotationDegrees.y = v; break;
+        case (1 << 2) | 2: desc.rotationDegrees.z = v; break;
+        // scale (6-8) — P1.5: impedir valores inválidos (0/neg/NaN)
+        case (2 << 2) | 0:
+            desc.scale.x = std::clamp(
+                v, eng::editor::TransformGizmo::kScaleMin,
+                eng::editor::TransformGizmo::kScaleMax);
+            break;
+        case (2 << 2) | 1:
+            desc.scale.y = std::clamp(
+                v, eng::editor::TransformGizmo::kScaleMin,
+                eng::editor::TransformGizmo::kScaleMax);
+            break;
+        case (2 << 2) | 2:
+            desc.scale.z = std::clamp(
+                v, eng::editor::TransformGizmo::kScaleMin,
+                eng::editor::TransformGizmo::kScaleMax);
+            break;
+        default: break;
+        }
+        return setTransform(entity, desc);  // dirty + revision bump
+    }
+    // Campo não-TRS (não existe hoje): cai no caminho genérico.
+    auto written =
+        Inspector::setField(*scene_, entity, "eng::math::Transform",
+                            fieldPath, value);
     if (written.isError()) {
         return makeUnexpected(written.error());
     }
@@ -847,6 +1145,7 @@ void EditorDocument::stop() noexcept
         // edição. O contrato documentado do viewportTap ("stop reseta")
         // agora é REAL: seleção limpa no retorno à edição.
         selection_.reset();
+        ++selectionRevision_;  // UI percebe o reset (P1.9)
         editToRuntime_.clear();
         ENG_INFO("STOP: runtime descartado — edição intacta");
     }
@@ -956,6 +1255,7 @@ std::optional<eng::ecs::Entity> EditorDocument::viewportTap(
     } else {
         selection_.reset();
     }
+    ++selectionRevision_;  // tap mudou o estado → Inspector segue (P1.9)
     return hit;
 }
 
@@ -986,8 +1286,11 @@ Result<void> EditorDocument::moveEntityScreen(eng::ecs::Entity entity,
         return makeUnexpected(documentError(StatusCode::NotFound,
                                            "entidade obsoleta"));
     }
-    const float worldDx = screenDx / viewport_.camera().zoom;
-    const float worldDy = -screenDy / viewport_.camera().zoom;
+    // Câmera EM FOCO (P1): em Play sob câmera de jogo o arraste-debug
+    // precisa do zoom que o usuário está VENDO, não o do editor.
+    const float zoom = viewport_.effectiveCamera().zoom;
+    const float worldDx = screenDx / zoom;
+    const float worldDy = -screenDy / zoom;
     auto* local =
         const_cast<eng::scene::Scene*>(scene)->localTransform(focusEntity);
     if (local == nullptr) {
@@ -998,6 +1301,7 @@ Result<void> EditorDocument::moveEntityScreen(eng::ecs::Entity entity,
     local->position.y += worldDy;
     if (mode_ == Mode::Edit) {
         sceneDirty_ = true;
+        ++selectionRevision_;  // viewport → Inspector: drag move (P1.9)
     }
     return {};
 }

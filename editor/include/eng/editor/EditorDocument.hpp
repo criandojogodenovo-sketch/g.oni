@@ -33,6 +33,7 @@
 #include "eng/animation/Animation.hpp"
 #include "eng/ecs/Ecs.hpp"
 #include "eng/editor/AssetBrowser.hpp"
+#include "eng/editor/Gizmo.hpp"
 #include "eng/editor/Inspector.hpp"
 #include "eng/editor/Viewport.hpp"
 #include "eng/fs/FileSystem.hpp"
@@ -49,7 +50,8 @@
 
 namespace eng::editor {
 
-class NiRuntime; // NiRuntime.hpp (frente — impl em NiRuntime.cpp)
+class NiRuntime;     // NiRuntime.hpp (frente — impl em NiRuntime.cpp)
+class TextureCache;  // TextureCache.hpp (parâmetro de bounds/gizmo)
 
 /// Registra os componentes de gameplay (physics/animation/particles) no
 /// catálogo do serializer — efeito colateral da inicialização estática de
@@ -140,6 +142,51 @@ public:
     {
         return selection_;
     }
+    /// Revisão do estado de seleção/transform — incrementa a TODA mutação
+    /// que o Inspector deve refletir (select/deselect/tap/setTransform/
+    /// move/gizmo/duplicate/delete). O host (Activity) faz POLL por frame
+    /// e atualiza os campos de UI ao vivo — sync bidirecional sem duas
+    /// fontes de verdade (a verdade é o ECS; P1.9).
+    [[nodiscard]] std::uint64_t selectionRevision() const noexcept
+    {
+        return selectionRevision_;
+    }
+
+    // --- ferramentas + gizmo (P1.3–P1.6) ----------------------------------------
+
+    [[nodiscard]] EditorTool tool() const noexcept { return tool_; }
+    void setTool(EditorTool tool) noexcept { tool_ = tool; }
+
+    /// Bounds REAIS da entidade selecionada (posição/rotação/escala/
+    /// textura/ppu — P1.2): tamanho DESENHADO em mundo, o mesmo do
+    /// renderer e do hit-test. `textures` resolve dimensões de pixel via
+    /// cache do host (nulo → caminho da escala local).
+    [[nodiscard]] GizmoBounds selectionBounds(TextureCache* textures) const;
+
+    /// Toca no viewport com ferramenta de transformação ativa: acerta o
+    /// HANDLE do gizmo (precedência sobre o corpo da entidade) e INICIA
+    /// o drag capturando o transform inicial. None quando não acertou
+    /// (o chamador segue para o fluxo normal de seleção). Em Play o
+    /// gizmo não existe → None (edição é rejeitada em Play §8.7).
+    [[nodiscard]] GizmoHandle gizmoDragBegin(float screenX, float screenY,
+                                              TextureCache* textures);
+
+    /// Arraste ativo → aplica o TRANSFORM ALVO ao ECS da cena em EDIÇÃO
+    /// (dirty). Sem drag ativo → no-op Ok.
+    [[nodiscard]] eng::core::Result<void> gizmoDragTo(float screenX,
+                                                      float screenY);
+    void gizmoDragEnd() noexcept;
+
+    /// Geometria de desenho do gizmo (MUNDO) para o renderer do host.
+    /// Vazia quando: sem seleção, tool Select, bounds inválido ou Play.
+    [[nodiscard]] GizmoDrawData gizmoDraw(TextureCache* textures) const;
+
+    /// ADD → Sprite (P1.10): entidade nova com Name + SpriteData default
+    /// (sem textura — placeholder claramente identificado no viewport),
+    /// selecionada e marcada dirty. O nome recebe numeração automática
+    /// para manter a hierarquia legível.
+    [[nodiscard]] eng::core::Result<eng::ecs::Entity> createSprite(
+        std::string_view name);
 
     // --- componentes (§8.4) — Inspector + guarda de modo ----------------------
 
@@ -322,6 +369,16 @@ private:
     /// Garantia de modo: TODA escrita de edição passa por aqui.
     [[nodiscard]] eng::core::Result<void> requireEditMode() const;
 
+    /// Escrita de campo TRS do Transform pela UI do Inspector (P1.9):
+    /// "position.x" | "rotation.y" (GRAUS) | "scale.z" → API TRS — nunca
+    /// direto no quat (graus em componente de quat = lixo decomposto).
+    [[nodiscard]] eng::core::Result<void> setTransformField(
+        eng::ecs::Entity entity, std::string_view fieldPath,
+        std::string_view value);
+
+    /// Meio-tamanho mínimo visível em mundo (zoom→mundo, §8.6).
+    [[nodiscard]] float pxToWorldMin() const noexcept;
+
     /// Traduz handle de EDIÇÃO → handle da cena em FOCO (bug do clone
     /// aleatório: save ordena por SceneEntityId/UUID — ADR-033 — e o
     /// clone recria nessa ordem, que não casa com os índices da edição).
@@ -344,6 +401,13 @@ private:
     Mode mode_{Mode::Edit};
 
     std::optional<eng::ecs::Entity> selection_{};
+    std::uint64_t selectionRevision_ = 0;  ///< bump p/ live sync (P1.9)
+
+    /// Ferramenta ativa (P1.6) + gizmo (P1.3–P1.5). O estado de drag
+    /// vive no DOCUMENTO (não na Activity): o ECS continua a única
+    /// fonte de verdade autoral; o gizmo só calcula alvos.
+    EditorTool tool_{EditorTool::Select};
+    TransformGizmo gizmo_{};
 
     /// Edição → runtime (construído no play() via SceneIdentity; vivo
     /// enquanto o clone existir — ver toFocus()).

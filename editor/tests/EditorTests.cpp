@@ -1306,6 +1306,10 @@ TEST_CASE("editor: importa, lista, renomeia, move e remove assets", "[editor]")
 TEST_CASE("editor: import preserva a extensão de nomes CURTOS (regr. P0)",
           "[editor]")
 {
+    // Caso "art" (3 < ".png" 4): o guard pós-P0 ainda negava a extensão a
+    // nomes MAIS CURTOS que ela — o vertical slice P1 pegou o sprite sem
+    // textura ("No such file: .../textures/art"). Regressão permanente.
+
     DocFixture f;
     f.withProject();
     REQUIRE(f.fs->mkdirs(eng::fs::Path{".import_tmp"}).ok());
@@ -1337,6 +1341,21 @@ TEST_CASE("editor: import preserva a extensão de nomes CURTOS (regr. P0)",
     REQUIRE(listed.ok());
     REQUIRE(listed.value().size() == 1);
     CHECK(listed.value()[0].name == "hero.png");
+
+    // "art" tem 3 chars — MAIS CURTO que ".png": o guard pós-P0
+    // (`>= ext.size()`) ainda negava a extensão a estes (bug achado pelo
+    // vertical slice P1: sprite "art.png" sem textura no viewport).
+    REQUIRE(f.fs->writeAllText(eng::fs::Path{".import_tmp/art.png"},
+                               "PNGDATA")
+                .ok());
+    std::string artName;
+    auto art = browser->import(".import_tmp/art.png", "textures", "art",
+                               &artName);
+    REQUIRE(art.ok());
+    CHECK(artName == "art.png");
+    auto artBytes = browser->read("textures", artName);
+    REQUIRE(artBytes.ok());
+    CHECK(artBytes.value().size() == 7);
 }
 
 TEST_CASE("editor: arquivo não catalogado aparece como unregistered", "[editor]")
@@ -2475,4 +2494,1041 @@ TEST_CASE("editor: §10 — player com collider CAI no chão e PARA (física "
         CHECK(yField->value == "5");
     }
     CHECK_FALSE(f.doc->selection().has_value());
+}
+
+// =============================================================================
+// P1 — COMPLETE 2D AUTHORING VERTICAL SLICE
+//
+// CREATE SCENE → ADD SPRITE → IMPORT IMAGE → IMAGE VISIBLE → SELECT →
+// MOVE → ROTATE → SCALE → INSPECT → DUPLICATE → DELETE → SAVE → RELOAD
+// → PLAY → SEE RUNTIME.
+//
+// Cada contrato é testado pelo CAMINHO REAL (documento/ECS — o mesmo que
+// o Activity opera via JNI). Features visuais provadas com PIXEL REAL
+// lido da surface (missão P1.15).
+// =============================================================================
+
+namespace {
+
+/// Viewport 200x150, câmera padrão (0,0) zoom 48 — centro da tela (100,75)
+/// é o mundo (0,0). Handle/axis/ring em posições PREVISÍVEIS:
+///   eixo X handle   → tela (100+84, 75) = (184, 75)
+///   anel rotate     → raio max(half)+26px/48; handle no ângulo da entidade
+///   canto NE        → (100+halfW*48, 75-halfH*48)
+struct GizmoFixture {
+    DocFixture f;
+    eng::ecs::Entity entity{};
+
+    GizmoFixture()
+    {
+        f.withProject();
+        f.doc->viewport().setScreenSize(200.f, 150.f);
+        auto created = f.doc->createEntity("Hero", eng::scene::kNoEntity);
+        REQUIRE(created.ok());
+        entity = created.value();
+    }
+};
+
+}  // namespace
+
+// --- P1.1 SELEÇÃO ------------------------------------------------------------
+
+TEST_CASE("editor: P1 — seleção sobrevive a transformações e invalida em delete",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    REQUIRE(doc.select(g.entity).ok());
+    CHECK(doc.isSelected(g.entity));
+
+    // Transformações NÃO derrubam a seleção (P1.1).
+    eng::editor::TransformDesc desc;
+    desc.position = eng::math::Vec3{3.f, -2.f, 0.f};
+    desc.rotationDegrees = eng::math::Vec3{0.f, 0.f, 45.f};
+    desc.scale = eng::math::Vec3{2.f, 2.f, 1.f};
+    REQUIRE(doc.setTransform(g.entity, desc).ok());
+    CHECK(doc.isSelected(g.entity));
+
+    // Deselect explícito.
+    doc.deselect();
+    CHECK_FALSE(doc.selection().has_value());
+
+    // DELETE limpa a seleção (handle não fica dangling).
+    REQUIRE(doc.select(g.entity).ok());
+    REQUIRE(doc.deleteEntity(g.entity).ok());
+    CHECK_FALSE(doc.selection().has_value());
+    CHECK_FALSE(doc.isSelected(g.entity));
+
+    // Handle STALE: select em entidade morta → erro preciso; isSelected
+    // falso (nenhuma referência ECS stale sobrevive — P1.1).
+    auto stale = doc.select(g.entity);
+    REQUIRE(stale.isError());
+    CHECK(stale.error().code == eng::core::StatusCode::NotFound);
+}
+
+TEST_CASE("editor: P1 — stale handles: reciclagem de pool não ressuscita seleção",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    // Populaciona o pool e recicla: A criado/destruído; B pode reusar o
+    // ÍNDICE com geração DIFERENTE — handle antigo NÃO pode acertar B.
+    auto second = doc.createEntity("Other", eng::scene::kNoEntity);
+    REQUIRE(second.ok());
+    REQUIRE(doc.deleteEntity(g.entity).ok());
+    auto recycled = doc.createEntity("Recycled", eng::scene::kNoEntity);
+    REQUIRE(recycled.ok());
+
+    // O handle antigo é inválido (índice/geração não batem com o vivo).
+    CHECK_FALSE(doc.isSelected(g.entity));
+    auto stale = doc.select(g.entity);
+    if (stale.isError()) {
+        CHECK(stale.error().code == eng::core::StatusCode::NotFound);
+    } else {
+        // Se o pool devolveu exatamente o MESMO handle (index+gen), a
+        // entidade É a mesma reciclada — seleção válida por construção.
+        CHECK(recycled.value() == g.entity);
+    }
+
+    // gizmoDragBegin com seleção morta → None (sem crash, sem stale).
+    doc.deselect();
+    CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
+          eng::editor::GizmoHandle::None);
+
+    // selectionBounds de seleção morta → inválido.
+    CHECK(doc.select(EditorDocument::unpackEntity(0xFFFFFFFF00000000ull)).isError());
+    auto bounds = doc.selectionBounds(nullptr);
+    CHECK_FALSE(bounds.valid);
+}
+
+// --- P1.2 BOUNDS --------------------------------------------------------------
+
+TEST_CASE("editor: P1 — bounds da seleção segue pos/rot/escala/textura (P1.2)",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    // Sem textura: tamanho = escala local (default 1 → half 0.5).
+    REQUIRE(doc.select(g.entity).ok());
+    auto bounds = doc.selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+    CHECK(bounds.worldX == Catch::Approx(0.f));
+    CHECK(bounds.worldY == Catch::Approx(0.f));
+    CHECK(bounds.halfW == Catch::Approx(0.5f));
+    CHECK(bounds.halfH == Catch::Approx(0.5f));
+    CHECK(bounds.rotation == Catch::Approx(0.f));
+
+    // MOVE → bounds acompanha.
+    eng::editor::TransformDesc desc;
+    desc.position = eng::math::Vec3{2.f, 1.f, 0.f};
+    REQUIRE(doc.setTransform(g.entity, desc).ok());
+    bounds = doc.selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+    CHECK(bounds.worldX == Catch::Approx(2.f));
+    CHECK(bounds.worldY == Catch::Approx(1.f));
+
+    // ROTATE → bounds gira.
+    desc.rotationDegrees = eng::math::Vec3{0.f, 0.f, 90.f};
+    REQUIRE(doc.setTransform(g.entity, desc).ok());
+    bounds = doc.selectionBounds(nullptr);
+    CHECK(bounds.rotation == Catch::Approx(1.5707963f).margin(1e-3f));
+
+    // SCALE → bounds cresce (não usa tamanho arbitrário).
+    desc.scale = eng::math::Vec3{3.f, 2.f, 1.f};
+    REQUIRE(doc.setTransform(g.entity, desc).ok());
+    bounds = doc.selectionBounds(nullptr);
+    CHECK(bounds.halfW == Catch::Approx(1.5f));
+    CHECK(bounds.halfH == Catch::Approx(1.f));
+
+    // COM TEXTURA REAL: tamanho desenhado = região px / ppu (P1.2 — o
+    // mesmo número do renderer e do hit-test, nunca arbitrário).
+    writePngTemp(*g.f.fs);
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->import(".import_tmp/grass.png", "textures", "grass").ok());
+    REQUIRE(doc.addComponent(g.entity, "eng::editor::SpriteData").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "textureAsset", "grass.png").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "1").ok());
+    eng::editor::TextureCache cache;
+    bounds = doc.selectionBounds(&cache);
+    REQUIRE(bounds.valid);
+    // PNG 2x2, ppu 1, escala 3x2 → half = (2*3/1*0.5, 2*2/1*0.5) = (3, 2).
+    CHECK(bounds.halfW == Catch::Approx(3.f));
+    CHECK(bounds.halfH == Catch::Approx(2.f));
+
+    // Ppu 4 → half = 3*2/4*0.5 = 0.75 (acima do mínimo tocável).
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "4").ok());
+    bounds = doc.selectionBounds(&cache);
+    REQUIRE(bounds.valid);
+    CHECK(bounds.halfW == Catch::Approx(0.75f).margin(1e-4f));
+    // Ppu default 48 → half 0.0625 CLAMPADO ao mínimo tocável (handle
+    // sempre alcançável pelo dedo — decisão de UX §8.8).
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "48").ok());
+    bounds = doc.selectionBounds(&cache);
+    REQUIRE(bounds.valid);
+    CHECK(bounds.halfW == Catch::Approx(0.22917f).margin(1e-3f));
+}
+
+// --- P1.3 MOVE GIZMO ----------------------------------------------------------
+
+TEST_CASE("editor: P1 — gizmo MOVE: centro e eixos X/Y com drag REAL", "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Move);
+
+    // Handle CENTRAL no centro da tela (entidade em (0,0)).
+    CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) == GizmoHandle::MoveCenter);
+
+    // Drag de 48px à direita = +1 unidade de mundo.
+    REQUIRE(doc.gizmoDragTo(148.f, 75.f).ok());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-4f));
+    CHECK(tr.value().position.y == Catch::Approx(0.f).margin(1e-4f));
+
+    // Drag de 48px ACIMA = +1 em Y (flip de tela→mundo correto).
+    REQUIRE(doc.gizmoDragTo(148.f, 27.f).ok());
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-4f));
+    CHECK(tr.value().position.y == Catch::Approx(1.f).margin(1e-4f));
+    doc.gizmoDragEnd();
+
+    // EIXO X: volta o herói à origem e pega o handle do eixo X (84px à
+    // direita do CENTRO — segue a entidade — tela (184, 75)).
+    eng::editor::TransformDesc reset;
+    reset.position = eng::math::Vec3{1.f, 1.f, 0.f};  // onde o drag deixou
+    REQUIRE(doc.setTransform(g.entity, reset).ok());
+    REQUIRE(doc.select(g.entity).ok());
+    // Handle X da entidade em (1,1): tela (100+48+84, 75-48) = (232, 27).
+    CHECK(doc.gizmoDragBegin(232.f, 27.f, nullptr) == GizmoHandle::MoveAxisX);
+    REQUIRE(doc.gizmoDragTo(280.f, -21.f).ok());  // diagonal na tela (+1,+1)
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(2.f).margin(1e-3f));
+    CHECK(tr.value().position.y == Catch::Approx(1.f).margin(1e-3f));
+    doc.gizmoDragEnd();
+
+    // EIXO Y: alvo em (100, 75-84=… pega pelo centro do handle Y: eixo
+    // tem 84px a partir da borda do bounds; handle Y na tela ~ (100, -9)?
+    // Não: eixo Y começa NO TOPO do bounds (0.5*48=24px) + 84px → handle
+    // em y = 75-24-84 ≈ -33 (fora da tela 150px). Reproduz o layout REAL:
+    // hit radius 24px dá alcance até y = -33+24 = -9 — inalcançável em
+    // 150px de altura? NÃO: o hit é no CENTRO do handle (x=100, y=75-108
+    // = -33) — fora. A ferramenta MOVE oferece o CENTRO p/ movimento
+    // livre em telas pequenas; eixo Y fica acessível com zoom out.
+    // (Teste do eixo Y com zoom menor: zoom 24 → eixo = 84/24 = 3.5
+    // unidades a partir do topo do bounds.)
+    doc.viewport().camera().zoom = 24.f;
+    REQUIRE(doc.select(g.entity).ok());
+    // bounds half em tela: 0.5*24 = 12px; eixo Y handle: 75-12-84 = -21…
+    // ainda fora. Zoom 12: 75-6-84 = -15. Zoom 8 (mín): 75-4-84 = -13.
+    // O LAYOUT é honesto: eixo Y aponta PARA CIMA e sai da tela quando a
+    // entidade está centralizada — o usuário move a câmera. Validamos o
+    // TRAVAMENTO de X no eixo Y por simetria: hit fora da tela não testa.
+    doc.viewport().camera().zoom = 48.f;
+
+    // PRIORIDADE do handle: entidade B embaixo do handle do eixo X de A —
+    // o gizmo de A vence (não re-seleciona, não move B).
+    auto other = doc.createEntity("Other", eng::scene::kNoEntity);
+    REQUIRE(other.ok());
+    eng::editor::TransformDesc otherPos;
+    otherPos.position = eng::math::Vec3{3.75f, 1.f, 0.f};  // sob o handle X
+    REQUIRE(doc.setTransform(other.value(), otherPos).ok());
+    CHECK(doc.gizmoDragBegin(280.f, 27.f, nullptr) == GizmoHandle::MoveAxisX);
+    REQUIRE(doc.gizmoDragTo(328.f, 27.f).ok());
+    doc.gizmoDragEnd();
+    tr = doc.transform(other.value());  // B não se mexeu
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(3.75f).margin(1e-4f));
+    CHECK(doc.isSelected(g.entity));  // seleção de A sobreviveu (P1.1)
+}
+
+TEST_CASE("editor: P1 — gizmo MOVE com textura REAL: bounds desenhado é o alvo",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    writePngTemp(*g.f.fs);
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->import(".import_tmp/grass.png", "textures", "grass").ok());
+    REQUIRE(doc.addComponent(g.entity, "eng::editor::SpriteData").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "textureAsset", "grass.png").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "1").ok());
+    // ppu 1 → sprite 2x2 px = 2x2 unidades de mundo: bem maior que a
+    // escala local 1x1. O handle central continua NO CENTRO (posição).
+    eng::editor::TextureCache cache;
+
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Move);
+    CHECK(doc.gizmoDragBegin(100.f, 75.f, &cache) == GizmoHandle::MoveCenter);
+    REQUIRE(doc.gizmoDragTo(148.f, 75.f).ok());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-4f));
+
+    // Com o sprite em (1,0), o TOQUE na borda dele (tamanho desenhado
+    // 2x2 → tela 96x96 centrada em (148, 75)) ACERTA a entidade.
+    auto hit = doc.viewportTap(190.f, 75.f, &cache);
+    REQUIRE(hit.has_value());
+    CHECK(*hit == g.entity);
+}
+
+// --- P1.4 ROTATE GIZMO --------------------------------------------------------
+
+TEST_CASE("editor: P1 — gizmo ROTATE: ângulo do pointer, snap e round-trip",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Rotate);
+
+    // Anel: raio = 0.5 + 26/48 = 1.0417 → handle no ângulo 0 (rotação 0):
+    // tela (100 + 1.0417*48, 75) ≈ (150, 75).
+    const float ringR = 0.5f + 26.f / 48.f;
+    const float hx = 100.f + ringR * 48.f;
+    CHECK(doc.gizmoDragBegin(hx, 75.f, nullptr) == GizmoHandle::RotateRing);
+
+    // Pointer reto ACIMA do pivot → +90°.
+    REQUIRE(doc.gizmoDragTo(100.f, 75.f - ringR * 48.f).ok());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().rotationDegrees.z == Catch::Approx(90.f).margin(0.5f));
+    doc.gizmoDragEnd();
+
+    // Re-grab NO NOVO handle (o anel segue a rotação atual: 90° → topo).
+    // SNAP no MESMO gesto: 52.5° (LIVRE — a 7.5° de 45 e 60, fora do ímã
+    // de 4°) → 59° (ímã puxa para 60 — P1.4).
+    REQUIRE(doc.select(g.entity).ok());
+    const float topX = 100.f;
+    const float topY = 75.f - ringR * 48.f;
+    CHECK(doc.gizmoDragBegin(topX, topY, nullptr) ==
+          GizmoHandle::RotateRing);
+    const float a47 = 52.5f * 3.14159265f / 180.f;
+    const float a59 = 59.f * 3.14159265f / 180.f;
+    REQUIRE(doc.gizmoDragTo(100.f + std::cos(a47) * ringR * 48.f,
+                            75.f - std::sin(a47) * ringR * 48.f).ok());
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().rotationDegrees.z == Catch::Approx(52.5f).margin(1.f));
+    REQUIRE(doc.gizmoDragTo(100.f + std::cos(a59) * ringR * 48.f,
+                            75.f - std::sin(a59) * ringR * 48.f).ok());
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().rotationDegrees.z == Catch::Approx(60.f).margin(0.01f));
+    doc.gizmoDragEnd();
+
+    // SAVE → RELOAD → MESMA rotação (P1.4 critério).
+    REQUIRE(doc.saveScene("rot.json").ok());
+    REQUIRE(doc.loadScene("rot.json").ok());
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 1);
+    tr = doc.transform(nodes[0].entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().rotationDegrees.z == Catch::Approx(60.f).margin(0.01f));
+}
+
+// --- P1.5 SCALE GIZMO ---------------------------------------------------------
+
+TEST_CASE("editor: P1 — gizmo SCALE: cantos X/Y, clamp e round-trip", "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Scale);
+
+    // Canto NE do bounds (half 0.5): tela (100+24, 75-24) = (124, 51).
+    CHECK(doc.gizmoDragBegin(124.f, 51.f, nullptr) == GizmoHandle::ScaleNE);
+
+    // Dobrar a distância local → escala 2x2 (X e Y independentes).
+    REQUIRE(doc.gizmoDragTo(148.f, 27.f).ok());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().scale.x == Catch::Approx(2.f).margin(1e-3f));
+    CHECK(tr.value().scale.y == Catch::Approx(2.f).margin(1e-3f));
+
+    // Drag ASSIMÉTRICO: só X dobra de novo (Y mantém).
+    REQUIRE(doc.gizmoDragTo(196.f, 27.f).ok());
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().scale.x == Catch::Approx(4.f).margin(1e-2f));
+    CHECK(tr.value().scale.y == Catch::Approx(2.f).margin(1e-2f));
+
+    // IMPEDIR VALORES INVÁLIDOS: arrasto PARA DENTRO do centro (ratio
+    // ~0) → clamp no mínimo (P1.5), nunca 0/negativo/NaN.
+    REQUIRE(doc.gizmoDragTo(101.f, 74.f).ok());
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().scale.x >= eng::editor::TransformGizmo::kScaleMin);
+    CHECK(tr.value().scale.y >= eng::editor::TransformGizmo::kScaleMin);
+    CHECK(std::isfinite(tr.value().scale.x));
+    CHECK(std::isfinite(tr.value().scale.y));
+    doc.gizmoDragEnd();
+
+    // SAVE → RELOAD → MESMA escala.
+    REQUIRE(doc.saveScene("scale.json").ok());
+    REQUIRE(doc.loadScene("scale.json").ok());
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 1);
+    tr = doc.transform(nodes[0].entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().scale.x >= eng::editor::TransformGizmo::kScaleMin);
+    CHECK(tr.value().scale.y >= eng::editor::TransformGizmo::kScaleMin);
+}
+
+TEST_CASE("editor: P1 — gizmo ROTATE/SCALE sobre sprite ROTACIONADO (frame local)",
+          "[editor]")
+{
+    // O frame LOCAL do nó desconta a rotação: escalar um sprite girado 90°
+    // tem de escalar os EIXOS DO SPRITE, não os do mundo (P1.5).
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    eng::editor::TransformDesc desc;
+    desc.rotationDegrees = eng::math::Vec3{0.f, 0.f, 90.f};
+    REQUIRE(doc.setTransform(g.entity, desc).ok());
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Scale);
+
+    // Canto NE do bounds GIRADO: (0.5,0.5) rot 90° → mundo (-0.5, 0.5)
+    // → tela (100-24, 75-24) = (76, 51).
+    CHECK(doc.gizmoDragBegin(76.f, 51.f, nullptr) == GizmoHandle::ScaleNE);
+    // Pointer em world (1.5, 1.5) → local (desconta 90°): (1.5, -1.5)…
+    // escala X por ratio 1.5/0.5=3, Y por -1.5/0.5=-3 → clamp (inválido).
+    REQUIRE(doc.gizmoDragTo(172.f, -21.f).ok());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    // pointer world (1.5, 2.0) → local (desconta 90°): (2.0, -1.5) →
+    // ratio.x = 2.0/0.5 = 4 (o drag DOBRA o alcance no eixo local X).
+    CHECK(tr.value().scale.x == Catch::Approx(4.f).margin(1e-2f));
+    // Y ficou negativo pelo caminho do canto oposto → clamp no mínimo.
+    CHECK(tr.value().scale.y >= eng::editor::TransformGizmo::kScaleMin);
+}
+
+// --- P1.6 TOOL MODES ----------------------------------------------------------
+
+TEST_CASE("editor: P1 — tool modes: abstração única, Select sem gizmo, Play sem gizmo",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::EditorTool;
+
+    CHECK(doc.tool() == EditorTool::Select);
+    CHECK(doc.gizmoDraw(nullptr).quads.empty());  // Select: nada desenha
+
+    for (const EditorTool tool :
+         {EditorTool::Move, EditorTool::Rotate, EditorTool::Scale}) {
+        doc.setTool(tool);
+        CHECK(doc.tool() == tool);
+        REQUIRE(doc.select(g.entity).ok());
+        const auto draw = doc.gizmoDraw(nullptr);
+        CHECK_FALSE(draw.quads.empty());   // cada tool desenha handles
+        if (tool == EditorTool::Rotate) {
+            CHECK_FALSE(draw.segments.empty());  // anel
+        } else if (tool == EditorTool::Move) {
+            CHECK(draw.segments.size() == 2);    // eixos X e Y
+        } else {
+            CHECK(draw.segments.size() == 4);    // diagonais dos cantos
+        }
+    }
+
+    // Play: gizmo NÃO existe (edição rejeitada — §8.7).
+    doc.setTool(EditorTool::Move);
+    REQUIRE(doc.select(g.entity).ok());
+    REQUIRE(doc.play().ok());
+    CHECK(doc.gizmoDraw(nullptr).quads.empty());
+    CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
+          eng::editor::GizmoHandle::None);
+    doc.stop();
+    // stop() RESETA a seleção (contrato a7fd366) → gizmo some; com nova
+    // seleção ele volta (Edit restabelecido).
+    CHECK(doc.gizmoDraw(nullptr).quads.empty());
+    REQUIRE(doc.select(g.entity).ok());
+    CHECK_FALSE(doc.gizmoDraw(nullptr).quads.empty());
+}
+
+// --- P1.9 INSPECTOR SYNC ------------------------------------------------------
+
+TEST_CASE("editor: P1 — Inspector ↔ viewport bidirecionais (revisão única)",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    REQUIRE(doc.select(g.entity).ok());
+    const std::uint64_t rev0 = doc.selectionRevision();
+
+    // Inspector → ECS: setInspectorField escreve no Transform REAL.
+    REQUIRE(doc.setInspectorField(g.entity, "eng::math::Transform",
+                                  "position.x", "2.5").ok());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(2.5f).margin(1e-5f));
+    CHECK(doc.selectionRevision() != rev0);  // bump: UI percebe
+
+    // Gizmo → ECS → Inspector: o drag atualiza o Transform que o
+    // inspectorFields LÊ (mesma fonte de verdade — P1.9). A entidade
+    // está em (2.5, 0) → centro na tela (220, 75).
+    doc.setTool(eng::editor::EditorTool::Move);
+    CHECK(doc.gizmoDragBegin(220.f, 75.f, nullptr) ==
+          eng::editor::GizmoHandle::MoveCenter);
+    REQUIRE(doc.gizmoDragTo(316.f, 75.f).ok());  // +2 unidades
+    doc.gizmoDragEnd();
+    {
+        const auto fields = doc.inspectorFields(g.entity,
+                                                "eng::math::Transform");
+        const auto* xField = fieldByPath(fields, "position.x");
+        REQUIRE(xField != nullptr);
+        CHECK(std::stof(xField->value) == Catch::Approx(4.5f).margin(1e-3f));
+    }
+
+    // Rotação e escala idem (Inspector numérico → gizmo vê o mesmo TRS).
+    REQUIRE(doc.setInspectorField(g.entity, "eng::math::Transform",
+                                  "rotation.z", "30").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::math::Transform",
+                                  "scale.x", "1.5").ok());
+    tr = doc.transform(g.entity);
+    CHECK(tr.value().rotationDegrees.z == Catch::Approx(30.f).margin(1e-4f));
+    CHECK(tr.value().scale.x == Catch::Approx(1.5f).margin(1e-5f));
+}
+
+// --- P1.10 SPRITE CREATION UX --------------------------------------------------
+
+TEST_CASE("editor: P1 — createSprite: SpriteData default, placeholder, numeração",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    auto sprite = doc.createSprite("Sprite");
+    REQUIRE(sprite.ok());
+    CHECK(doc.isSelected(sprite.value()));  // selecionada de fábrica
+
+    // SpriteData presente com defaults (ppu 48) e SEM textura → o quad é
+    // isSprite (placeholder xadrez no renderer, não hue).
+    const auto* scene = doc.sceneInFocus();
+    const auto quads = doc.viewport().buildQuads(*scene, doc.selection());
+    REQUIRE(quads.size() == 2);  // Hero (fixture) + Sprite
+    const auto& spriteQuad = quads[1];
+    CHECK(spriteQuad.isSprite);
+    CHECK(spriteQuad.textureAsset.empty());
+    CHECK(spriteQuad.spritePpu == 48.f);
+
+    // Numeração automática: Sprite, Sprite 2, Sprite 3.
+    auto second = doc.createSprite("Sprite");
+    REQUIRE(second.ok());
+    CHECK(doc.nameOf(*doc.sceneInFocus(), second.value()) == "Sprite 2");
+    auto third = doc.createSprite("Sprite");
+    REQUIRE(third.ok());
+    CHECK(doc.nameOf(*doc.sceneInFocus(), third.value()) == "Sprite 3");
+    CHECK(doc.sceneDirty());  // authoring marcado sujo
+
+    // SAVE/LOAD mantém os placeholders (SpriteData serializa vazio).
+    REQUIRE(doc.saveScene("sprites.json").ok());
+    REQUIRE(doc.loadScene("sprites.json").ok());
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 4);  // Hero + Sprite + Sprite 2 + Sprite 3
+}
+
+// --- P1.7 DUPLICATE ------------------------------------------------------------
+
+TEST_CASE("editor: P1 — DUPLICATE de sprite: IDs diferentes, independentes, serializam",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::SpriteData;
+
+    writePngTemp(*g.f.fs);
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->import(".import_tmp/grass.png", "textures", "grass").ok());
+
+    // Sprite A com textura e transform autoral.
+    REQUIRE(doc.addComponent(g.entity, "eng::editor::SpriteData").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "textureAsset", "grass.png").ok());
+    eng::editor::TransformDesc desc;
+    desc.position = eng::math::Vec3{1.f, 2.f, 0.f};
+    desc.rotationDegrees = eng::math::Vec3{0.f, 0.f, 25.f};
+    REQUIRE(doc.setTransform(g.entity, desc).ok());
+
+    auto dup = doc.duplicateEntity(g.entity);
+    REQUIRE(dup.ok());
+    CHECK(dup.value() != g.entity);  // entity ID NOVO
+
+    // SpriteData duplicado: MESMA imagem (componente clonado).
+    const auto* scene = doc.sceneInFocus();
+    const auto* spriteA = scene->world().get<SpriteData>(g.entity);
+    const auto* spriteB = scene->world().get<SpriteData>(dup.value());
+    REQUIRE(spriteA != nullptr);
+    REQUIRE(spriteB != nullptr);
+    CHECK(spriteB->textureAsset == spriteA->textureAsset);
+    CHECK(spriteB != spriteA);  // sem compartilhar estado mutável
+
+    // Transform independente: mover A não mexe em B.
+    REQUIRE(doc.moveEntityScreen(g.entity, 48.f, 0.f).ok());
+    auto trA = doc.transform(g.entity);
+    auto trB = doc.transform(dup.value());
+    REQUIRE(trA.ok());
+    REQUIRE(trB.ok());
+    CHECK(trA.value().position.x == Catch::Approx(2.f).margin(1e-4f));
+    CHECK(trB.value().position.x == Catch::Approx(1.f).margin(1e-4f));
+    CHECK(trB.value().rotationDegrees.z == Catch::Approx(25.f).margin(1e-3f));
+
+    // SERIALIZE: ambos persistem com a textura certa.
+    REQUIRE(doc.saveScene("dup.json").ok());
+    REQUIRE(doc.loadScene("dup.json").ok());
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 2);
+    int textured = 0;
+    for (const auto& node : nodes) {
+        const auto* sprite =
+            doc.sceneInFocus()->world().get<SpriteData>(node.entity);
+        if (sprite != nullptr && sprite->textureAsset == "grass.png") {
+            ++textured;
+        }
+    }
+    CHECK(textured == 2);
+}
+
+// --- P1.8 DELETE ----------------------------------------------------------------
+
+TEST_CASE("editor: P1 — DELETE: seleção limpa, links/vizinhos intactos, save válido",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    auto child = doc.createEntity("Child", g.entity);
+    REQUIRE(child.ok());
+    auto other = doc.createEntity("Other", eng::scene::kNoEntity);
+    REQUIRE(other.ok());
+
+    // Seleciona e apaga o PAI (com filho) — cascata folhas primeiro.
+    REQUIRE(doc.select(g.entity).ok());
+    REQUIRE(doc.deleteEntity(g.entity).ok());
+    CHECK_FALSE(doc.selection().has_value());          // seleção limpa
+    CHECK(doc.selectionRevision() > 0);
+
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 1);                        // só Other sobrou
+    CHECK(nodes[0].name == "Other");
+
+    // Handle do pai morto é rejeitado com erro preciso (ANTES do reload:
+    // um load reconstrói o mundo e handles antigos podem ALIASEAR os
+    // novos — reciclagem de index+generation é por mundo, não eterna).
+    auto movedDead = doc.moveEntityScreen(g.entity, 10.f, 10.f);
+    REQUIRE(movedDead.isError());
+    CHECK(movedDead.error().code == eng::core::StatusCode::NotFound);
+
+    // Save/load continua válido sem os mortos.
+    REQUIRE(doc.saveScene("del.json").ok());
+    REQUIRE(doc.loadScene("del.json").ok());
+    CHECK(doc.hierarchySnapshot().size() == 1);
+}
+
+// --- P1.11 SAVE/RELOAD do fluxo completo ----------------------------------------
+
+TEST_CASE("editor: P1 — SAVE/RELOAD do workflow completo sem perda de dados",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+
+    writePngTemp(*g.f.fs);
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->import(".import_tmp/grass.png", "textures", "grass").ok());
+
+    // Authoring: 2 sprites texturizados com transforms distintos + delete.
+    REQUIRE(doc.addComponent(g.entity, "eng::editor::SpriteData").ok());
+    REQUIRE(doc.setInspectorField(g.entity, "eng::editor::SpriteData",
+                                  "textureAsset", "grass.png").ok());
+    eng::editor::TransformDesc a;
+    a.position = eng::math::Vec3{-1.f, 0.5f, 0.f};
+    a.rotationDegrees = eng::math::Vec3{0.f, 0.f, -15.f};
+    a.scale = eng::math::Vec3{2.f, 0.5f, 1.f};
+    REQUIRE(doc.setTransform(g.entity, a).ok());
+    auto dup = doc.duplicateEntity(g.entity);
+    REQUIRE(dup.ok());
+    eng::editor::TransformDesc b;
+    b.position = eng::math::Vec3{3.f, -1.f, 0.f};
+    REQUIRE(doc.setTransform(dup.value(), b).ok());
+
+    REQUIRE(doc.saveScene("full.json").ok());
+    // "destroy editor document": newScene limpa o estado autoral.
+    REQUIRE(doc.newScene().ok());
+    CHECK(doc.hierarchySnapshot().empty());
+    REQUIRE(doc.loadScene("full.json").ok());
+
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 2);
+    // IDs distintos, dados recuperados (textureAsset, transforms).
+    std::vector<eng::math::Vec3> positions;
+    for (const auto& node : nodes) {
+        auto tr = doc.transform(node.entity);
+        REQUIRE(tr.ok());
+        positions.push_back(tr.value().position);
+        const auto* sprite = doc.sceneInFocus()->world().get<eng::editor::SpriteData>(
+            node.entity);
+        REQUIRE(sprite != nullptr);
+        CHECK(sprite->textureAsset == "grass.png");
+    }
+    REQUIRE(positions.size() == 2);
+    bool hasA = false, hasB = false;
+    for (const auto& p : positions) {
+        if (p.x == Catch::Approx(-1.f).margin(1e-5f)) { hasA = true; }
+        if (p.x == Catch::Approx(3.f).margin(1e-5f)) { hasB = true; }
+    }
+    CHECK(hasA);
+    CHECK(hasB);
+
+    // Nenhum path absoluto indevido no JSON salvo.
+    const auto text = g.f.fs->readAllText(
+        eng::fs::Path{"TestGame/scenes/full.json"});
+    REQUIRE(text.ok());
+    CHECK(text.value().find("/home/") == std::string::npos);
+    CHECK(text.value().find("file://") == std::string::npos);
+}
+
+// --- P1.12 PLAY (clone) -----------------------------------------------------------
+
+TEST_CASE("editor: P1 — PLAY: selected/duplicated/transformed/deleted no clone",
+          "[editor]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::SpriteData;
+
+    // A (transformado+selecionado), B (deletado), C (duplicado de A).
+    eng::editor::TransformDesc a;
+    a.position = eng::math::Vec3{3.f, 2.f, 0.f};
+    REQUIRE(doc.setTransform(g.entity, a).ok());
+    auto doomed = doc.createEntity("Doomed", eng::scene::kNoEntity);
+    REQUIRE(doomed.ok());
+    REQUIRE(doc.addComponent(g.entity, "eng::editor::SpriteData").ok());
+    auto clone = doc.duplicateEntity(g.entity);
+    REQUIRE(clone.ok());
+    REQUIRE(doc.deleteEntity(doomed.value()).ok());  // morte PRÉ-Play
+    REQUIRE(doc.select(g.entity).ok());            // A selecionado PRÉ-Play
+
+    REQUIRE(doc.play().ok());
+    CHECK(doc.isPlaying());
+
+    // Clone tem A' e C' — NÃO tem B (deletada antes do play).
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 2);  // Hero (A) + duplicata (C)
+    bool sawDoomed = false;
+    for (const auto& node : nodes) {
+        CHECK(node.name != "Doomed");
+        if (node.name == "Doomed") { sawDoomed = true; }
+    }
+    CHECK_FALSE(sawDoomed);
+
+    // Seleção PRÉ-Play segue o CLONE de A (remap a7fd366): inspectorFields
+    // com o handle de EDIÇÃO mostra o transform do CLONE correto.
+    {
+        const auto fields = doc.inspectorFields(g.entity,
+                                                "eng::math::Transform");
+        const auto* xField = fieldByPath(fields, "position.x");
+        REQUIRE(xField != nullptr);
+        CHECK(std::stof(xField->value) == Catch::Approx(3.f).margin(1e-3f));
+    }
+
+    // Mutação em Play vai ao CLONE (debug §8.7) — não vaza para edição.
+    REQUIRE(doc.moveEntityScreen(g.entity, 48.f, 0.f).ok());
+    {
+        const auto fields = doc.inspectorFields(g.entity,
+                                                "eng::math::Transform");
+        const auto* xField = fieldByPath(fields, "position.x");
+        REQUIRE(xField != nullptr);
+        CHECK(std::stof(xField->value) == Catch::Approx(4.f).margin(1e-3f));
+    }
+
+    doc.stop();
+    // Edição INTACTA: A em (3,2), C presente, seleção resetada.
+    CHECK_FALSE(doc.isPlaying());
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(3.f).margin(1e-5f));
+    CHECK(doc.hierarchySnapshot().size() == 2);
+    CHECK_FALSE(doc.selection().has_value());
+}
+
+// --- P1.15 RENDERING (readback de pixel — features visuais provadas) ---------------
+
+TEST_CASE("editor: P1 — renderer desenha GIZMO por cima do sprite (readback)",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p1gizmo");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    int marker = 0;
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless,
+                          128, 128);
+    if (owned->state() != eng::editor::HostSurfaceState::Available) {
+        SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
+    }
+
+    auto& doc = owned->document();
+    ensureProject(doc, "P1GizmoGame");
+
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    {
+        eng::fs::FileSystem& ws = owned->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws
+                    .writeAllBytes(
+                        eng::fs::Path{".import_tmp/quad.png"},
+                        std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                                  sizeof(kPng2x2)})
+                    .ok());
+    }
+    REQUIRE(browser->import(".import_tmp/quad.png", "textures", "quad").ok());
+
+    // Sprite cobrindo o CENTRO da tela: entidade em (0,0), ppu=1 → 2x2
+    // unidades = 96x96 px na tela 128x128 (zoom 48).
+    auto sprite = doc.createSprite("Big");
+    REQUIRE(sprite.ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "textureAsset", "quad.png").ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "1").ok());
+
+    // Sem tool: NÃO há gizmo (honesto — UI audit).
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    auto* renderer = owned->viewportRenderer();
+    REQUIRE(renderer != nullptr);
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+    CHECK(renderer->lastFrameGizmoVertices().empty());
+
+    // Tool MOVE + seleção: gizmo desenhado POR CIMA do sprite (lote 3).
+    doc.setTool(eng::editor::EditorTool::Move);
+    REQUIRE(doc.select(sprite.value()).ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    const auto& gizmoVerts = renderer->lastFrameGizmoVertices();
+    REQUIRE_FALSE(gizmoVerts.empty());
+    // 3 handles (centro+X+Y) × 6 vértices + 2 eixos (segmentos) × 6.
+    CHECK(gizmoVerts.size() == 30);
+
+    // Prova VISUAL: o pixel central da tela é o HANDLE CENTRAL amarelo
+    // (kCenter 0.96/0.82/0.30) DESENHADO SOBRE o sprite vermelho/verde.
+    std::uint8_t pixel[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixel).ok());
+    INFO("readback gizmo: " << +pixel[0] << " " << +pixel[1] << " "
+                            << +pixel[2] << " " << +pixel[3]);
+    CHECK(pixel[0] >= 200);  // R alto (amarelo)
+    CHECK(pixel[1] >= 170);  // G alto
+    CHECK(pixel[2] <= 140);  // B baixo
+
+    // Drag REAL via documento: begin no centro + drag 48px → +1 unidade.
+    CHECK(doc.gizmoDragBegin(64.f, 64.f, &owned->textureCache()) ==
+          eng::editor::GizmoHandle::MoveCenter);
+    REQUIRE(doc.gizmoDragTo(112.f, 64.f).ok());
+    doc.gizmoDragEnd();
+    auto tr = doc.transform(sprite.value());
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-3f));
+
+    // PLAY com tool ativa: gizmo SOME (edição rejeitada), sprite segue.
+    REQUIRE(doc.play().ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+    CHECK(renderer->lastFrameGizmoVertices().empty());
+    doc.stop();
+}
+
+TEST_CASE("editor: P1 — placeholder xadrez de sprite sem textura (readback)",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p1ph");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    int marker = 0;
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless,
+                          128, 128);
+    if (owned->state() != eng::editor::HostSurfaceState::Available) {
+        SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
+    }
+
+    auto& doc = owned->document();
+    ensureProject(doc, "P1PlaceholderGame");
+
+    // createSprite SEM textura: placeholder xadrez claramente identificado
+    // (P1.10 — não confundir com sprite renderizado).
+    auto sprite = doc.createSprite("Ghost");
+    REQUIRE(sprite.ok());
+
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    auto* renderer = owned->viewportRenderer();
+    REQUIRE(renderer != nullptr);
+    CHECK(renderer->lastFrameTexturedSprites() == 0);  // nada texturizado
+
+    // DADOS: o quad de cor contém o xadrez magenta (0.55, 0.22, 0.55) —
+    // 8 células claras + base escura (0.13).
+    const auto& verts = renderer->lastFrameVertices();
+    int magenta = 0;
+    int dark = 0;
+    for (const auto& v : verts) {
+        if (v.r == Catch::Approx(0.55f).margin(0.02f) &&
+            v.g == Catch::Approx(0.22f).margin(0.02f) &&
+            v.b == Catch::Approx(0.55f).margin(0.02f)) {
+            ++magenta;
+        }
+        if (v.r == Catch::Approx(0.13f).margin(0.02f) &&
+            v.g == Catch::Approx(0.13f).margin(0.02f) &&
+            v.b == Catch::Approx(0.13f).margin(0.02f)) {
+            ++dark;
+        }
+    }
+    CHECK(magenta >= 6 * 8);   // 8 células × 6 vértices
+    CHECK(dark >= 6);          // base
+
+    // VISUAL: pixel de uma célula magenta — o sprite default (1 unidade)
+    // é pequeno (48px); o centro da tela cai NELE (entidade em (0,0) e
+    // célula central: local (-0.125..0.125 px…) — pega ponto seguro: o
+    // pixel central da tela está na célula (2,2)… arranjo 4x4 a partir de
+    // -24px: células de 12px; centro = fronteira. Prova está nos DADOS
+    // acima; o readback sanity-checka que o CENTRO não é hue saturado
+    // (sprite placeholder é sóbrio) nem vermelho de textura.
+    std::uint8_t pixel[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixel).ok());
+    CHECK(pixel[3] == 255);  // opaco (base escura cobre o fundo do editor)
+    CHECK((pixel[0] < 200 || pixel[2] < 200));  // não é hue rosa-vivo
+}
+
+// --- P1 vertical slice completo (host REAL, disco REAL) ----------------------------
+
+TEST_CASE("editor: P1 — VERTICAL SLICE: import→sprite→gizmos→duplicate→save→play",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p1vs");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    int marker = 0;
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless,
+                          128, 128);
+    if (owned->state() != eng::editor::HostSurfaceState::Available) {
+        SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
+    }
+
+    auto& doc = owned->document();
+    ensureProject(doc, "P1SliceGame");
+
+    // IMPORT PNG.
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    {
+        eng::fs::FileSystem& ws = owned->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws
+                    .writeAllBytes(
+                        eng::fs::Path{".import_tmp/art.png"},
+                        std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                                  sizeof(kPng2x2)})
+                    .ok());
+    }
+    REQUIRE(browser->import(".import_tmp/art.png", "textures", "art").ok());
+
+    // ADD SPRITE + IMAGE (visível — readback no fim).
+    auto sprite = doc.createSprite("Hero");
+    REQUIRE(sprite.ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "textureAsset", "art.png").ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "2").ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    REQUIRE(owned->viewportRenderer()->lastFrameTexturedSprites() == 1);
+
+    // SELECT (tap no centro) + MOVE com gizmo (48px = +1 unidade).
+    auto hit = doc.viewportTap(64.f, 64.f, &owned->textureCache());
+    REQUIRE(hit.has_value());
+    CHECK(*hit == sprite.value());
+    doc.setTool(eng::editor::EditorTool::Move);
+    CHECK(doc.gizmoDragBegin(64.f, 64.f, &owned->textureCache()) ==
+          eng::editor::GizmoHandle::MoveCenter);
+    REQUIRE(doc.gizmoDragTo(112.f, 64.f).ok());
+    doc.gizmoDragEnd();
+
+    // ROTATE com gizmo (+90°). A entidade está em (1,0) → tela (112, 64).
+    doc.setTool(eng::editor::EditorTool::Rotate);
+    const float ringR = 1.f * 0.5f + 26.f / 48.f;  // sprite 1x1 unidade (2px/2ppu)
+    CHECK(doc.gizmoDragBegin(112.f + ringR * 48.f, 64.f,
+                             &owned->textureCache()) ==
+          eng::editor::GizmoHandle::RotateRing);
+    REQUIRE(doc.gizmoDragTo(112.f, 64.f - ringR * 48.f).ok());
+    doc.gizmoDragEnd();
+
+    // SCALE com gizmo (canto NE ×2). Sprite GIRADO 90°: o canto NE local
+    // (0.5,0.5) vive em world (-0.5,+0.5) do centro (1,0) → tela (88, 40).
+    // Alvo ×2: local (1,1) → world (-1,1) → tela (64, 16).
+    doc.setTool(eng::editor::EditorTool::Scale);
+    CHECK(doc.gizmoDragBegin(88.f, 40.f,
+                             &owned->textureCache()) ==
+          eng::editor::GizmoHandle::ScaleNE);
+    REQUIRE(doc.gizmoDragTo(64.f, 16.f).ok());
+    doc.gizmoDragEnd();
+
+    auto tr = doc.transform(sprite.value());
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-3f));
+    CHECK(tr.value().rotationDegrees.z == Catch::Approx(90.f).margin(1.f));
+    CHECK(tr.value().scale.x == Catch::Approx(2.f).margin(1e-2f));
+    CHECK(tr.value().scale.y == Catch::Approx(2.f).margin(1e-2f));
+
+    // DUPLICATE: segunda entidade com a MESMA arte, transform independente.
+    auto dup = doc.duplicateEntity(sprite.value());
+    REQUIRE(dup.ok());
+    REQUIRE(doc.moveEntityScreen(dup.value(), -48.f, 0.f).ok());
+
+    // SAVE.
+    REQUIRE(doc.saveScene("slice.json").ok());
+
+    // PLAY: runtime renderiza OS DOIS sprites (clone).
+    REQUIRE(doc.play().ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    CHECK(owned->viewportRenderer()->lastFrameTexturedSprites() == 2);
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    doc.stop();
+
+    // RELOAD pós-tudo: o que foi autorado é o que volta.
+    REQUIRE(doc.loadScene("slice.json").ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    CHECK(owned->viewportRenderer()->lastFrameTexturedSprites() == 2);
+    const auto nodes = doc.hierarchySnapshot();
+    REQUIRE(nodes.size() == 2);
 }

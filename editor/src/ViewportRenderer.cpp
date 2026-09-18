@@ -394,10 +394,12 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                                     const std::vector<EntityQuad>& quads,
                                     const std::vector<ParticleQuad>& particles,
                                     bool playMode, const AssetBrowser* assets,
-                                    TextureCache* textures)
+                                    TextureCache* textures,
+                                    const GizmoDrawData* gizmo)
 {
     frameVertices_.clear();
     spriteVertices_.clear();
+    gizmoVertices_.clear();  // P1: acessores de teste não vazam frame velho
     lastFrameTexturedSprites_ = 0;
 
     // --- sprites resolvidos ANTES (agrupamento por textura p/ batching) -------
@@ -495,12 +497,48 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float halfH = std::max(quad.sizeY * zoom,
                                      Viewport::kMinQuadPixels) / h;
 
+        pushEntityMarkers(quad, halfW, halfH);
+
+        // P1.10 — PLACEHOLDER de sprite: SpriteData SEM textura vira
+        // xadrez magenta/escuro (convenção clássica "sem textura"),
+        // CLARAMENTE identificado — não é sprite renderizado nem o hue
+        // de entidade crua. Entidades sem SpriteData seguem hue.
+        if (quad.isSprite) {
+            constexpr int kChecker = 4;  // células por eixo
+            constexpr float kChessR = 0.55f, kChessG = 0.22f, kChessB = 0.55f;
+            constexpr float kDarkR = 0.13f, kDarkG = 0.13f, kDarkB = 0.13f;
+            // Base escura PRIMEIRO (painter: por baixo), xadrez por cima.
+            pushQuad(frameVertices_, worldToClipX(quad.worldX),
+                     worldToClipY(quad.worldY), halfW, halfH, quad.rotation,
+                     kDarkR, kDarkG, kDarkB);
+            const float cellW = halfW * 2.f / kChecker;
+            const float cellH = halfH * 2.f / kChecker;
+            const float cosR = std::cos(quad.rotation);
+            const float sinR = std::sin(quad.rotation);
+            for (int iy = 0; iy < kChecker; ++iy) {
+                for (int ix = 0; ix < kChecker; ++ix) {
+                    if (((ix + iy) & 1) == 0) {
+                        continue;  // célula escura já é o fundo
+                    }
+                    const float lx =
+                        -halfW + cellW * (static_cast<float>(ix) + 0.5f);
+                    const float ly =
+                        -halfH + cellH * (static_cast<float>(iy) + 0.5f);
+                    pushQuad(frameVertices_,
+                             worldToClipX(quad.worldX) + lx * cosR - ly * sinR,
+                             worldToClipY(quad.worldY) + lx * sinR + ly * cosR,
+                             cellW * 0.5f, cellH * 0.5f, quad.rotation,
+                             kChessR, kChessG, kChessB);
+                }
+            }
+            continue;
+        }
+
         float r = 0.f;
         float g = 0.f;
         float b = 0.f;
         hsvToRgb(quad.tint, r, g, b);
 
-        pushEntityMarkers(quad, halfW, halfH);
         pushQuad(frameVertices_, worldToClipX(quad.worldX),
                  worldToClipY(quad.worldY), halfW, halfH, quad.rotation, r, g, b);
     }
@@ -711,6 +749,41 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         }
     }
 
+    // Lote 3 (P1): GIZMO — quads preenchidos + segmentos de eixo/anel NO
+    // PIPELINE DE COR, POR CIMA de tudo (a entidade selecionada precisa
+    // dos handles visíveis sobre a própria arte). Sem blending: handles
+    // opacos com meia-borda de separação (painter's).
+    if (frameOk && gizmo != nullptr &&
+        (!gizmo->quads.empty() || !gizmo->segments.empty())) {
+        gizmoVertices_.clear();
+        for (const GizmoQuad& quad : gizmo->quads) {
+            pushQuad(gizmoVertices_, worldToClipX(quad.worldX),
+                     worldToClipY(quad.worldY),
+                     quad.halfW * zoom / w, quad.halfH * zoom / h,
+                     quad.rotation, quad.r, quad.g, quad.b);
+        }
+        for (const GizmoSegment& segment : gizmo->segments) {
+            pushSegment(gizmoVertices_, worldToClipX(segment.x0),
+                        worldToClipY(segment.y0), worldToClipX(segment.x1),
+                        worldToClipY(segment.y1), 1.5f / w, segment.r,
+                        segment.g, segment.b);
+        }
+        if (!gizmoVertices_.empty() && ensureCapacity(gizmoVertices_.size())) {
+            auto pipelined = frame.setPipeline(pipeline_);
+            auto bound = frame.bindVertexBuffer(vertexBuffer_);
+            auto uploaded = renderer_->updateBuffer(
+                vertexBuffer_, 0,
+                {reinterpret_cast<const std::byte*>(gizmoVertices_.data()),
+                 gizmoVertices_.size() * sizeof(Vertex)});
+            auto drawn = frame.draw(
+                static_cast<std::uint32_t>(gizmoVertices_.size()), 0);
+            frameOk = pipelined.ok() && bound.ok() && uploaded.ok() &&
+                      drawn.ok();
+        } else if (!gizmoVertices_.empty()) {
+            frameOk = false;  // VBO não cresceu — frame aborta (honesto)
+        }
+    }
+
     auto ended = frame.end();
     frameOk = frameOk && ended.ok();
     if (!frameOk) {
@@ -738,19 +811,22 @@ bool ViewportRenderer::renderFrame(const Viewport& viewport,
     if (!renderer_.has_value() || !pipeline_.isValid()) {
         return false;
     }
-    return buildAndDraw(viewport, quads, particles, playMode, nullptr, nullptr);
+    return buildAndDraw(viewport, quads, particles, playMode, nullptr,
+                        nullptr, nullptr);
 }
 
 bool ViewportRenderer::renderFrame(const Viewport& viewport,
                                    const std::vector<EntityQuad>& quads,
                                    const std::vector<ParticleQuad>& particles,
                                    bool playMode, const AssetBrowser* assets,
-                                   TextureCache& textures)
+                                   TextureCache& textures,
+                                   const GizmoDrawData* gizmo)
 {
     if (!renderer_.has_value() || !pipeline_.isValid()) {
         return false;
     }
-    return buildAndDraw(viewport, quads, particles, playMode, assets, &textures);
+    return buildAndDraw(viewport, quads, particles, playMode, assets,
+                        &textures, gizmo);
 }
 
 eng::rhi::BackendType ViewportRenderer::activeBackend() const noexcept

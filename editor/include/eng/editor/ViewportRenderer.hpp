@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "eng/core/Result.hpp"
+#include "eng/editor/Gizmo.hpp"
 #include "eng/editor/Viewport.hpp"
 #include "eng/rhi/Renderer.hpp"
 #include "eng/rhi/Types.hpp"
@@ -47,13 +48,15 @@ public:
     eng::core::Result<void> resize(std::uint32_t width, std::uint32_t height);
 
     /// Um frame do viewport: quads + grade + seleção + partículas + SPRITES
-    /// (texturas reais via TextureCache — evolução P0-3). `assets` nulo
-    /// (sem projeto) = sprites caem no caminho de cor. false = não desenhou
-    /// (minimizado/out-of-date persistente) — NUNCA lança.
+    /// (texturas reais via TextureCache — evolução P0-3) + GIZMO (P1: lote
+    /// de cor POR CIMA dos sprites). `assets` nulo (sem projeto) = sprites
+    /// caem no caminho de cor. `gizmo` nulo/vazio = sem gizmo. false = não
+    /// desenhou (minimizado/out-of-date persistente) — NUNCA lança.
     bool renderFrame(const Viewport& viewport,
                      const std::vector<EntityQuad>& quads,
                      const std::vector<ParticleQuad>& particles, bool playMode,
-                     const AssetBrowser* assets, TextureCache& textures);
+                     const AssetBrowser* assets, TextureCache& textures,
+                     const GizmoDrawData* gizmo = nullptr);
 
     /// Caminho legado (testes/hosts sem sprites) — sem texturas.
     bool renderFrame(const Viewport& viewport,
@@ -109,6 +112,13 @@ public:
     {
         return spriteVertices_;
     }
+    /// Vértices do LOTE DE GIZMO do último frame (P1 — prova de conteúdo
+    /// nos testes: handles por cima de sprites).
+    [[nodiscard]] const std::vector<Vertex>& lastFrameGizmoVertices()
+        const noexcept
+    {
+        return gizmoVertices_;
+    }
     /// Quants sprites foram desenhados com TEXTURA REAL no último frame.
     [[nodiscard]] std::size_t lastFrameTexturedSprites() const noexcept
     {
@@ -124,7 +134,8 @@ private:
                                     const std::vector<EntityQuad>& quads,
                                     const std::vector<ParticleQuad>& particles,
                                     bool playMode, const AssetBrowser* assets,
-                                    TextureCache* textures);
+                                    TextureCache* textures,
+                                    const GizmoDrawData* gizmo);
 
     std::optional<eng::rhi::Renderer> renderer_{};
     eng::rhi::ShaderHandle shader_{};
@@ -143,6 +154,9 @@ private:
     /// Arena de vértices do frame (reusada — zero alocação por frame após
     /// estabilizar; missão §10 mobile).
     std::vector<Vertex> frameVertices_{};
+    /// Arena do lote de gizmo (P1) — separada para NÃO misturar com o
+    /// lote 1 (o gizmo desenha DEPOIS dos sprites, por cima).
+    std::vector<Vertex> gizmoVertices_{};
 
     std::uint64_t framesSubmitted_ = 0;
     std::uint64_t framesPresented_ = 0;

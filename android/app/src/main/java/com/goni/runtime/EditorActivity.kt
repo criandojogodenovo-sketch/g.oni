@@ -74,8 +74,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private lateinit var hierarchyAdapter: HierarchyAdapter
     private lateinit var assetAdapter: AssetAdapter
 
-    private var moveToolActive = false
+    private var editorTool = 0 // 0=Select 1=Move 2=Rotate 3=Scale (C++ manda)
     private var activePanel = PANEL_NONE
+
+    // Live sync (P1.9): últimos valores de transform exibidos no Inspector.
+    private var transformFields: MutableList<android.widget.EditText> =
+        mutableListOf()
+    private var collectTransformFields = false
+    private var lastSelectionRevision = -1L
 
     // Painel de scripts (P0-7): lista carregada por refreshScripts().
     private lateinit var scriptsList: ListView
@@ -227,10 +233,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             btnBackend,
             LinearLayout.LayoutParams(0, dp(36), 0.7f)
         )
-        btnTool = toolButton("PAN") { toggleMoveTool() }
+        btnTool = toolButton("FERRAMENTA") { showToolMenu() }
         topBar.addView(
             btnTool,
-            LinearLayout.LayoutParams(0, dp(36), 0.6f)
+            LinearLayout.LayoutParams(0, dp(36), 0.9f)
         )
 
         // ---- barra inferior: toggles de painel (sheets/drawers) ----
@@ -427,13 +433,22 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolButton("+ Entidade") { createEntityDialog() },
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
+        bar.addView(
+            toolButton("+ Sprite") { addSpriteDialog() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
         hierarchyList = ListView(this).apply {
             adapter = hierarchyAdapter
             onItemClickListener =
                 AdapterView.OnItemClickListener { _, _, _, _ ->
                     val packed = hierarchyAdapter.selectedAt()
                     if (packed != 0L) {
-                        EditorJni.nativeEditorViewportTap(handle, -1e6f, -1e6f) // (sem hit)
+                        // P1.0 BUG FIX: a seleção via hierarquia precisa
+                        // chegar ao DOCUMENTO (borda no viewport + alvo do
+                        // gizmo) — antes só o Kotlin sabia.
+                        if (!EditorJni.nativeEditorSelect(handle, packed)) {
+                            toast(lastErrorText())
+                        }
                         selectEntity(packed)
                     }
                 }
@@ -769,29 +784,28 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         content.addView(nameField)
 
-        // Transform (TRS com Euler em graus — API do documento).
+        // Transform (TRS com Euler em graus — API do documento). Os campos
+        // ficam REFERENCIADOS (transformFields) para o live sync do doFrame
+        // (P1.9: gizmo → Inspector ao vivo, sem rebuild do painel).
+        transformFields.clear()
+        collectTransformFields = true
         val tr = EditorJni.nativeEditorGetTransform(handle, selection)
         if (tr != null && tr.size == 9) {
             content.addView(sectionTitle("Transform"))
-            addVec3Row(content, "Posição", tr[0], tr[1], tr[2]) { v ->
-                EditorJni.nativeEditorSetTransform(
-                    handle, selection,
-                    v[0], v[1], v[2], tr[3], tr[4], tr[5], tr[6], tr[7], tr[8]
-                )
+            // Aplica lendo TODOS os 9 campos vivos (não o snapshot `tr`):
+            // o gizmo pode ter mexido rotação/escala DEPOIS do build do
+            // painel — usar `tr` STALE reverteria a edição (P1.9).
+            addVec3Row(content, "Posição", tr[0], tr[1], tr[2]) { _ ->
+                applyTransformFromFields()
             }
-            addVec3Row(content, "Rotação (°)", tr[3], tr[4], tr[5]) { v ->
-                EditorJni.nativeEditorSetTransform(
-                    handle, selection,
-                    tr[0], tr[1], tr[2], v[0], v[1], v[2], tr[6], tr[7], tr[8]
-                )
+            addVec3Row(content, "Rotação (°)", tr[3], tr[4], tr[5]) { _ ->
+                applyTransformFromFields()
             }
-            addVec3Row(content, "Escala", tr[6], tr[7], tr[8]) { v ->
-                EditorJni.nativeEditorSetTransform(
-                    handle, selection,
-                    tr[0], tr[1], tr[2], tr[3], tr[4], tr[5], v[0], v[1], v[2]
-                )
+            addVec3Row(content, "Escala", tr[6], tr[7], tr[8]) { _ ->
+                applyTransformFromFields()
             }
         }
+        collectTransformFields = false
 
         // Componentes (catálogo reflect-driven — §8.4; kinds P0-6/ADR-052).
         val componentsTsv = EditorJni.nativeEditorEntityComponents(handle, selection)
@@ -833,8 +847,75 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
         )
 
+        // Ações rápidas da seleção (P1.7/P1.8 — um toque, sem long-press).
+        val quick = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        quick.addView(
+            toolButton("Duplicar") {
+                val dup = EditorJni.nativeEditorDuplicateEntity(handle, selection)
+                if (dup == 0L) toast(lastErrorText()) else selectEntity(dup)
+            },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        quick.addView(
+            toolButton("Apagar") {
+                if (EditorJni.nativeEditorDeleteEntity(handle, selection)) {
+                    selection = 0L
+                    refreshPanel()
+                } else {
+                    toast(lastErrorText())
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        content.addView(quick)
+
         inspectorScroll.removeAllViews()
         inspectorScroll.addView(content)
+    }
+
+    /** Escreve o transform com os 9 CAMPOS vivos do painel (P1.9). */
+    private fun applyTransformFromFields() {
+        if (transformFields.size != 9) return
+        val values = FloatArray(9) { i ->
+            transformFields[i].text.toString().toFloatOrNull() ?: 0f
+        }
+        // Escala inválida (0/negativa/NaN → 0 por fallback) é recusada no
+        // campo numérico; o documento mantém a última válida.
+        if (!EditorJni.nativeEditorSetTransform(
+                handle, selection,
+                values[0], values[1], values[2],
+                values[3], values[4], values[5],
+                values[6], values[7], values[8]
+            )
+        ) {
+            toast(lastErrorText())
+        }
+        updateTransformFieldsLive()  // ecoa o que o documento aceitou
+    }
+
+    /** Rebuild do Inspector quando aberto (drag de gizmo terminou — P1.9). */
+    private fun refreshInspectorIfOpen() {
+        if (activePanel == PANEL_INSPECTOR && selection != 0L) {
+            refreshInspector()
+        }
+    }
+
+    /**
+     * Live sync (P1.9): atualiza SO os campos de transform do painel
+     * aberto — sem rebuild. Pula campos com FOCO (o usuário está
+     * digitando; o teclado é a fonte daquele campo até o DONE).
+     */
+    private fun updateTransformFieldsLive() {
+        if (activePanel != PANEL_INSPECTOR || selection == 0L) return
+        if (transformFields.size != 9) return
+        val tr = EditorJni.nativeEditorGetTransform(handle, selection)
+            ?: return
+        if (tr.size != 9) return
+        for (i in 0 until 9) {
+            val field = transformFields[i]
+            if (field.hasFocus()) continue  // digitando: não pisca
+            field.setText(fmtFloat(tr[i]))
+        }
     }
 
     private fun refreshAssets() {
@@ -937,6 +1018,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         parent.addView(labelView(title))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val fields = mutableListOf<EditText>()
+        if (collectTransformFields) transformFields.addAll(fields)
         for (value in listOf(x, y, z)) {
             val edit = EditText(this).apply {
                 inputType = InputType.TYPE_CLASS_NUMBER or
@@ -1487,6 +1569,20 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
+    /** ADD → Sprite (P1.10): um toque = entidade com SpriteData default,
+     * selecionada. Sem textura → placeholder xadrez no viewport. */
+    private fun addSpriteDialog() {
+        inputDialog("Nome do sprite", "Sprite") { name ->
+            val packed = EditorJni.nativeEditorCreateSprite(handle, name)
+            if (packed == 0L) {
+                toast(lastErrorText())
+            } else {
+                selectEntity(packed)
+                toast("Sprite criado — importe uma imagem e escolha a textura no Inspector")
+            }
+        }
+    }
+
     private fun entityMenuDialog(packed: Long) {
         val items = arrayOf(
             "Renomear…", "Duplicar", "Apagar", "Adicionar filho…", "Reparent…"
@@ -1725,9 +1821,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             .show()
     }
 
-    private fun toggleMoveTool() {
-        moveToolActive = !moveToolActive
-        btnTool.text = if (moveToolActive) "MOVER" else "PAN"
+    /** Menu de ferramentas (P1.6): SELECT / MOVE / ROTATE / SCALE. Pan e
+     * zoom continuam gestos ALWAYS-ON (drag em espaço vazio / pinch). */
+    private fun showToolMenu() {
+        val labels = arrayOf(
+            "Selecionar", "Mover (gizmo)", "Rotacionar (gizmo)", "Escalar (gizmo)"
+        )
+        val current = EditorJni.nativeEditorGetTool(handle)
+        AlertDialog.Builder(this)
+            .setTitle("Ferramenta")
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                editorTool = which
+                EditorJni.nativeEditorSetTool(handle, which)
+                btnTool.text = toolLabel(which)
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun toolLabel(tool: Int): String = when (tool) {
+        1 -> "MOVER"; 2 -> "ROTAC"; 3 -> "ESCALA"; else -> "SELECT"
     }
 
     // --- gestos do viewport (§8.6/§8.8 — eventos do EDITOR, não do jogo) ------------------
@@ -1739,7 +1853,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
      */
     private fun gameWantsTouch(): Boolean =
         handle != 0L && EditorJni.nativeEditorIsPlaying(handle) &&
-            !moveToolActive
+            editorTool == 0
 
     private fun attachGestures(view: SurfaceView) {
         val scaleDetector = ScaleGestureDetector(
@@ -1760,6 +1874,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 override fun onSingleTapUp(e: MotionEvent): Boolean {
                     // Toques de JOGO são roteados brutos no listener — aqui
                     // só a seleção do EDITOR (bugs C-5/C-6 da auditoria).
+                    if (gizmoDragging) return true  // drag de gizmo ≠ tap (P1)
                     val hit = EditorJni.nativeEditorViewportTap(handle, e.x, e.y)
                     if (hit != 0L) {
                         selectEntity(hit)
@@ -1773,11 +1888,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 override fun onScroll(
                     e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float
                 ): Boolean {
-                    if (moveToolActive && selection != 0L) {
+                    if (gizmoDragging) return true  // gizmo já consome (P1.3-5)
+                    if (editorTool == 1 && selection != 0L) {
                         // MOVE a entidade selecionada (edit: dirty; play: clone).
                         EditorJni.nativeEditorMoveEntity(handle, selection, dx, dy)
-                    } else if (gameWantsTouch()) {
-                        EditorJni.nativeEditorGameTouch(handle, 1, 0, e2.x, e2.y, 1f)
                     } else {
                         EditorJni.nativeEditorViewportPan(handle, dx, dy)
                     }
@@ -1796,9 +1910,43 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 dispatchGameTouch(event)
                 true
             } else {
+                handleGizmoTouch(event)  // P1: raw events p/ drag de gizmo
                 scaleDetector.onTouchEvent(event)
                 tapDetector.onTouchEvent(event)
                 true
+            }
+        }
+    }
+
+    /**
+     * Drag do GIZMO (P1.3–P1.5) — eventos CRUS: o GestureDetector entrega
+     * apenas DELTAS de scroll; rotação/escala precisam da posição
+     * ABSOLUTA do pointer. Handles têm PRIORIDADE sobre o corpo da
+     * entidade (P1.6): ACTION_DOWN pergunta ao documento; se um handle
+     * acertou, o drag é do gizmo até o UP — tap/scroll ficam suprimidos.
+     */
+    private var gizmoDragging = false
+
+    private fun handleGizmoTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                gizmoDragging = false
+                if (editorTool != 0 && selection != 0L) {
+                    val handleId = EditorJni.nativeEditorGizmoDragBegin(
+                        handle, event.x, event.y
+                    )
+                    gizmoDragging = handleId != 0
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (gizmoDragging) {
+                if (!EditorJni.nativeEditorGizmoDragTo(handle, event.x, event.y)) {
+                    gizmoDragging = false  // erro: entidade morreu no drag
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (gizmoDragging) {
+                EditorJni.nativeEditorGizmoDragEnd(handle)
+                gizmoDragging = false
+                refreshInspectorIfOpen()  // P1.9: campos finais do drag
             }
         }
     }
@@ -1885,6 +2033,19 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         else (nanos - lastFrameNanos) / 1e9f
             lastFrameNanos = nanos
             EditorJni.nativeEditorRenderFrame(handle, delta.coerceIn(0f, 0.1f))
+            // Live sync P1.9: poll da revisão — gizmo/inspector/viewport
+            // nunca divergem (fonte de verdade: o ECS do documento).
+            val revision = EditorJni.nativeEditorSelectionRevision(handle)
+            if (revision != lastSelectionRevision) {
+                lastSelectionRevision = revision
+                val nativeSel = EditorJni.nativeEditorSelection(handle)
+                if (nativeSel != selection) {
+                    selection = nativeSel  // play/stop/dup/delete mudaram
+                    refreshHierarchySafe()
+                    if (activePanel == PANEL_INSPECTOR) refreshInspector()
+                }
+                updateTransformFieldsLive()
+            }
         }
         choreographer?.postFrameCallback(this)
     }

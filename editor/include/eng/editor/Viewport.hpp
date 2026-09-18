@@ -38,6 +38,10 @@ struct EntityQuad {
     bool selected{false};
 
     // --- sprite (evolução P0-3) — preenchido quando o nó tem SpriteData ---
+    /// Nó TEM SpriteData (com ou sem textura). Sem textura → o renderer
+    /// desenha o PLACEHOLDER xadrez (P1.10: claramente identificado,
+    /// não confundir com sprite renderizado/hue de entidade crua).
+    bool isSprite{false};
     /// Nome do asset de textura (vazio = quad de cor, caminho antigo).
     std::string textureAsset{};
     /// Região UV do sprite (respeita flip no renderer).

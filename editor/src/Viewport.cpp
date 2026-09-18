@@ -135,6 +135,7 @@ std::vector<EntityQuad> Viewport::buildQuads(
         // região UV × 1 unidade de mundo serve de estimativa e o renderer
         // corrige na escala final.
         if (const auto* sprite = scene.world().get<eng::editor::SpriteData>(node)) {
+            quad.isSprite = true;
             quad.textureAsset = sprite->textureAsset;
             quad.u0 = sprite->u0;
             quad.v0 = sprite->v0;
