@@ -2,11 +2,12 @@
 # eng:: — Git ignore (FASE 1)
 # =============================================================================
 
-# Diretórios de build (presets geram build/<preset>)
-build/
-.build/
-out/
-cmake-build-*/
+# Diretórios de build (presets geram build/<preset>) — ANCORADO na
+# raiz: engine/build/ é MÓDULO-FONTE (FASE 12) e DEVE ser rastreado.
+/build/
+/.build/
+/out/
+/cmake-build-*/
 
 # Projetos de jogo: cache derivado e estado local (FASE 3, ADR-032)
 cache/
