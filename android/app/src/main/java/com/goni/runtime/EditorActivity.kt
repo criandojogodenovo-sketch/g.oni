@@ -77,6 +77,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private var moveToolActive = false
     private var activePanel = PANEL_NONE
 
+    // Painel de scripts (P0-7): lista carregada por refreshScripts().
+    private lateinit var scriptsList: ListView
+    private val scriptNames = mutableListOf<String>()
+
     private var importTmpDir: File? = null
 
     // --- ciclo de vida ---------------------------------------------------------
@@ -248,6 +252,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolButton("Assets") { togglePanel(PANEL_ASSETS) },
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
+        bottomBar.addView(
+            toolButton("Scripts") { togglePanel(PANEL_SCRIPTS) },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
 
         // ---- host de painel (sheet inferior / drawer lateral) ----
         panelHost = FrameLayout(this)
@@ -364,6 +372,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_HIERARCHY -> "Hierarquia"
             PANEL_INSPECTOR -> "Inspector"
             PANEL_ASSETS -> "Assets"
+            PANEL_SCRIPTS -> "Scripts"
             else -> ""
         }
         // Cabeçalho do sheet: título + fechar (padrão de drawer moderno).
@@ -397,6 +406,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_HIERARCHY -> buildHierarchyPanel()
             PANEL_INSPECTOR -> buildInspectorPanel()
             PANEL_ASSETS -> panelContainer.addView(assetsRoot)
+            PANEL_SCRIPTS -> buildScriptsPanel()
         }
         panelContainer.visibility = View.VISIBLE
         refreshPanel()
@@ -407,6 +417,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_HIERARCHY -> refreshHierarchy()
             PANEL_INSPECTOR -> refreshInspector()
             PANEL_ASSETS -> refreshAssets()
+            PANEL_SCRIPTS -> refreshScripts()
         }
     }
 
@@ -463,6 +474,172 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private lateinit var assetsRoot: LinearLayout
     private lateinit var assetSearch: EditText
     private var assetQuery: String = ""
+
+    // --- painel de scripts NI-Script (evolução P0-7, ADR-053) -------------------
+
+    private fun buildScriptsPanel() {
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bar.addView(
+            toolButton("+ Novo script") { newScriptDialog() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        scriptsList = ListView(this).apply {
+            onItemClickListener =
+                AdapterView.OnItemClickListener { _, _, position, _ ->
+                    val name = scriptNames.getOrNull(position)
+                    if (name != null) scriptEditorDialog(name)
+                }
+        }
+        panelContainer.addView(
+            bar,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        panelContainer.addView(
+            scriptsList,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+    }
+
+    private fun refreshScripts() {
+        if (handle == 0L || !::scriptsList.isInitialized) return
+        val tsv = EditorJni.nativeEditorScriptList(handle) ?: return
+        scriptNames.clear()
+        scriptNames.addAll(tsv.lines().filter { it.isNotBlank() })
+        scriptsList.adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1, scriptNames.toList()
+        )
+    }
+
+    private fun newScriptDialog() {
+        inputDialog("Nome do script", "Movimento") { name ->
+            if (EditorJni.nativeEditorScriptCreate(handle, name)) {
+                refreshScripts()
+            } else {
+                toast(lastErrorText())
+            }
+        }
+    }
+
+    /**
+     * Editor de script (P0-7): fonte multi-linha (monospace), Compilar
+     * com diagnósticos line:col, Anexar à entidade selecionada, Salvar.
+     */
+    private fun scriptEditorDialog(name: String) {
+        val content = EditorJni.nativeEditorScriptRead(handle, name) ?: run {
+            toast(lastErrorText()); return
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+        }
+        val edit = EditText(this).apply {
+            setText(content)
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(Ui.TEXT)
+            setHorizontallyScrolling(false)
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            gravity = Gravity.TOP
+            minLines = 12
+            background = rippleBox(Ui.SURFACE_ALT, dp(6))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val scroller = ScrollView(this).apply { addView(edit) }
+        container.addView(
+            scroller,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+        )
+
+        // Barra de ações: Compilar | Anexar | Salvar.
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        actions.addView(
+            toolButton("Compilar") {
+                val tsv = EditorJni.nativeEditorScriptCompile(handle, edit.text.toString())
+                if (tsv == null) {
+                    toast(lastErrorText())
+                } else {
+                    showCompileDiags(tsv)
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        actions.addView(
+            toolButton("Anexar") {
+                if (selection == 0L) {
+                    toast("Selecione uma entidade antes de anexar")
+                } else if (EditorJni.nativeEditorScriptAssign(handle, selection, name)) {
+                    toast("Anexado a ${currentEntityName(selection)}")
+                } else {
+                    toast(lastErrorText())
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        var dialog: AlertDialog? = null
+        actions.addView(
+            toolButton("Salvar") {
+                if (EditorJni.nativeEditorScriptWrite(handle, name, edit.text.toString())) {
+                    toast("Salvo")
+                    dialog?.dismiss()
+                } else {
+                    toast(lastErrorText())
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        container.addView(
+            actions,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        dialog = AlertDialog.Builder(this)
+            .setTitle(name)
+            .setView(container)
+            .setPositiveButton("Fechar", null)
+            .show()
+    }
+
+    /** Diagnósticos do Compilar: TSV "1|0" + linhas "line\tcol\tmessage". */
+    private fun showCompileDiags(tsv: String) {
+        val lines = tsv.lines()
+        val ok = lines.firstOrNull() == "1"
+        val builder = AlertDialog.Builder(this)
+            .setTitle(if (ok) "Compilou" else "Erros de compilação")
+        if (ok) {
+            builder.setMessage("O script compila até bytecode.")
+        } else {
+            val rows = lines.drop(1).filter { it.isNotBlank() }
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val scroll = ScrollView(this).apply { addView(list) }
+            for (row in rows) {
+                val p = row.split('\t')
+                list.addView(TextView(this).apply {
+                    text = "${p.getOrNull(0) ?: "?"}:${p.getOrNull(1) ?: "?"}  ${p.getOrNull(2) ?: ""}"
+                    setTextColor(Ui.DANGER)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setTypeface(android.graphics.Typeface.MONOSPACE)
+                    setPadding(dp(12), dp(4), dp(12), dp(4))
+                })
+            }
+            builder.setView(scroll)
+        }
+        builder.setPositiveButton("OK", null).show()
+    }
 
     private fun buildAssetsPanel() {
         assetsRoot = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1890,6 +2067,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         private const val PANEL_HIERARCHY = 1
         private const val PANEL_INSPECTOR = 2
         private const val PANEL_ASSETS = 3
+        private const val PANEL_SCRIPTS = 4
         private const val REQUEST_IMPORT = 4101
     }
 }

@@ -85,6 +85,13 @@ public:
     [[nodiscard]] eng::core::Result<std::vector<std::byte>> read(
         std::string_view category, std::string_view name) const;
 
+    /// Registra no AssetRegistry um arquivo JÁ POSICIONADO em
+    /// `assets/<category>/<name>` (evolução P0-7: scripts são escritos
+    /// diretamente pelo editor — writeAllText — e precisam catalogar SEM
+    /// passar pelo fluxo de import/move). Idempotente por path (upsert).
+    [[nodiscard]] eng::core::Result<void> registerExisting(
+        std::string_view category, std::string_view name);
+
     /// Persistência explícita (import/rename/remove já salvam).
     [[nodiscard]] eng::core::Result<void> saveRegistry() const;
     [[nodiscard]] eng::core::Result<void> loadRegistry();

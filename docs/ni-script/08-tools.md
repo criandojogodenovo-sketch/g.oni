@@ -42,7 +42,7 @@ entregue em v1 (abaixo).
 
 | Ferramenta | Estado |
 |---|---|
-| UI de edição de script no editor Android | NÃO entregue — a fonte `.nis` é editável pelo campo `source` do componente (Inspector/string, funciona hoje via JNI); editor com realce/numeração é FUTURO |
+| UI de edição de script no editor Android | **ENTREGUE na evolução P0-7 (ADR-053)**: painel Scripts com lista de assets .nis do projeto, editor multi-linha monospace, Compilar com diagnósticos line:col, Anexar à entidade e Salvar (multi-KB). Realce de sintaxe/numeração de linhas continuam FUTURO |
 | Breakpoints | NÃO entregue — o hook de trace permite um tracer de linha, mas breakpoint com pausa não existe |
 | Inspetor de variáveis do VM | NÃO entregue — os globais são legíveis do C++ (`state.global(nome)`) mas não há UI |
 | Profiler de scripts | NÃO entregue |

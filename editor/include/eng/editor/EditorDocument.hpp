@@ -257,6 +257,59 @@ public:
     [[nodiscard]] static eng::ecs::Entity unpackEntity(
         std::uint64_t packed) noexcept;
 
+    // --- scripts NI-Script (evolução P0-7, ADR-053) ------------------------------
+    //
+    // O asset .nis é a FONTE DE EDIÇÃO (assets/scripts/*.nis); a cena
+    // carrega uma CÓPIA estável em NiScriptComponent.source (ADR-043 — o
+    // runtime/serialização nunca dependem de arquivos externos à cena).
+    // scriptAssign copia do asset para o componente; o workflow completo
+    // é: criar → editar → compilar (validação) → anexar à entidade.
+
+    /// Diagnóstico de compilação .nis (1-based).
+    struct ScriptDiag {
+        std::uint32_t line = 0;
+        std::uint32_t col = 0;
+        std::string message;
+    };
+
+    /// Resultado de uma checagem de compilação.
+    struct ScriptCheck {
+        bool ok = false;                ///< compilou até bytecode?
+        std::vector<ScriptDiag> diags; ///< TODOS os erros coletados
+    };
+
+    /// Lista os scripts do projeto (assets/scripts), por nome de arquivo.
+    /// Pré-requisito: projeto aberto.
+    [[nodiscard]] eng::core::Result<std::vector<std::string>> scriptList()
+        const;
+
+    /// Lê o conteúdo de um script .nis. Erros precisos.
+    [[nodiscard]] eng::core::Result<std::string> scriptRead(
+        std::string_view name) const;
+
+    /// Escreve o conteúdo do script (substitui bytes; cataloga no
+    /// registry quando é arquivo novo). Valida nome/anti-traversal.
+    [[nodiscard]] eng::core::Result<void> scriptWrite(
+        std::string_view name, std::string_view content);
+
+    /// Cria um script NOVO com o template canônico (força .nis; recusa
+    /// nome vazio/duplicado).
+    [[nodiscard]] eng::core::Result<void> scriptCreate(std::string_view name);
+
+    /// Apaga um script (arquivo + registry).
+    [[nodiscard]] eng::core::Result<void> scriptDelete(std::string_view name);
+
+    /// Valida a fonte .nis SEM executar: compila com a MESMA tabela de
+    /// nativos do runtime de Play (&BL + host padrão — o que o jogo vê).
+    /// O Result falha apenas em erros INTERNOS; o veredito está em `ok`.
+    [[nodiscard]] eng::core::Result<ScriptCheck> scriptCompile(
+        std::string_view source) const;
+
+    /// Anexa o script à entidade: NiScriptComponent.source = conteúdo do
+    /// asset (adiciona o componente quando ausente). Só em Edit.
+    [[nodiscard]] eng::core::Result<void> scriptAssign(
+        eng::ecs::Entity entity, std::string_view name);
+
 private:
     EditorDocument() = default;
 

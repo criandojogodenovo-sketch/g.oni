@@ -572,6 +572,169 @@ TEST_CASE("editor: campo de textura reporta kind texture (P0-6)", "[editor]")
               ->value == "hero.png");
 }
 
+// =============================================================================
+// 3c. Scripts NI-Script como assets do projeto (evolução P0-7, ADR-053)
+// =============================================================================
+
+TEST_CASE("editor: scriptCreate gera template válido e catalogado (P0-7)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Nome sem extensão → ganha .nis.
+    REQUIRE(f.doc->scriptCreate("Movimento").ok());
+    auto names = f.doc->scriptList();
+    REQUIRE(names.ok());
+    REQUIRE(names.value().size() == 1);
+    CHECK(names.value()[0] == "Movimento.nis");
+
+    // O TEMPLATE COMPILA — provado pela MESMA checagem que a UI usa.
+    auto source = f.doc->scriptRead("Movimento.nis");
+    REQUIRE(source.ok());
+    auto check = f.doc->scriptCompile(source.value());
+    REQUIRE(check.ok());
+    CHECK(check.value().ok);
+    CHECK(check.value().diags.empty());
+
+    // Duplicado → AlreadyExists.
+    CHECK(f.doc->scriptCreate("Movimento").isError());
+    // Nome com extensão idêntica → duplicado do mesmo jeito.
+    CHECK(f.doc->scriptCreate("Movimento.nis").isError());
+
+    // Nomes inválidos rejeitados (traversal, vazio).
+    CHECK(f.doc->scriptCreate("").isError());
+    CHECK(f.doc->scriptCreate("../evil").isError());
+
+    // Catalogado no registry: o AssetBrowser lista como registrado com id.
+    auto* browser = f.doc->assets();
+    REQUIRE(browser != nullptr);
+    auto listed = browser->list("scripts");
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0].registered);
+    CHECK(listed.value()[0].id != "-");
+}
+
+TEST_CASE("editor: scriptWrite/Read round-trip + registry (P0-7)", "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    const std::string src = "add &BL\n\nvar hp: int = 10\n";
+    REQUIRE(f.doc->scriptWrite("Player.nis", src).ok());
+
+    auto read = f.doc->scriptRead("Player.nis");
+    REQUIRE(read.ok());
+    CHECK(read.value() == src);
+
+    // Substituição preserva o id (ADR-029).
+    auto before = f.doc->assets()->list("scripts");
+    REQUIRE(before.ok());
+    REQUIRE(before.value().size() == 1);
+    const std::string idBefore = before.value()[0].id;
+
+    const std::string src2 = "add &BL\n\nvar hp: int = 20\n";
+    REQUIRE(f.doc->scriptWrite("Player.nis", src2).ok());
+    auto after = f.doc->assets()->list("scripts");
+    REQUIRE(after.ok());
+    REQUIRE(after.value().size() == 1);
+    CHECK(after.value()[0].id == idBefore);
+    CHECK(after.value()[0].registered);
+
+    auto read2 = f.doc->scriptRead("Player.nis");
+    REQUIRE(read2.ok());
+    CHECK(read2.value() == src2);
+
+    // Delete remove arquivo + meta.
+    REQUIRE(f.doc->scriptDelete("Player.nis").ok());
+    CHECK(f.doc->scriptList().value().empty());
+    CHECK(f.doc->scriptRead("Player.nis").isError());
+}
+
+TEST_CASE("editor: scriptCompile separa válido de inválido com diagnósticos (P0-7)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Fonte VÁLIDA (usa nativo de host: self()).
+    const std::string good = "add &BL\n"
+                             "\n"
+                             "up update:\n"
+                             "    var me = self()\n"
+                             "    me.position.x = me.position.x + 1\n"
+                             "stop\n";
+    auto okCheck = f.doc->scriptCompile(good);
+    REQUIRE(okCheck.ok());
+    CHECK(okCheck.value().ok);
+    CHECK(okCheck.value().diags.empty());
+
+    // Fonte QUEBRADA: string aberta → diagnóstico com linha/coluna.
+    const std::string bad = "var s = \"aberta\n";
+    auto badCheck = f.doc->scriptCompile(bad);
+    REQUIRE(badCheck.ok());          // o CHECK rodou (erro interno não houve)
+    CHECK_FALSE(badCheck.value().ok); // o VEREDITO é do compilador
+    REQUIRE_FALSE(badCheck.value().diags.empty());
+    CHECK(badCheck.value().diags[0].line == 1);
+    CHECK(badCheck.value().diags[0].col > 0);
+    CHECK_FALSE(badCheck.value().diags[0].message.empty());
+
+    // Nativo inexistente → sema pega (a tabela do runtime de Play).
+    const std::string badNative = "up update:\n    voo_magico()\nstop\n";
+    auto nativeCheck = f.doc->scriptCompile(badNative);
+    REQUIRE(nativeCheck.ok());
+    CHECK_FALSE(nativeCheck.value().ok);
+    CHECK_FALSE(nativeCheck.value().diags.empty());
+}
+
+TEST_CASE("editor: scriptAssign anexa fonte e PLAY roda o script (P0-7)",
+          "[editor]")
+{
+    DocFixture f;
+    f.withProject();
+
+    const std::string src = "add &BL\n"
+                            "\n"
+                            "var speed: float = 3.0\n"
+                            "\n"
+                            "up update:\n"
+                            "    var me = self()\n"
+                            "    me.position.x = me.position.x + speed\n"
+                            "stop\n";
+    REQUIRE(f.doc->scriptWrite("Andar.nis", src).ok());
+
+    auto entity = f.doc->createEntity("Player", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+
+    // Anexa: adiciona o componente e copia a fonte do ASSET.
+    REQUIRE(f.doc->scriptAssign(entity.value(), "Andar.nis").ok());
+    auto fields = f.doc->inspectorFields(
+        entity.value(), "eng::editor::NiScriptComponent");
+    const auto* sourceField = fieldByPath(fields, "source");
+    REQUIRE(sourceField != nullptr);
+    CHECK(sourceField->value == src);
+    CHECK(sourceField->kind == "text");
+
+    // PLAY: compila e roda o up update (o mesmo caminho da FASE 11).
+    REQUIRE(f.doc->play().ok());
+    CHECK(f.doc->runtimeScripts().size() == 1);
+    f.doc->tick(1.f / 60.f);
+    auto x = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::math::Transform",
+        "position.x");
+    REQUIRE(x.ok());
+    // up update: me.position.x = me.position.x + speed → 0 + 3.0 = 3.0
+    // (a conta do script é +speed por update, não *delta).
+    CHECK(std::stof(x.value()) == Catch::Approx(3.f).margin(1e-4f));
+    f.doc->stop();
+
+    // Sem projeto aberto (documento recém-criado) → erro preciso.
+    DocFixture fresh;
+    CHECK(fresh.doc->scriptList().isError());
+    CHECK(fresh.doc->scriptRead("x.nis").isError());
+}
+
 TEST_CASE("editor: add/remove componente com proteção dos core", "[editor]")
 {
     DocFixture f;

@@ -15,6 +15,7 @@
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectPaths.hpp"
+#include "eng/editor/NiScriptComponent.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneSerializer.hpp"
@@ -1018,6 +1019,245 @@ eng::ecs::Entity EditorDocument::unpackEntity(std::uint64_t packed) noexcept
         static_cast<std::uint32_t>((packed >> 32ull) - 1ull);
     const std::uint32_t generation = static_cast<std::uint32_t>(packed);
     return eng::ecs::Entity{index, generation};
+}
+
+// =============================================================================
+// Scripts NI-Script (evolução P0-7, ADR-053)
+// =============================================================================
+
+namespace {
+
+/// Nome de script válido: não-vazio, sem '/', sem '..', sem '\0'.
+/// A extensão .nis é forçada por scriptCreate; aqui aceita-se o nome
+/// COMO ESTÁ (read/write casam com o que listou).
+[[nodiscard]] bool isValidScriptName(std::string_view name) noexcept
+{
+    if (name.empty() || name.size() > 128) {
+        return false;
+    }
+    if (name.find("..") != std::string_view::npos ||
+        name.find('/') != std::string_view::npos ||
+        name.find('\\') != std::string_view::npos ||
+        name.find('\0') != std::string_view::npos) {
+        return false;
+    }
+    return true;
+}
+
+/// Garante extensão .nis (adiciona quando ausente).
+[[nodiscard]] std::string withNisExtension(std::string_view name)
+{
+    std::string out(name);
+    if (out.size() < 4 || out.compare(out.size() - 4, 4, ".nis") != 0) {
+        out += ".nis";
+    }
+    return out;
+}
+
+/// Template canônico de script novo: compila LIMPO (o teste do editor
+/// PROVA via scriptCompile), sintaxe idêntica aos casos da FASE 11.
+[[nodiscard]] std::string defaultScriptTemplate()
+{
+    return "# Script NI-Script do G.ONI\n"
+           "# Linguagem: docs/ni-script/ (indentacao por blocos, 'stop' fecha)\n"
+           "\n"
+           "add &BL\n"
+           "\n"
+           "var speed: float = 2.0\n"
+           "var ticks: int = 0\n"
+           "\n"
+           "up start:\n"
+           "    # roda uma vez ao entrar em PLAY\n"
+           "stop\n"
+           "\n"
+           "up update:\n"
+           "    # roda por frame — exemplo: move a entidade no eixo X\n"
+           "    var me = self()\n"
+           "    me.position.x = me.position.x + speed\n"
+           "    ticks = ticks + 1\n"
+           "stop\n"
+           "\n"
+           "up destroy:\n"
+           "    # limpeza ao sair do PLAY\n"
+           "stop\n";
+}
+
+}  // namespace
+
+Result<std::vector<std::string>> EditorDocument::scriptList() const
+{
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidState, "nenhum projeto aberto"));
+    }
+    auto listed = assets_->list("scripts");
+    if (listed.isError()) {
+        return makeUnexpected(listed.error());
+    }
+    std::vector<std::string> names;
+    names.reserve(listed.value().size());
+    for (const auto& entry : listed.value()) {
+        names.push_back(entry.name);
+    }
+    return names;
+}
+
+Result<std::string> EditorDocument::scriptRead(std::string_view name) const
+{
+    if (!isValidScriptName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de script invalido"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto bytes = assets_->read("scripts", name);
+    if (bytes.isError()) {
+        return makeUnexpected(bytes.error());
+    }
+    std::string text;
+    text.reserve(bytes.value().size());
+    for (const std::byte b : bytes.value()) {
+        text.push_back(static_cast<char>(b));
+    }
+    return text;
+}
+
+Result<void> EditorDocument::scriptWrite(std::string_view name,
+                                         std::string_view content)
+{
+    if (!isValidScriptName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de script invalido"));
+    }
+    if (assets_ == nullptr || !project_.has_value()) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    const eng::fs::Path path = project_->paths().assetsRoot() /
+                               eng::fs::Path{"scripts"} /
+                               eng::fs::Path{std::string(name)};
+    if (path.isAbsolute()) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "caminho absoluto proibido"));
+    }
+    auto existed = fs_->exists(path);
+    if (existed.isError()) {
+        return makeUnexpected(existed.error());
+    }
+    auto written = fs_->writeAllText(path, std::string(content));
+    if (written.isError()) {
+        return makeUnexpected(written.error());
+    }
+    if (!existed.value()) {
+        // Arquivo NOVO: cataloga no registry (upsert + persist).
+        auto registered = assets_->registerExisting("scripts", name);
+        if (registered.isError()) {
+            // O arquivo existe mas o meta não persistiu — erro real
+            // (o browser não listaria o script).
+            return makeUnexpected(registered.error());
+        }
+    }
+    return {};
+}
+
+Result<void> EditorDocument::scriptCreate(std::string_view rawName)
+{
+    if (!isValidScriptName(rawName)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "nome de script invalido (vazio/caracteres proibidos)"));
+    }
+    const std::string name = withNisExtension(rawName);
+    if (assets_ == nullptr || !project_.has_value()) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto listed = scriptList();
+    if (listed.isError()) {
+        return makeUnexpected(listed.error());
+    }
+    for (const auto& existing : listed.value()) {
+        if (existing == name) {
+            return makeUnexpected(documentError(
+                StatusCode::AlreadyExists,
+                "script '" + name + "' ja existe"));
+        }
+    }
+    return scriptWrite(name, defaultScriptTemplate());
+}
+
+Result<void> EditorDocument::scriptDelete(std::string_view name)
+{
+    if (!isValidScriptName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de script invalido"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    // AssetBrowser::remove apaga arquivo + meta e persiste.
+    return assets_->remove("scripts", name);
+}
+
+Result<EditorDocument::ScriptCheck> EditorDocument::scriptCompile(
+    std::string_view source) const
+{
+    // MESMA tabela visível ao runtime de Play (NiRuntime::start) — o que
+    // valida aqui é o que o jogo vai compilar lá.
+    eng::ni::NiNativeTable natives;
+    natives.addBaseLibrary();
+    natives.addStandardHost();
+
+    ScriptCheck check;
+    std::vector<eng::ni::NiDiag> diags;
+    const eng::ni::CompileOptions options{&natives};
+    auto program = eng::ni::compile(source, options, &diags);
+    check.ok = static_cast<bool>(program);
+    check.diags.reserve(diags.size());
+    for (const auto& diag : diags) {
+        check.diags.push_back(
+            ScriptDiag{diag.line, diag.col, diag.message});
+    }
+    return check;
+}
+
+Result<void> EditorDocument::scriptAssign(eng::ecs::Entity entity,
+                                           std::string_view name)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    if (!scene_->isNode(entity)) {
+        return makeUnexpected(documentError(StatusCode::NotFound,
+                                            "entidade obsoleta"));
+    }
+    auto content = scriptRead(name);
+    if (content.isError()) {
+        return makeUnexpected(content.error());
+    }
+    // Caminho pelo catálogo ÚNICO (mesma via do Inspector): componente
+    // presente → escreve source; ausente → adiciona default e escreve.
+    if (!scene_->world().has<eng::editor::NiScriptComponent>(entity)) {
+        auto added = Inspector::addComponent(
+            *scene_, entity, "eng::editor::NiScriptComponent");
+        if (added.isError()) {
+            return makeUnexpected(added.error());
+        }
+    }
+    auto written = Inspector::setField(
+        *scene_, entity, "eng::editor::NiScriptComponent", "source",
+        content.value());
+    if (written.isError()) {
+        return makeUnexpected(written.error());
+    }
+    sceneDirty_ = true;
+    ENG_INFO("script anexado: {} ({} bytes) → entidade {}", name,
+             content.value().size(), entity.index);
+    return {};
 }
 
 }  // namespace eng::editor

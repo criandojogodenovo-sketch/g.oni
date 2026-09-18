@@ -299,6 +299,51 @@ Result<std::vector<std::byte>> AssetBrowser::read(std::string_view category,
     return fs_->readAllBytes(path);
 }
 
+Result<void> AssetBrowser::registerExisting(std::string_view category,
+                                             std::string_view name)
+{
+    const char* typeName = assetTypeFor(category);
+    if (typeName == nullptr) {
+        return makeUnexpected(browserError(StatusCode::InvalidArgument,
+                                           "categoria desconhecida"));
+    }
+    const eng::fs::Path path = categoryDir(category) / eng::fs::Path{std::string{name}};
+    auto exists = fs_->exists(path);
+    if (exists.isError()) {
+        return makeUnexpected(exists.error());
+    }
+    if (!exists.value()) {
+        return makeUnexpected(browserError(
+            StatusCode::NotFound,
+            "arquivo não existe em '" + path.str() + "'"));
+    }
+    // Idempotente por path: já registrado → nada a fazer (tamanho é
+    // atualizado só quando o arquivo muda de fato — aqui o chamador
+    // acabou de escrever, então refresh do meta sempre).
+    eng::assets::AssetMeta meta;
+    meta.type = eng::assets::assetTypeFromName(typeName).value();
+    meta.sourcePath = path;
+    if (auto bytes = fs_->readAllBytes(path); !bytes.isError()) {
+        meta.size = bytes.value().size();
+    }
+    // Preserva o id quando o path já estava catalogado (referências por
+    // AssetId sobrevivem — ADR-029); senão gera um novo.
+    for (const auto& existing : registry_.all()) {
+        if (existing.sourcePath == path) {
+            meta.id = existing.id;
+            break;
+        }
+    }
+    if (meta.id.isNil()) {
+        meta.id = eng::assets::AssetId::generate();
+    }
+    auto upserted = registry_.upsert(std::move(meta));
+    if (upserted.isError()) {
+        return makeUnexpected(upserted.error());
+    }
+    return persist();
+}
+
 Result<void> AssetBrowser::move(std::string_view fromCategory,
                                 std::string_view name,
                                 std::string_view toCategory)

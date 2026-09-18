@@ -106,6 +106,23 @@ object EditorJni {
     /** Nomes dos assets de textura (linhas \n) — p/ picker de SpriteData. */
     external fun nativeEditorListTextures(handle: Long): String?
 
+    // --- scripts NI-Script como assets (evolução P0-7, ADR-053) ----------------------------
+
+    /** Nomes dos scripts do projeto (linhas \n); vazio quando sem projeto. */
+    external fun nativeEditorScriptList(handle: Long): String?
+    /** Conteúdo do script; null + lastError em falha. */
+    external fun nativeEditorScriptRead(handle: Long, name: String): String?
+    /** Escreve o conteúdo (multi-KB ok — sem limite de nome). */
+    external fun nativeEditorScriptWrite(handle: Long, name: String, content: String): Boolean
+    /** Cria script novo com template válido (força .nis). */
+    external fun nativeEditorScriptCreate(handle: Long, name: String): Boolean
+    /** Apaga script (arquivo + registry). */
+    external fun nativeEditorScriptDelete(handle: Long, name: String): Boolean
+    /** TSV: linha 1 = "1" compilou / "0" falhou; depois "line\tcol\tmessage". */
+    external fun nativeEditorScriptCompile(handle: Long, source: String): String?
+    /** Anexa o script à entidade (NiScriptComponent.source = conteúdo). */
+    external fun nativeEditorScriptAssign(handle: Long, packed: Long, name: String): Boolean
+
     /** Toque do JOGO em Play (§6.4 — separado dos gestos do editor). phase: 0=Down,1=Move,2=Up,3=Cancel. */
     external fun nativeEditorGameTouch(handle: Long, phase: Int, pointerId: Int,
                                        x: Float, y: Float, pressure: Float)

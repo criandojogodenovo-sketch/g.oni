@@ -89,6 +89,23 @@ bool record(jlong handle, const ResultT& result)
     return env->NewStringUTF(text.c_str());
 }
 
+/// jstring → std::string SEM limite de tamanho (evolução P0-7: fontes
+/// .nis têm vários KB — o buffer fixo de 512B do copyJString não serve
+/// para CONTEÚDO de script; nomes continuam no caminho limitado).
+[[nodiscard]] std::string jniToString(JNIEnv* env, jstring value)
+{
+    if (value == nullptr) {
+        return {};
+    }
+    const jsize utfLength = env->GetStringUTFLength(value);
+    if (utfLength <= 0) {
+        return {};
+    }
+    std::string out(static_cast<std::size_t>(utfLength), '\0');
+    env->GetStringUTFRegion(value, 0, utfLength, out.data());
+    return out;
+}
+
 }  // namespace
 
 extern "C" {
@@ -1153,6 +1170,168 @@ Java_com_goni_runtime_EditorJni_nativeEditorListTextures(JNIEnv* env,
         tsv += entry.name;
     }
     return stringToJni(env, tsv);
+}
+
+// =============================================================================
+// Scripts NI-Script como assets do projeto (evolução P0-7, ADR-053)
+// =============================================================================
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptList(JNIEnv* env,
+                                                       jobject /*thiz*/,
+                                                       jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto listed = host->document().scriptList();
+    if (listed.isError()) {
+        return stringToJni(env, "");
+    }
+    std::string tsv;
+    for (const auto& name : listed.value()) {
+        if (!tsv.empty()) {
+            tsv.push_back('\n');
+        }
+        tsv += name;
+    }
+    return stringToJni(env, tsv);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptRead(JNIEnv* env,
+                                                       jobject /*thiz*/,
+                                                       jlong handle,
+                                                       jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return nullptr;
+    }
+    auto content = host->document().scriptRead(nameBuf);
+    if (content.isError()) {
+        (void)record(handle, content);
+        return nullptr;
+    }
+    return stringToJni(env, content.value());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptWrite(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle,
+                                                         jstring name,
+                                                         jstring content)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    // Conteúdo SEM limite de 512B — fontes .nis são multi-KB (P0-7).
+    const std::string body = jniToString(env, content);
+    return record(handle, host->document().scriptWrite(nameBuf, body))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptCreate(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle,
+                                                          jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().scriptCreate(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptDelete(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle,
+                                                          jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().scriptDelete(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+/// TSV: linha 1 = "1" (compilou) ou "0" (falhou); linhas seguintes =
+/// "line\tcol\tmessage" (todos os diagnósticos coletados).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptCompile(JNIEnv* env,
+                                                           jobject /*thiz*/,
+                                                           jlong handle,
+                                                           jstring source)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    const std::string src = jniToString(env, source);
+    auto check = host->document().scriptCompile(src);
+    if (check.isError()) {
+        return stringToJni(env, "0\n1\t1\t" + check.error().message);
+    }
+    std::string tsv = check.value().ok ? "1" : "0";
+    for (const auto& diag : check.value().diags) {
+        tsv += '\n';
+        tsv += std::to_string(diag.line);
+        tsv += '\t';
+        tsv += std::to_string(diag.col);
+        tsv += '\t';
+        tsv += diag.message;
+    }
+    return stringToJni(env, tsv);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptAssign(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle,
+                                                          jlong packed,
+                                                          jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().scriptAssign(
+                      EditorDocument::unpackEntity(
+                          static_cast<std::uint64_t>(packed)),
+                      nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
 }
 
 }  // extern "C"

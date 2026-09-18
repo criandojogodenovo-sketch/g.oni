@@ -7,9 +7,10 @@
 /// (ADR-043 — mesmo padrão de RigidBody/Animator/ParticleEmitter: o
 /// registro vive no CONSUMIDOR, engine/scene não conhece scripting).
 ///
-/// - `source` é o texto .nis COMPLETO (editável pelo Inspector existente —
-///   campo string; UI dedicada de script é FUTURO planejado, ver
-///   docs/ni-script/08-tools.md — adiada e declarada);
+/// - `source` é o texto .nis COMPLETO (anexado via scriptAssign do asset
+///   .nis do projeto, ou editável direto pelo Inspector — UI DEDICADA de
+///   script existe desde a evolução P0-7: painel Scripts com
+///   compilação/diagnósticos, ver ADR-053);
 /// - em PLAY, o EditorDocument compila o source de cada instância no
 ///   CLONE (ADR-044: a edição nunca é tocada), instancia o NiScriptState
 ///   e roda @init → up start → up update (por tick) → up destroy.
