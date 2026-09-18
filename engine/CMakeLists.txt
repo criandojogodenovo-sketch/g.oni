@@ -36,3 +36,7 @@ add_subdirectory(audio)    # Wav/voices/buses/mixer — sobre core/fs/serial
 add_subdirectory(physics)  # RigidBody/Collider/Raycast/timestep fixo
 add_subdirectory(animation) # Clips/Animator/estados — sobre math/scene
 add_subdirectory(particles) # Emitter/pool CPU determinística — sobre scene
+# FASE 11 (ADR-049): NI-Script — linguagem própria compilada para bytecode.
+# Núcleo puro sobre core/math/ecs/reflect; bindings de gameplay ficam no
+# CONSUMIDOR (editor), igual ao catálogo do SceneSerializer (ADR-043).
+add_subdirectory(niscript) # Lexer/Parser/Sema/Compiler + NI VM + bindings

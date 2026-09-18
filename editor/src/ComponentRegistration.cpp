@@ -1,5 +1,8 @@
 #include "eng/animation/Animation.hpp"
+
 #include "eng/editor/EditorDocument.hpp"
+#include "eng/editor/NiRuntime.hpp"
+#include "eng/editor/NiScriptComponent.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/scene/SceneSerializer.hpp"
@@ -26,6 +29,9 @@ const bool goni_editor_components_registered = [] {
         "eng::animation::Animator");
     (void)SceneSerializer::registerComponentType<
         eng::particles::ParticleEmitter>("eng::particles::ParticleEmitter");
+    // FASE 11: scripts NI-Script anexados a nós (ADR-043 — mesmo catálogo)
+    (void)SceneSerializer::registerComponentType<
+        eng::editor::NiScriptComponent>("eng::editor::NiScriptComponent");
     return true;
 }();
 

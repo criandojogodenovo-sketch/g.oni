@@ -112,14 +112,14 @@ graph TD
     rhi --> rhi_vulkan["rhi-vulkan (FASE 5)"]
     rhi --> rhi_gl["rhi-gles (FASE 6)"]
     android["android/ runtime (FASE 7)"] --> rhi & input
-    editor["editor/ (FASE 8)"] --> rhi & scene & input & physics & animation & particles
+    editor["editor/ (FASE 8/11)"] --> rhi & scene & input & physics & animation & particles & niscript
     input["eng::input (FASE 9)"] --> core
     ui["eng::ui (FASE 9)"] --> core & math & input
     audio["eng::audio (FASE 9)"] --> core & fs & serial
     physics["eng::physics (FASE 10)"] --> scene & math & reflect
     animation["eng::animation (FASE 10)"] --> scene & math & reflect
     particles["eng::particles (FASE 10)"] --> scene & math & reflect
-    script["eng::script — NI-Script (FASE 11, PLANEJADO)"] --> reflect & scene & ecs
+    niscript["eng::niscript — NI-Script (FASE 11)"] --> core & math & ecs & reflect
     build["eng::build — build/export (FASE 12, PLANEJADO)"] --> project & assets & serial
 ```
 

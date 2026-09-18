@@ -15,6 +15,7 @@
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectPaths.hpp"
+#include "eng/editor/NiRuntime.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneSerializer.hpp"
 #include "eng/serial/Json.hpp"
@@ -128,6 +129,7 @@ Result<std::unique_ptr<EditorDocument>> EditorDocument::create(
     // sceneInFocus() faziam &*scene_ vazio → UB latente no estado
     // pré-projeto, mascarado pelo ensureProjectOnFirstRun da Activity).
     document->scene_.emplace();  // Scene não é movível — ADR-025
+    document->niRuntime_ = std::make_unique<NiRuntime>(); // FASE 11
     return document;
 }
 
@@ -716,8 +718,22 @@ Result<void> EditorDocument::play()
         runtimeScene_.reset();
         return makeUnexpected(loaded.error());
     }
+    // FASE 11: scripts do clone compilam/instanciam AGORA (ADR-044 — a
+    // edição nunca é tocada); @init roda na criação, `up start` a seguir.
+    niRuntime_->setActionQuery(
+        [](std::string_view action, int phase, void* user) {
+            auto* input = static_cast<eng::input::InputSystem*>(user);
+            const eng::input::ActionState state = input->action(action);
+            return phase == 0 ? state.down
+                   : phase == 1 ? state.pressed
+                                : state.released;
+        },
+        &runtimeInput_);
+    niRuntime_->start(*runtimeScene_);
+    niRuntime_->fireStart();
     mode_ = Mode::Play;
-    ENG_INFO("PLAY: runtime clone pronto ({} nós)", runtimeScene_->nodeCount());
+    ENG_INFO("PLAY: runtime clone pronto ({} nós, {} scripts)",
+             runtimeScene_->nodeCount(), niRuntime_->size());
     return {};
 }
 
@@ -725,6 +741,8 @@ void EditorDocument::stop() noexcept
 {
     if (mode_ == Mode::Play) {
         mode_ = Mode::Edit;
+        niRuntime_->shutdown(); // `up destroy` + descarte (bindings morrem
+                                // JUNTOS com o clone — ADR-044)
         runtimeScene_.reset();
         ENG_INFO("STOP: runtime descartado — edição intacta");
     }
@@ -753,6 +771,12 @@ void EditorDocument::tick(float deltaSeconds) noexcept
 
     // FASE 10 (§7.12): partículas CPU (dt do frame; spawn por acumulador).
     eng::particles::ParticleSystem::update(*runtimeScene_, deltaSeconds);
+
+    // FASE 11: scripts NI-Script do clone (`up update`, orçamento por
+    // evento — determinismo §6.2; faults reparáveis não interrompem).
+    if (niRuntime_ != nullptr && !niRuntime_->empty()) {
+        niRuntime_->tick(deltaSeconds);
+    }
 }
 
 void EditorDocument::gameTouch(int canonicalPhase, std::uint32_t pointerId,

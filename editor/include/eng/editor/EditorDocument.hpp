@@ -38,12 +38,15 @@
 #include "eng/fs/Path.hpp"
 #include "eng/input/Input.hpp"
 #include "eng/math/Vec3.hpp"
+#include "eng/niscript/NiVm.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectFile.hpp"
 #include "eng/scene/Scene.hpp"
 
 namespace eng::editor {
+
+class NiRuntime; // NiRuntime.hpp (frente — impl em NiRuntime.cpp)
 
 /// Registra os componentes de gameplay (physics/animation/particles) no
 /// catálogo do serializer — efeito colateral da inicialização estática de
@@ -163,6 +166,11 @@ public:
     {
         return physicsWorld_;
     }
+    /// Runtime de scripts NI-Script do clone (FASE 11 — vazio em Edit).
+    [[nodiscard]] const NiRuntime& runtimeScripts() const noexcept
+    {
+        return *niRuntime_;
+    }
     /// Banco de animações do runtime (clips por nome — API C++ §9).
     eng::animation::AnimationBank& runtimeAnimations() noexcept
     {
@@ -254,6 +262,7 @@ private:
     eng::physics::PhysicsWorld physicsWorld_{};      ///< §7.1–§7.6
     eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
     eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
+    std::unique_ptr<class NiRuntime> niRuntime_;     ///< §FASE 11 (clone)
     Viewport viewport_{};
     std::unique_ptr<AssetBrowser> assets_{};
 };

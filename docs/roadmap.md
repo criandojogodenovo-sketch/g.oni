@@ -15,22 +15,33 @@
 | 8 | Native Mobile Editor — `editor/` C++ (documento/inspector reflect/assets/viewport RHI) + `EditorActivity`/`EditorJni` (ADRs 042–044; runtime TESTADO no Linux c/ backends reais, APK BUILT+INSPECTED) | ✅ concluída (`9a144e4`) |
 | 9 | input+ui+audio — `eng::input` canônico/ações, `eng::ui` draw-list/fonte pontilhada, `eng::audio` mixer pull/AAudio dlopen (ADRs 045–047) | ✅ concluída (`969ac2d`) |
 | 10 | physics+animation+particles — esfera/AABB+timestep fixo+raycast; clips TRS/cross-fade; emitter CPU determinístico (ADR-048) | ✅ concluída (`f8314d8`) |
-| 11 | **NI-Script** — linguagem de script própria: lexer/parser/AST/análise semântica/tipos/compiler/bytecode/VM determinística/bindings ECS+bibliotecas `add &BL`/eventos `up`/tooling de diagnóstico/debugger | planejada |
+| 11 | **NI-Script** — linguagem de script própria: lexer/parser/AST/sema/compiler/bytecode/VM determinística com orçamento/bindings ECS refletidos/`add &BL`/eventos `up`+`emit`/`link to`/semântica formal de `repeat`/`repair`/`timeout` (ADR-049) | ✅ concluída |
 | 12 | **Build & Export Pipeline** — configuração de build/manifesto determinístico/grafo de dependências+scanner de referências/cook de assets/cache derivado/validação bloqueante/export Android (APK reproducível) e Linux (bundle) | planejada |
 
 A auditoria final independente das FASES 4–10 (com remediação dos bugs
 críticos) está em `docs/final_phase4_10_audit.md`.
 
-## FASE 11 — o que herda pronto
+## FASE 11 — concluída (resumo de evidências)
 
-- **Reflexão**: `eng::reflect` expõe tipos/propriedades por NOME estável
-  (ADR-021) — o binding de componentes NI-Script consome o MESMO catálogo
-  que o Inspector e o SceneSerializer (sem duplicar o sistema).
-- **ECS geracional**: handles stale são no-op seguro (ADR-024) — a VM
-  expõe entidades como handles valor, nunca ponteiros.
-- **Eventos**: `eng::events` (ADR-022) para os eventos `up` da linguagem.
-- **Serialização**: envelope `GONI` (ADR-030) pronto para carregar bytecode
-  e assets cozidos (consumido pela FASE 12).
+- **Linguagem**: `.nis` → Lexer → Parser → Sema → Compiler → bytecode →
+  NI VM (`engine/niscript`, 8 TU); semântica de `repeat`/`repair`/
+  `timeout` FORMALIZADA ANTES (`phase11_audit/design.md §5`) e testada
+  regra a regra;
+- **Segurança**: nativos fechados em compile-time, orçamento global de
+  instruções (loop infinito impossível), handles geracionais (ADR-024
+  propagado), SEM nil na linguagem;
+- **Bindings**: tabela registrada pelo CONSUMIDOR (editor) reusando o
+  catálogo+reflexão (ADR-043/D2) — açúcar `position`/`rotation`(graus)/
+  `scale`/`name` + catálogo inteiro por alias canônico/curto;
+- **Integração**: `NiScriptComponent` no catálogo ÚNICO; PLAY compila os
+  scripts do CLONE (ADR-044), roda `@init`→`up start`→`up update`→
+  `up destroy`; script quebrado é desabilitado com log (cena segue);
+- **Testes**: 58 casos/516+ asserções (incl. E2E
+  `.nis→compile→bytecode→VM→binding→mudança ECS` + determinismo
+  byte-a-byte) + 2 casos de play no editor; debug/release 27/27 suites;
+  CI Linux+Android verdes (APK BUILT no CI);
+- **Ferramentas**: diagnósticos linha/coluna em toda etapa; hook de
+  trace; UI de script ADIADA e declarada (`docs/ni-script/08`).
 
 ## FASE 12 — o que herda pronto
 

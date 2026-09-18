@@ -50,5 +50,5 @@ if(ENG_BUILD_TESTS)
     add_subdirectory(editor)
 endif()
 
-message(STATUS "eng ${PROJECT_VERSION} — FASES 1-10 completas (fim do núcleo; 11-12 no roadmap)")
+message(STATUS "eng ${PROJECT_VERSION} — FASES 1-11 completas (núcleo + NI-Script; 12 no roadmap)")
 message(STATUS "Presets canônicos: linux-debug, linux-release — ver docs/build.md")

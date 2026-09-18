@@ -21,6 +21,7 @@ add_library(eng_editor STATIC
     src/ViewportRenderer.cpp
     src/EditorHost.cpp
     src/ComponentRegistration.cpp
+    src/NiRuntime.cpp
 )
 add_library(eng::editor ALIAS eng_editor)
 
@@ -34,6 +35,7 @@ eng_apply_lto(eng_editor)
 target_compile_options(eng_editor PRIVATE ${ENG_RUNTIME_FLAGS})
 
 target_link_libraries(eng_editor PUBLIC
+    eng::niscript
     eng::scene
     eng::serial
     eng::project

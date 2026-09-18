@@ -17,6 +17,7 @@
 
 #include "eng/animation/Animation.hpp"
 #include "eng/editor/EditorDocument.hpp"
+#include "eng/editor/NiRuntime.hpp"
 #include "eng/editor/EditorHost.hpp"
 #include "eng/editor/Inspector.hpp"
 #include "eng/editor/ViewportRenderer.hpp"
@@ -497,6 +498,113 @@ TEST_CASE("editor: play duplicado e stop sem play são tratados", "[editor]")
     REQUIRE(f.doc->play().ok());
     auto twice = f.doc->play();
     CHECK(twice.isError());
+    f.doc->stop();
+}
+
+TEST_CASE("editor: PLAY roda scripts NI-Script do clone (FASE 11)",
+          "[editor][ni]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Motor", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+
+    // Script anexado via catálogo (mesmo caminho do Inspector/JNI — a UI
+    // dedicada de script é FUTURO declarado, docs/ni-script/08).
+    const char* source =
+        "add &BL\n"
+        "var speed: float = 2.0\n"
+        "var ticks: int = 0\n"
+        "up start:\n"
+        "    var me = self()\n"
+        "    me.scale.y = 1.5\n"
+        "stop\n"
+        "up update:\n"
+        "    var me = self()\n"
+        "    me.position.x = me.position.x + speed\n"
+        "    me.name = \"motor\"\n"
+        "    ticks = ticks + 1\n"
+        "stop\n"
+        "up destroy:\n"
+        "    var me = self()\n"
+        "    me.scale.y = 9.0\n"
+        "stop\n";
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(entity.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    // PLAY: compila + @init + up start (scale.y = 1.5 no CLONE).
+    REQUIRE(f.doc->play().ok());
+    CHECK(f.doc->runtimeScripts().size() == 1);
+    auto scaleY = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::math::Transform",
+        "scale.y");
+    REQUIRE(scaleY.ok());
+    CHECK(scaleY.value() == "1.5");
+    auto nameAfterStart = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::scene::Name", "value");
+    REQUIRE(nameAfterStart.ok());
+    CHECK(nameAfterStart.value() == "Motor"); // name muda no update, não no start
+
+    // TICKs: up update move o clone (2/tick).
+    f.doc->tick(1.f / 60.f);
+    f.doc->tick(1.f / 60.f);
+    f.doc->tick(1.f / 60.f);
+    auto posX = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::math::Transform",
+        "position.x");
+    REQUIRE(posX.ok());
+    CHECK(posX.value() == "6"); // 3 ticks × speed 2.0
+    auto nameAfter = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::scene::Name", "value");
+    REQUIRE(nameAfter.ok());
+    CHECK(nameAfter.value() == "motor");
+
+    // STOP: up destroy (best-effort) roda ANTES do descarte; edição NUNCA
+    // foi tocada (ADR-044).
+    f.doc->stop();
+    CHECK(f.doc->runtimeScripts().empty());
+    auto editX = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::math::Transform",
+        "position.x");
+    REQUIRE(editX.ok());
+    CHECK(editX.value() == "0"); // edição intacta
+    auto editScale = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::math::Transform",
+        "scale.y");
+    REQUIRE(editScale.ok());
+    CHECK(editScale.value() == "1"); // 1.5/9.0 ficaram no clone descartado
+    auto editName = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::scene::Name", "value");
+    REQUIRE(editName.ok());
+    CHECK(editName.value() == "Motor");
+}
+
+TEST_CASE("editor: script com erro de compilação é desabilitado, cena segue",
+          "[editor][ni]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Quebrado", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(entity.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", "up update:\n    nada()\nstop\n")
+                .ok());
+
+    // PLAY: script inválido NÃO derruba o play (log + desabilitado).
+    REQUIRE(f.doc->play().ok());
+    CHECK(f.doc->runtimeScripts().empty()); // nada compilou
+    f.doc->tick(1.f / 60.f);                 // tick sem scripts: ok
     f.doc->stop();
 }
 

@@ -5,9 +5,8 @@
 
 Engine de jogos **mobile-first** escrita em **C++20**, com alvo principal
 **Android** (Vulkan 1.3, GLES 3.2 como compatibilidade). Projeto conduzido
-por fases com contrato técnico formal; as **FASES 1–10 estão concluídas** —
-a **FASE 11 (NI-Script)** e a **FASE 12 (Build & Export)** seguem no
-roadmap.
+por fases com contrato técnico formal; as **FASES 1–11 estão concluídas** —
+a **FASE 12 (Build & Export)** segue no roadmap.
 
 Pilha: **C++20** (engine), **Kotlin** (integração Android), **JNI**
 (ponte nativa), **Vulkan/GLES** (rendering), **CMake** (build nativo),
@@ -122,15 +121,40 @@ não Python).
       serializer; em PLAY o tick avança física/animação/partículas sobre
       o CLONE (edição intacta)
 
-## Testes (estado pós-auditoria final 4–10)
+## Estado — FASE 11 (concluída) — NI-Script
 
-**26 suites** — 100% verdes em `linux-debug` (ASan+UBSan+LSan, `-Werror`)
-e `linux-release` (LTO), zero warnings; CI Linux executa os 26 com drivers
+- [x] **Linguagem própria** (ADR-049): `.nis` → Lexer → Parser → Sema →
+      Compiler → bytecode → NI VM — SEM Lua/Python/JIT; semântica de
+      `repeat`/`repair`/`timeout` FORMALIZADA ANTES da implementação
+      (`phase11_audit/design.md §5`)
+- [x] `engine/niscript` (8 TU): 10 tipos + inferência, funções `f…stop`,
+      eventos `up` + `emit` com propagação BFS por `link to`, módulos
+      `add &BL`; diagnósticos com linha/coluna em toda etapa
+- [x] **VM determinística**: orçamento global de instruções por evento
+      (loop infinito IMPOSSÍVEL, sem threads), faults reparáveis
+      (`repair`), orçamento por bloco (`timeout`), sem nil na linguagem
+- [x] **Bindings refletidos** (ADR-043/D2): o editor registra a tabela
+      reusando o catálogo + TypeRegistry — `e.position.x`,
+      `e.rigidbody.velocity`, `comp(e,"RigidBody")`; geração respeitada
+      (handle obsoleto = Fault, nunca UB)
+- [x] **Integração PLAY** (ADR-044): `NiScriptComponent` no catálogo
+      ÚNICO; play compila os scripts do CLONE e roda `@init`→`up start`
+      → `up update` (por tick) →`up destroy`; script quebrado é
+      desabilitado com log; edição nunca tocada
+- [x] Docs: `docs/ni-script/` (8 arquivos) + `architecture/19` +
+      ADR-049; UI de script no editor ADIADA e declarada
+
+## Testes (estado pós-FASE 11)
+
+**27 suites** — 100% verdes em `linux-debug` (ASan+UBSan+LSan, `-Werror`)
+e `linux-release` (LTO), zero warnings; CI Linux executa os 27 com drivers
 (lavapipe/EGL), CI Android monta e inspeciona o APK arm64-v8a. Contagens:
 core 74 casos, rhi 16/410 (FakeBackend), vulkan 6, gles 5, android_runtime
-10 (86 asserções com driver), **editor 33 casos/325 asserções**, input
-12/76, ui 8/40, audio 14/75, physics 15/59, animation 6/32, particles
-6/33, + demais suites de fase. Auditoria completa com classificação
+10 (86 asserções com driver), **editor 35 casos/354 asserções** (inclui
+play de scripts NI-Script), input 12/76, ui 8/40, audio 14/75, physics
+15/59, animation 6/32, particles 6/33, **niscript 58 casos/516 asserções**
+(semântica formal §5, E2E `.nis→ECS`, determinismo byte-a-byte,
+segurança), + demais suites de fase. Auditoria 4–10 com classificação
 [A]–[F], 18 bugs e remediação: `docs/final_phase4_10_audit.md`.
 
 ## Pré-requisitos
@@ -153,7 +177,7 @@ ctest --preset linux-release --output-on-failure  # release com LTO
 
 Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-android.md](docs/build-android.md).
 
-## Estrutura (FASE 10)
+## Estrutura (FASE 11)
 
 ```
 ├── .devcontainer/         # camadas base/graphics/android + verify.sh
@@ -189,7 +213,8 @@ Detalhes completos: [docs/build.md](docs/build.md) · Android: [docs/build-andro
 │   ├── audio/             # WAV/mixer/AAudio (FASE 9)
 │   ├── physics/           # RigidBody/Collider/CharacterBody (FASE 10)
 │   ├── animation/         # clips/animator/cross-fade (FASE 10)
-│   └── particles/         # emitter CPU determinístico (FASE 10)
+│   ├── particles/         # emitter CPU determinístico (FASE 10)
+│   └── niscript/          # NI-Script: lexer→sema→bytecode→VM+bindings (FASE 11)
 ├── editor/                # FASE 8: núcleo C++ do editor (consumidor)
 ├── android/               # FASES 7/8: runtime + editor Android (Gradle/APK)
 └── tests/                 # integração e2e (compõe scene+assets+project)
