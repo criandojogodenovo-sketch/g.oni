@@ -15,8 +15,12 @@
 #include "eng/log/Logger.hpp"
 
 /// Declara a categoria usada pelos macros ENG_* neste arquivo.
+/// [[maybe_unused]]: TUs que declaram categoria mas não logam são legais
+/// (o clang/NDK pune const não-usada com -Wunused-const-variable — o GCC
+/// não; fix pós-falha real no CI Android do commit 50966b0).
 #define ENG_LOG_CATEGORY(categoryName)                                     \
-    static constexpr ::std::string_view eng_log_category_{categoryName};
+    [[maybe_unused]] static constexpr ::std::string_view eng_log_category_{ \
+        categoryName};
 
 #define ENG_LOG(level, ...)                                                                     \
     do {                                                                                        \
