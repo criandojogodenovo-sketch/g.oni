@@ -4565,3 +4565,336 @@ TEST_CASE("editor: P2 — WORKFLOW de integração REAL (§21/§23)", "[editor][
     const auto after = f.doc->hierarchySnapshot();
     CHECK(after.size() == 3);
 }
+
+// =============================================================================
+// P3 §0 — STARTUP ANDROID: bug "AlreadyExists" (create × open × restore ×
+// reentrada). A política vive no EditorDocument; cada caso abaixo espelha
+// um cenário do relatório do dispositivo (Realme C33).
+// =============================================================================
+
+namespace {
+
+/// Workspace compartilhado entre "sessões" (documentos SEQUENCIAIS sobre o
+/// MESMO armazenamento) — simula processo morto/recriado do Android. O
+/// estado em memória de cada sessão começa VAZIO (hasProject()==false):
+/// exatamente o gatilho do bug original.
+struct StartupSessions {
+    eng::fs::MemoryFileSystem storage{};
+    std::unique_ptr<EditorDocument> doc{};
+
+    void newSession()
+    {
+        doc.reset();  // "processo morre" — estado em memória vai embora
+        auto created = EditorDocument::create(storage, eng::fs::Path{"."});
+        REQUIRE(created.ok());
+        doc = std::move(created.value());
+    }
+
+    StartupSessions() { newSession(); }
+};
+
+}  // namespace
+
+// A. Criar projeto novo (instalação limpa): sem projetos no workspace →
+// cria o default "MeuJogo" — SEM AlreadyExists.
+TEST_CASE("p3-startup A: instalação limpa cria o default MeuJogo", "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE_FALSE(s.doc->hasProject());  // memória vazia = processo novo
+
+    auto ensured = s.doc->ensureStartupProject();
+    REQUIRE(ensured.ok());
+    CHECK(ensured.value() == "MeuJogo");
+    CHECK(s.doc->hasProject());
+    CHECK(s.doc->projectName() == "MeuJogo");
+    // Estrutura real no disco (o que o app veria após a criação).
+    CHECK(s.storage.exists(eng::fs::Path{"MeuJogo/project.goni.json"}).value());
+    CHECK(s.storage.exists(eng::fs::Path{"MeuJogo/scenes"}).value());
+}
+
+// B. Abrir projeto existente (reentrada): a segunda "sessão" (processo
+// novo, memória vazia) ABRE o projeto — antes do fix, este caminho
+// chamava newProject("MeuJogo") e recebia AlreadyExists.
+TEST_CASE("p3-startup B: reentrada ABRE o projeto existente (bug raiz)",
+          "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());  // sessão 1: cria MeuJogo
+    s.newSession();                                // processo novo
+
+    REQUIRE_FALSE(s.doc->hasProject());  // gatilho do bug: memória vazia
+    auto ensured = s.doc->ensureStartupProject();
+    REQUIRE(ensured.ok());               // ANTES: AlreadyExists
+    CHECK(ensured.value() == "MeuJogo");
+    CHECK(s.doc->hasProject());
+    CHECK(s.doc->projectName() == "MeuJogo");
+    // Nenhum duplicado foi criado (o workspace continua com UM projeto).
+    CHECK(s.doc->listProjects().value().size() == 1);
+}
+
+// C. Criar projeto com nome existente → erro CONTROLADO (AlreadyExists
+// só existe neste caminho MANUAL — o documento segue utilizável).
+TEST_CASE("p3-startup C: duplicado manual devolve AlreadyExists controlado",
+          "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->newProject("MeuJogo").ok());
+    CHECK(s.doc->hasProject());
+
+    auto dup = s.doc->newProject("MeuJogo");
+    REQUIRE(dup.isError());
+    CHECK(dup.error().code == eng::core::StatusCode::AlreadyExists);
+    // O erro NÃO derruba o documento: o projeto original segue aberto.
+    CHECK(s.doc->hasProject());
+    CHECK(s.doc->projectName() == "MeuJogo");
+    CHECK(s.doc->saveProject().ok());
+}
+
+// D. Abrir o projeto existente após reiniciar o editor: cena salva na
+// sessão 1 volta INTEIRA na sessão 2 (round-trip via startup).
+TEST_CASE("p3-startup D: cena salva volta após reinício (restore)", "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    auto e = s.doc->createEntity("Player", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    eng::editor::TransformDesc desc{};
+    desc.position = {2.f, -3.f, 0.f};
+    desc.rotationDegrees = {0.f, 0.f, 90.f};
+    desc.scale = {2.f, 2.f, 1.f};
+    REQUIRE(s.doc->setTransform(e.value(), desc).ok());
+    REQUIRE(s.doc->saveScene("main.json").ok());
+    REQUIRE(s.doc->saveProject().ok());
+
+    s.newSession();  // "reiniciar o editor"
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    REQUIRE(s.doc->loadScene("main.json").ok());
+    const auto snap = s.doc->hierarchySnapshot();
+    REQUIRE(snap.size() == 1);
+    CHECK(snap[0].name == "Player");
+    auto tr2 = s.doc->transform(snap[0].entity);
+    REQUIRE(tr2.ok());
+    CHECK(tr2.value().position.x == Catch::Approx(2.f).margin(1e-3f));
+    CHECK(tr2.value().position.y == Catch::Approx(-3.f).margin(1e-3f));
+    CHECK(tr2.value().rotationDegrees.z == Catch::Approx(90.f).margin(1e-2f));
+}
+
+// E. Activity recreation (host destruído + recriado no MESMO workspace em
+// disco REAL — caminho completo do Android, sem GPU necessária).
+TEST_CASE("p3-startup E: recreation do EditorHost reabre sem AlreadyExists",
+          "[editor][p3]")
+{
+    const std::string ws = ".editor-test-ws-startup-e";
+    {
+        auto host = eng::editor::EditorHost::create("auto", ws.c_str());
+        REQUIRE(host.ok());
+        std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+        auto ensured = owned->ensureStartupProject();
+        REQUIRE(ensured.ok());
+        CHECK(ensured.value() == "MeuJogo");
+    }  // onDestroy: host morre (documento junto)
+    {
+        // Activity recriada: processo novo, workspace persistido.
+        auto host = eng::editor::EditorHost::create("auto", ws.c_str());
+        REQUIRE(host.ok());
+        std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+        auto ensured = owned->ensureStartupProject();
+        REQUIRE(ensured.ok());  // ANTES do fix: AlreadyExists + sem projeto
+        CHECK(ensured.value() == "MeuJogo");
+        CHECK(owned->document().hasProject());
+    }
+    std::filesystem::remove_all(std::filesystem::path{ws});
+}
+
+// F. Fechar e abrir novamente: DUAS políticas na MESMA sessão — a
+// segunda é no-op (o projeto já está em memória; não recria nada).
+TEST_CASE("p3-startup F: política dupla é no-op (não recria/reabre)",
+          "[editor][p3]")
+{
+    StartupSessions s;
+    auto first = s.doc->ensureStartupProject();
+    REQUIRE(first.ok());
+    const auto projectsAfterFirst = s.doc->listProjects().value();
+
+    auto second = s.doc->ensureStartupProject();
+    REQUIRE(second.ok());
+    CHECK(second.value() == first.value());
+    CHECK(s.doc->listProjects().value() == projectsAfterFirst);
+    CHECK(s.doc->listProjects().value().size() == 1);
+}
+
+// G. Instalação limpa via HOST REAL (mesmo caminho A, com NativeFS +
+// RootedFS — a fronteira exata do Android).
+TEST_CASE("p3-startup G: instalação limpa no host real cria MeuJogo",
+          "[editor][p3]")
+{
+    const std::string ws = ".editor-test-ws-startup-g";
+    auto host = eng::editor::EditorHost::create("auto", ws.c_str());
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+
+    auto ensured = owned->ensureStartupProject();
+    REQUIRE(ensured.ok());
+    CHECK(ensured.value() == "MeuJogo");
+    CHECK(owned->document().hasProject());
+    std::filesystem::remove_all(std::filesystem::path{ws});
+}
+
+// H. Múltiplos projetos: o ÚLTIMO USADO é restaurado; registro stale
+// (projeto apagado) cai no default.
+TEST_CASE("p3-startup H: último usado vence; registro stale cai no default",
+          "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());          // MeuJogo (auto)
+    REQUIRE(s.doc->newProject("Segundo").ok());           // último usado
+    s.newSession();
+    auto ensured = s.doc->ensureStartupProject();
+    REQUIRE(ensured.ok());
+    CHECK(ensured.value() == "Segundo");                  // último usado
+
+    // Registro stale (projeto que não existe mais): volta ao default.
+    REQUIRE(s.storage
+                .writeAllText(eng::fs::Path{".goni_last_project"},
+                              std::string_view{"ProjetoFantasma"})
+                .ok());
+    s.newSession();
+    auto fallback = s.doc->ensureStartupProject();
+    REQUIRE(fallback.ok());
+    CHECK(fallback.value() == "MeuJogo");
+}
+
+// I. Projeto existente + cenas/assets/scripts: tudo continua no lugar
+// após o restore (nenhum dado perdido pelo ciclo de startup).
+TEST_CASE("p3-startup I: cenas/scripts/assets sobrevivem ao restore",
+          "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    REQUIRE(s.doc->saveScene("fase1.json").ok());
+    REQUIRE(s.doc->scriptCreate("main").ok());
+    REQUIRE(s.doc->saveProject().ok());
+
+    s.newSession();
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    // Cena volta a carregar (disco intacto).
+    REQUIRE(s.doc->loadScene("fase1.json").ok());
+    // Script do projeto continua catalogado.
+    auto scripts = s.doc->scriptList();
+    REQUIRE(scripts.ok());
+    REQUIRE(scripts.value().size() == 1);
+    CHECK(scripts.value()[0] == "main.nis");  // nome catalogado c/ ext
+    CHECK(s.storage.exists(eng::fs::Path{"MeuJogo/scenes/fase1.json"}).value());
+}
+
+// J. Não perder dados do projeto: mutações + save + restore completo.
+TEST_CASE("p3-startup J: dados não se perdem no ciclo completo", "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    auto e = s.doc->createEntity("Colecionavel", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(s.doc->renameEntity(e.value(), "Gema").ok());
+    REQUIRE(s.doc->saveScene("save.json").ok());
+    REQUIRE(s.doc->saveProject().ok());
+
+    s.newSession();
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    REQUIRE(s.doc->loadScene("save.json").ok());
+    const auto snap = s.doc->hierarchySnapshot();
+    REQUIRE(snap.size() == 1);
+    CHECK(snap[0].name == "Gema");  // renomeação persistiu
+}
+
+// Listagem rigorosa: só pastas com project.goni.json; ocultos e pastas
+// comuns ficam de fora (mesmo filtro do seletor de projetos).
+TEST_CASE("p3-startup: listProjects filtra ocultos e não-projetos",
+          "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    REQUIRE(s.storage.mkdirs(eng::fs::Path{".import_tmp/staging"}).ok());
+    REQUIRE(s.storage.mkdirs(eng::fs::Path{"PastaQualquer"}).ok());
+
+    auto listed = s.doc->listProjects();
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0] == "MeuJogo");
+}
+
+// Regressão do registro: remember é best-effort — falha silenciosa NÃO
+// derruba a operação de projeto (nada lança; Result carrega o motivo).
+TEST_CASE("p3-startup: registro do último projeto é best-effort", "[editor][p3]")
+{
+    StartupSessions s;
+    REQUIRE(s.doc->ensureStartupProject().ok());
+    // Record existe e é legível pela próxima sessão.
+    CHECK(s.storage.exists(eng::fs::Path{".goni_last_project"}).value());
+    CHECK(s.doc->lastUsedProject() == "MeuJogo");
+}
+
+// --- watchdog de backend (P3 §0 — "fecha rapidamente") -----------------------
+//
+// Sessão que morre antes de kWatchdogHealthyFrames deixa "trying:X"; a
+// próxima sessão Auto PULA X. Sessão saudável promove X a "good:X" e o
+// Auto passa a preferi-lo. Requer driver real (lavapipe/EGL no CI).
+
+TEST_CASE("p3-watchdog: Auto pula backend morto e promove o saudável",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    const std::string ws = ".editor-test-ws-watchdog";
+    std::filesystem::remove_all(std::filesystem::path{ws});
+
+    // Sessão 1: marca a morte súbita do VULKAN (crash simulado antes de
+    // 30 frames — o marcador fica "trying:vulkan").
+    {
+        auto host = eng::editor::EditorHost::create("auto", ws.c_str());
+        REQUIRE(host.ok());
+        std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+        REQUIRE(owned->ensureStartupProject().ok());
+
+        // Simula a morte: escreve o marcador COMO a sessão morta deixaria
+        // (a escrita real acontece em watchdogOnRendererCreated).
+        REQUIRE(owned->workspace()
+                    .writeAllText(eng::fs::Path{".goni_backend_watchdog"},
+                                  std::string_view{"trying:vulkan"})
+                    .ok());
+    }
+    // Sessão 2 (processo novo, MESMO workspace): Auto deve PULAR Vulkan.
+    {
+        auto host = eng::editor::EditorHost::create("auto", ws.c_str());
+        REQUIRE(host.ok());
+        std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+
+        int marker = 0;
+        owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless, 64,
+                              48);
+        REQUIRE(owned->state() == eng::editor::HostSurfaceState::Available);
+        // Vulkan foi pulado → o ativo é GLES (ou Auto caiu fora do vk).
+        CHECK(owned->selectedBackend() == eng::rhi::BackendType::OpenGLES);
+
+        // Sessão saudável: 30+ frames apresentados → "good:gles".
+        for (int i = 0; i < 35; ++i) {
+            REQUIRE(owned->renderFrame(1.f / 60.f));
+        }
+        auto markerText = owned->workspace().readAllText(
+            eng::fs::Path{".goni_backend_watchdog"});
+        REQUIRE(markerText.ok());
+        CHECK(markerText.value() == "good:gles");
+    }
+    // Sessão 3: "good:gles" → Auto PREFERE GLES direto.
+    {
+        auto host = eng::editor::EditorHost::create("auto", ws.c_str());
+        REQUIRE(host.ok());
+        std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+        int marker = 0;
+        owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless, 64,
+                              48);
+        REQUIRE(owned->state() == eng::editor::HostSurfaceState::Available);
+        CHECK(owned->selectedBackend() == eng::rhi::BackendType::OpenGLES);
+    }
+    std::filesystem::remove_all(std::filesystem::path{ws});
+}

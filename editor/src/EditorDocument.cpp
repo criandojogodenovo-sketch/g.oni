@@ -214,7 +214,10 @@ Result<void> EditorDocument::newProject(std::string_view name)
     if (fresh.isError()) {
         return makeUnexpected(fresh.error());
     }
-    ENG_INFO("projeto criado: {}", name);
+    // Diagnóstico (P3 §0): operação/projeto/caminho para o logcat.
+    ENG_INFO("project-op: criar | projeto='{}' | caminho='{}'", name,
+             (workspaceRoot_ / eng::fs::Path{std::string(name)}).str());
+    (void)rememberLastUsedProject(name);  // best-effort (logado dentro)
     return {};
 }
 
@@ -249,8 +252,160 @@ Result<void> EditorDocument::openProject(const eng::fs::Path& projectRoot)
     if (fresh.isError()) {
         return makeUnexpected(fresh.error());
     }
-    ENG_INFO("projeto aberto: {}", project_->config.name);
+    // Diagnóstico (P3 §0): operação/projeto/caminho/estado para o logcat.
+    ENG_INFO(
+        "project-op: abrir | projeto='{}' | caminho='{}' | doc.hasProject={}",
+        project_->config.name, file.str(), project_.has_value());
+    // Registra o NOME DA PASTA (não config.name — settings renomeia o
+    // config mas não a pasta; o restore precisa do nome que EXISTE no
+    // disco para listar/abrir).
+    (void)rememberLastUsedProject(projectRoot.filename().str());
     return {};
+}
+
+// =============================================================================
+// Startup (bug Android "AlreadyExists" — P3 §0)
+// =============================================================================
+
+namespace {
+
+/// Nome do projeto default criado numa instalação limpa (§8.1).
+constexpr std::string_view kDefaultProjectName{"MeuJogo"};
+/// Registro do último projeto usado (raiz do workspace — oculto).
+constexpr std::string_view kLastProjectFile{".goni_last_project"};
+
+}  // namespace
+
+Result<std::vector<std::string>> EditorDocument::listProjects() const
+{
+    auto entries = fs_->list(workspaceRoot_, false);
+    if (entries.isError()) {
+        // Workspace ausente = instalação limpa SEM projetos (não é erro
+        // de I/O — o host cria o diretório no primeiro uso).
+        if (entries.error().code == StatusCode::NotFound) {
+            return std::vector<std::string>{};
+        }
+        return makeUnexpected(entries.error());
+    }
+    std::vector<std::string> names{};
+    for (const auto& entry : entries.value()) {
+        if (!entry.isDirectory) {
+            continue;
+        }
+        const std::string name{entry.path.filename().str()};
+        // Ocultos (staging SAF ".import_tmp", marcadores internos) não
+        // são projetos — mesmo filtro do seletor de projetos da Activity.
+        if (name.empty() || name.front() == '.') {
+            continue;
+        }
+        auto marker = fs_->exists(
+            entry.path / eng::fs::Path{"project.goni.json"});
+        if (marker.isError() || !marker.value()) {
+            continue;  // diretório comum (lixo/não-projeto): ignora
+        }
+        names.push_back(name);
+    }
+    std::sort(names.begin(), names.end());  // determinístico
+    return names;
+}
+
+std::string EditorDocument::lastUsedProject() const
+{
+    auto text =
+        fs_->readAllText(workspaceRoot_ / eng::fs::Path{kLastProjectFile});
+    if (text.isError()) {
+        return {};
+    }
+    // Sem newline/espaço — o registro é uma linha crua; trim defensivo.
+    std::string_view name{text.value()};
+    while (!name.empty() &&
+           (name.front() == '\n' || name.front() == '\r' ||
+            name.front() == ' ')) {
+        name.remove_prefix(1);
+    }
+    while (!name.empty() &&
+           (name.back() == '\n' || name.back() == '\r' ||
+            name.back() == ' ')) {
+        name.remove_suffix(1);
+    }
+    return std::string{name};
+}
+
+Result<void> EditorDocument::rememberLastUsedProject(std::string_view name)
+{
+    // Best-effort por DESIGN: falhar em lembrar não pode derrubar a
+    // operação de projeto (o fallback é abrir o default/primeiro).
+    const auto made = fs_->mkdirs(workspaceRoot_);
+    if (made.isError()) {
+        ENG_WARN("startup: não criou raiz do workspace p/ registro: {}",
+                 made.error().message);
+        return makeUnexpected(made.error());
+    }
+    auto written = fs_->writeAllText(
+        workspaceRoot_ / eng::fs::Path{kLastProjectFile}, name);
+    if (written.isError()) {
+        ENG_WARN("startup: falha ao registrar último projeto: {}",
+                 written.error().message);
+        return makeUnexpected(written.error());
+    }
+    return {};
+}
+
+Result<std::string> EditorDocument::ensureStartupProject()
+{
+    // Caso 1: projeto JÁ em memória (reentrada na mesma sessão) — no-op.
+    if (hasProject()) {
+        ENG_INFO("startup: projeto já em memória ('{}') — no-op",
+                 project_->config.name);
+        return project_->config.name;
+    }
+    auto listed = listProjects();
+    if (listed.isError()) {
+        ENG_ERROR("startup: falha ao listar workspace: {}",
+                  listed.error().message);
+        return makeUnexpected(listed.error());
+    }
+    const auto& projects = listed.value();
+
+    // Caso 2: workspace vazio (instalação limpa) — cria o default.
+    if (projects.empty()) {
+        ENG_INFO("startup: workspace sem projetos — criando default '{}'",
+                 kDefaultProjectName);
+        auto created = newProject(kDefaultProjectName);
+        if (created.isError()) {
+            ENG_ERROR("startup: criação do default falhou: {}",
+                      created.error().message);
+            return makeUnexpected(created.error());
+        }
+        return std::string{kDefaultProjectName};
+    }
+
+    // Caso 3: projetos existem — ABRE (nunca cria sobre existente).
+    // Preferência: último usado → default → primeiro (alfabético).
+    std::string last = lastUsedProject();
+    if (std::find(projects.begin(), projects.end(), last) == projects.end()) {
+        last.clear();  // registro ausente/stale: não vale
+    }
+    std::string chosen{last};
+    if (chosen.empty() &&
+        std::find(projects.begin(), projects.end(),
+                  std::string{kDefaultProjectName}) != projects.end()) {
+        chosen = std::string{kDefaultProjectName};
+    }
+    if (chosen.empty()) {
+        chosen = projects.front();
+    }
+    ENG_INFO(
+        "startup: {} projeto(s) no workspace — abrindo '{}' (último usado: "
+        "'{}')",
+        projects.size(), chosen, last.empty() ? "-" : last);
+    auto opened = openProject(eng::fs::Path{chosen});
+    if (opened.isError()) {
+        ENG_ERROR("startup: falha ao abrir '{}': {}", chosen,
+                  opened.error().message);
+        return makeUnexpected(opened.error());
+    }
+    return chosen;
 }
 
 Result<void> EditorDocument::saveProject()

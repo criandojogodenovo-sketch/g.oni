@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -56,6 +57,23 @@ void registerBackendFactories()
     }
     return eng::rhi::BackendType::Auto;
 }
+
+[[nodiscard]] const char* backendToName(eng::rhi::BackendType type) noexcept
+{
+    switch (type) {
+    case eng::rhi::BackendType::Vulkan: return "vulkan";
+    case eng::rhi::BackendType::OpenGLES: return "gles";
+    case eng::rhi::BackendType::Auto: break;
+    }
+    return "auto";
+}
+
+/// Frames apresentados para declarar uma sessão SAUDÁVEL (promove o
+/// backend "trying" → "good"). ~0.5s a 60Hz: suficiente p/ atravessar a
+/// criação de surface + primeiros draws (onde ocorre a morte súbita).
+constexpr std::uint64_t kWatchdogHealthyFrames = 30;
+/// Arquivo do watchdog na RAIZ do workspace (oculto, fora dos projetos).
+constexpr std::string_view kWatchdogFile{".goni_backend_watchdog"};
 
 }  // namespace
 
@@ -315,7 +333,18 @@ bool EditorHost::createRendererForWindow(std::uint32_t width,
     surface.window = eng::rhi::NativeWindowHandle{window_, windowKind_};
     surface.width = width;
     surface.height = height;
-    auto renderer = ViewportRenderer::create(surface, requested_);
+    // Watchdog (P3 §0): Auto é ajustado pelo histórico da SESSÃO
+    // anterior (backend que morreu é pulado; comprovadamente bom é
+    // preferido). Escolha explícita do usuário passa intacta.
+    const eng::rhi::BackendType effective = effectiveBackend();
+    if (effective != requested_) {
+        ENG_WARN(
+            "watchdog: Auto ajustado {} -> {} (sessão anterior deixou "
+            "'{}')",
+            backendToName(requested_), backendToName(effective),
+            watchdogState_.empty() ? "-" : watchdogState_);
+    }
+    auto renderer = ViewportRenderer::create(surface, effective);
     if (renderer.isError()) {
         ENG_ERROR("viewport renderer não criado: {}", renderer.error().message);
         return false;
@@ -323,6 +352,7 @@ bool EditorHost::createRendererForWindow(std::uint32_t width,
     viewportRenderer_ = std::move(renderer.value());
     document_->viewport().setScreenSize(static_cast<float>(width),
                                        static_cast<float>(height));
+    watchdogOnRendererCreated();
     logSelection();
     return true;
 }
@@ -385,6 +415,7 @@ bool EditorHost::renderFrame(float deltaSeconds)
     if (drew) {
         ++stats_.framesSubmitted;
         stats_.framesPresented = viewportRenderer_->framesPresented();
+        watchdogOnFramePresented();  // P3 §0: promove trying → good
         stats_.firstFrameSubmitted = stats_.firstFrameSubmitted ||
                                      viewportRenderer_->framesSubmitted() > 0;
         stats_.firstFramePresented = stats_.firstFramePresented ||
@@ -403,6 +434,150 @@ const eng::rhi::RendererCapabilities* EditorHost::capabilities() const noexcept
 {
     return viewportRenderer_.has_value() ? viewportRenderer_->capabilities()
                                         : nullptr;
+}
+
+// =============================================================================
+// Startup/diagnóstico (P3 §0 — bug Android "AlreadyExists" + "fecha
+// rapidamente")
+// =============================================================================
+
+eng::core::Result<std::string> EditorHost::ensureStartupProject()
+{
+    // Origem registrada: a Activity chama UM ponto (nativeEditorEnsureProject)
+    // — a política inteira (listar/decidir/criar/abrir) vive no documento,
+    // testável no Linux sem Android.
+    return document_->ensureStartupProject();
+}
+
+void EditorHost::dumpState(const char* origin) const noexcept
+{
+    // Formato estável "state: <campo> = <valor>" — grep-ável no logcat.
+    ENG_INFO("state: origem = {}", origin == nullptr ? "-" : origin);
+    ENG_INFO("state: backend pedido = {}", backendToName(requested_));
+    ENG_INFO("state: backend ativo = {}",
+             viewportRenderer_.has_value()
+                 ? backendToName(viewportRenderer_->activeBackend())
+                 : "-");
+    ENG_INFO("state: surface = {}", [this] {
+        switch (state_) {
+        case HostSurfaceState::NoSurface: return "no_surface";
+        case HostSurfaceState::Available: return "available";
+        case HostSurfaceState::ChangedPending: return "changed_pending";
+        case HostSurfaceState::Destroyed: return "destroyed";
+        }
+        return "?";
+    }());
+    ENG_INFO("state: frames submetidos = {} | apresentados = {}",
+             stats_.framesSubmitted, stats_.framesPresented);
+    ENG_INFO("state: paused = {} | watchdog = '{}'", paused_,
+             watchdogState_.empty() ? "-" : watchdogState_);
+    if (document_ == nullptr) {
+        ENG_INFO("state: documento = <nulo>");
+        return;
+    }
+    const EditorDocument& doc = *document_;
+    ENG_INFO("state: documento.hasProject = {} | projeto = '{}'",
+             doc.hasProject(), doc.projectName());
+    ENG_INFO("state: documento.projectRoot = '{}'",
+             doc.hasProject() ? doc.projectRoot().str() : "-");
+    ENG_INFO("state: modo = {} | sceneDirty = {} | projectDirty = {}",
+             doc.isPlaying() ? "play" : "edit", doc.sceneDirty(),
+             doc.projectDirty());
+}
+
+// --- watchdog de backend ------------------------------------------------------
+
+std::string EditorHost::watchdogRead() const noexcept
+{
+    if (rooted_ == nullptr) {
+        return {};
+    }
+    auto text = rooted_->readAllText(
+        eng::fs::Path{kWatchdogFile});
+    if (text.isError()) {
+        return {};
+    }
+    // Trim defensivo (mesma política do .goni_last_project).
+    std::string_view state{text.value()};
+    while (!state.empty() &&
+           (state.front() == '\n' || state.front() == '\r' ||
+            state.front() == ' ')) {
+        state.remove_prefix(1);
+    }
+    while (!state.empty() &&
+           (state.back() == '\n' || state.back() == '\r' ||
+            state.back() == ' ')) {
+        state.remove_suffix(1);
+    }
+    return std::string{state};
+}
+
+void EditorHost::watchdogWrite(std::string_view state) noexcept
+{
+    if (rooted_ == nullptr) {
+        return;
+    }
+    // Best-effort por design: o watchdog NUNCA pode derrubar a sessão.
+    (void)rooted_->writeAllText(eng::fs::Path{kWatchdogFile}, state);
+}
+
+void EditorHost::watchdogOnRendererCreated() noexcept
+{
+    if (viewportRenderer_.has_value()) {
+        watchdogBaseline_ = viewportRenderer_->framesPresented();
+        const char* name =
+            backendToName(viewportRenderer_->activeBackend());
+        watchdogWrite(std::string{"trying:"} + name);
+        watchdogState_ = std::string{"trying:"} + name;
+        ENG_INFO("watchdog: sessão iniciando com backend '{}' (marcador "
+                 "'trying:{}')",
+                 name, name);
+    }
+}
+
+void EditorHost::watchdogOnFramePresented() noexcept
+{
+    if (!viewportRenderer_.has_value()) {
+        return;
+    }
+    const std::uint64_t presented =
+        viewportRenderer_->framesPresented() - watchdogBaseline_;
+    if (presented < kWatchdogHealthyFrames) {
+        return;
+    }
+    // Sessão saudável: o backend ATIVO sobreviveu — promove a "good".
+    const char* name = backendToName(viewportRenderer_->activeBackend());
+    const std::string good = std::string{"good:"} + name;
+    if (watchdogState_ != good) {
+        watchdogWrite(good);
+        watchdogState_ = good;
+        ENG_INFO("watchdog: backend '{}' saudável ({} frames) — marcador "
+                 "'good:{}'",
+                 name, presented, name);
+    }
+}
+
+eng::rhi::BackendType EditorHost::effectiveBackend() const noexcept
+{
+    if (requested_ != eng::rhi::BackendType::Auto) {
+        return requested_;  // escolha explícita: watchdog não mexe
+    }
+    watchdogState_ = watchdogRead();
+    const std::string_view state = watchdogState_;
+    if (state == "trying:vulkan") {
+        // Sessão anterior com Vulkan morreu antes de 30 frames.
+        return eng::rhi::BackendType::OpenGLES;
+    }
+    if (state == "trying:gles") {
+        return eng::rhi::BackendType::Vulkan;
+    }
+    if (state == "good:gles") {
+        return eng::rhi::BackendType::OpenGLES;
+    }
+    if (state == "good:vulkan") {
+        return eng::rhi::BackendType::Vulkan;
+    }
+    return eng::rhi::BackendType::Auto;  // sem histórico: ordem padrão
 }
 
 }  // namespace eng::editor

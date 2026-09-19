@@ -147,6 +147,16 @@ public:
     /// pela fronteira JNI nos comandos que mudam assets/textures).
     void invalidateTextureCache();
 
+    /// Política de projeto na inicialização (P3 §0 — bug Android
+    /// "AlreadyExists"): repassa ao documento. Ver EditorDocument::
+    /// ensureStartupProject() para a semântica completa.
+    [[nodiscard]] eng::core::Result<std::string> ensureStartupProject();
+
+    /// Estado completo do host para diagnóstico (logcat [GONI] — P3 §0:
+    /// "se o bug voltar, logcat indica operação/projeto/caminho/estado/
+    /// origem"). Uma linha por campo, estável para grep.
+    void dumpState(const char* origin) const noexcept;
+
 private:
     EditorHost() = default;
 
@@ -156,6 +166,22 @@ private:
     void logSelection() const noexcept;
     /// pauseAll/stop vs resumeAll do mixer (onPause/onResume — P2 §12).
     void audioMixerLifecycle(const char* reason) noexcept;
+
+    // --- watchdog de backend (P3 §0 — "fecha rapidamente" no Android) -------
+    //
+    // Sessões que morrem ANTES de apresentar kWatchdogHealthyFrames deixam
+    // um marcador "trying:<backend>" na raiz do workspace. A próxima
+    // sessão Auto PULA o backend que morreu (alternância explícita no
+    // log); após um início saudável o marcador vira "good:<backend>" e o
+    // Auto passa a PREFERIR o backend comprovadamente estável. Escolha
+    // EXPLÍCITA do usuário nunca é desfeita pelo watchdog.
+    [[nodiscard]] std::string watchdogRead() const noexcept;
+    void watchdogWrite(std::string_view state) noexcept;
+    void watchdogOnRendererCreated() noexcept;
+    void watchdogOnFramePresented() noexcept;
+    /// Backend pedido (Auto) ajustado pelo watchdog: pula o backend que
+    /// morreu na sessão anterior / prefere o comprovadamente bom.
+    [[nodiscard]] eng::rhi::BackendType effectiveBackend() const noexcept;
 
     static void releaseWindow(void* window) noexcept;
     static void acquireWindow(void* window) noexcept;
@@ -191,6 +217,13 @@ private:
     /// apenas PUXA o mix na thread própria do device.
     std::unique_ptr<eng::audio::IAudioBackend> audioBackend_{};
     HostStats stats_{};
+    /// Watchdog (P3 §0): frames já apresentados desde a (re)criação do
+    /// renderer — usado p/ promover "trying:X" → "good:X".
+    std::uint64_t watchdogBaseline_{0};
+    /// Último estado lido do watchdog ("trying:X"/"good:X"/vazio) — cache
+    /// da decisão de startup (não relê o disco por frame). Mutable:
+    /// memoização lida por effectiveBackend() const.
+    mutable std::string watchdogState_{};
 };
 
 }  // namespace eng::editor

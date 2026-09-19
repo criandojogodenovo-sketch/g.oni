@@ -102,6 +102,42 @@ public:
     [[nodiscard]] eng::core::Result<void> setProjectName(std::string_view name);
     [[nodiscard]] eng::fs::Path projectRoot() const;
 
+    // --- startup (bug Android "AlreadyExists" — bloco P3 §0) -----------------
+    //
+    // CAUSA RAIZ do bug: hasProject() reflete o estado EM MEMÓRIA, que é
+    // sempre "sem projeto" num processo novo — usado como detector de
+    // "primeira execução", levava o startup a CHAMAR newProject("MeuJogo")
+    // quando o projeto JÁ EXISTIA no disco (AlreadyExists + editor sem
+    // projeto). A política abaixo separa os casos corretamente.
+
+    /// Projetos no workspace: diretórios com project.goni.json, ordem
+    /// alfabética, sem ocultos (staging do SAF, marcadores internos).
+    [[nodiscard]] eng::core::Result<std::vector<std::string>>
+    listProjects() const;
+
+    /// Último projeto usado neste workspace (arquivo oculto
+    /// .goni_last_project na RAIZ do workspace — fora de qualquer
+    /// projeto, portanto nunca exportado no zip). Vazio = sem registro
+    /// (instalação limpa ou primeira execução).
+    [[nodiscard]] std::string lastUsedProject() const;
+
+    /// Registra `name` como último usado (chamado automaticamente em
+    /// new/open bem-sucedidos; best-effort — falha NUNCA derruba a
+    /// operação de projeto, o fallback é abrir o default/primeiro).
+    [[nodiscard]] eng::core::Result<void> rememberLastUsedProject(
+        std::string_view name);
+
+    /// Política de projeto na inicialização (origem: Activity/EditorHost):
+    ///   1. projeto em memória → no-op (devolve o nome atual);
+    ///   2. workspace SEM projetos → cria o projeto default ("MeuJogo");
+    ///   3. workspace COM projetos → ABRE o último usado; senão o default
+    ///      "MeuJogo" (se existir); senão o primeiro em ordem alfabética.
+    /// Devolve o nome do projeto criado/aberto. ERRO CONTROLADO —
+    /// AlreadyExists é IMPOSSÍVEL neste caminho (só cria quando não há
+    /// NENHUM projeto no workspace). Cada decisão é logada (operação,
+    /// projeto, caminho, estado do documento — logcat [GONI]).
+    [[nodiscard]] eng::core::Result<std::string> ensureStartupProject();
+
     // --- cena (§8.2) ----------------------------------------------------------
 
     /// Cena nova (a atual é descartada — sem perda silenciosa: chamador

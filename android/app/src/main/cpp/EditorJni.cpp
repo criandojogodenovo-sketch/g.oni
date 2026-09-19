@@ -322,6 +322,70 @@ Java_com_goni_runtime_EditorJni_nativeEditorHasProject(JNIEnv* /*env*/,
                                                              : JNI_FALSE;
 }
 
+// --- startup (P3 §0 — bug Android "AlreadyExists") ---------------------------
+//
+// A POLÍTICA vive no documento C++ (testável no Linux); a Activity chama
+// UM ponto. Devolve o nome do projeto criado/aberto, ou null + lastError.
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorEnsureProject(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto ensured = host->ensureStartupProject();
+    if (record(handle, ensured)) {
+        return stringToJni(env, ensured.value());
+    }
+    return nullptr;
+}
+
+/// Projetos do workspace (TSV de nomes — mesmo filtro do seletor).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorListProjects(JNIEnv* env,
+                                                        jobject /*thiz*/,
+                                                        jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto listed = host->document().listProjects();
+    if (record(handle, listed)) {
+        std::string tsv;
+        for (const auto& name : listed.value()) {
+            tsv += name;
+            tsv += '\n';
+        }
+        if (!tsv.empty()) {
+            tsv.pop_back();
+        }
+        return stringToJni(env, tsv);
+    }
+    return nullptr;
+}
+
+/// Estado completo do host no logcat [GONI] (diagnóstico P3 §0).
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorDumpState(JNIEnv* /*env*/,
+                                                     jobject /*thiz*/,
+                                                     jlong handle,
+                                                     jstring origin)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return;
+    }
+    char originBuf[64];
+    if (!copyJString(env, origin, originBuf, sizeof(originBuf))) {
+        originBuf[0] = '\0';
+    }
+    host->dumpState(originBuf);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorSetProjectName(JNIEnv* env,
                                                            jobject /*thiz*/,

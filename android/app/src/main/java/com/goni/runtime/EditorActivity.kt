@@ -550,7 +550,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         for (line in tsv.lines().filter { it.isNotBlank() }) {
             val p = line.split('\t')
             animNames.add(p.getOrNull(0) ?: continue)
-            // name 	 clip 	 duration 	 frames 	 keys 	 loop
+            // name      clip    duration        frames          keys    loop
             val clip = p.getOrNull(1) ?: "?"
             val dur = p.getOrNull(2)?.toFloatOrNull() ?: 0f
             val frames = p.getOrNull(3)?.toIntOrNull() ?: 0
@@ -1760,12 +1760,21 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             .show()
     }
 
+    /**
+     * Startup do projeto (P3 §0 — bug Android "AlreadyExists").
+     *
+     * CAUSA RAIZ do bug: hasProject() (estado EM MEMÓRIA) era usado como
+     * detector de "primeira execução" — num processo novo ele é SEMPRE
+     * false, então toda reentrada chamava newProject("MeuJogo") sobre o
+     * projeto que JÁ EXISTIA no disco (AlreadyExists + editor sem
+     * projeto). A política correta (criar quando não há NENHUM projeto /
+     * reabrir o último usado / default / primeiro) vive no C++ e é
+     * testada no Linux; aqui só reportamos o erro controlado.
+     */
     private fun ensureProjectOnFirstRun() {
-        if (!EditorJni.nativeEditorHasProject(handle)) {
-            // Primeira execução: cria o projeto padrão (§8.1).
-            if (!EditorJni.nativeEditorNewProject(handle, "MeuJogo")) {
-                toast(lastErrorText())
-            }
+        val opened = EditorJni.nativeEditorEnsureProject(handle)
+        if (opened == null) {
+            toast(lastErrorText())
         }
     }
 
@@ -1774,7 +1783,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             "Novo projeto…", "Abrir projeto…", "Salvar projeto",
             "Configurações do projeto…",
             "Pasta de exportação (SAF)…", "Exportar projeto (zip)…",
-            "Importar projeto (zip)…"
+            "Importar projeto (zip)…", "Diagnóstico (logcat)"
         )
         AlertDialog.Builder(this)
             .setTitle("Projeto")
@@ -1808,6 +1817,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     4 -> pickSafFolder()
                     5 -> exportProjectZip()
                     6 -> importProjectZip()
+                    // P3 §0 — diagnóstico: estado completo no logcat
+                    // [GONI] (operação/projeto/caminho/backend/frames). Se
+                    // o app fechar de novo, `adb logcat -s GONI` mostra a
+                    // ÚLTIMA operação viva antes da morte.
+                    7 -> {
+                        EditorJni.nativeEditorDumpState(handle, "menu-projeto")
+                        toast("Estado gravado no logcat (tag GONI)")
+                    }
                 }
             }
             .show()
@@ -2136,7 +2153,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         } else {
             EditorJni.nativeEditorComponentCatalog(handle)
         } ?: return
-        // TSV: name	dependencyHint.
+        // TSV: name    dependencyHint.
         val rawNames = tsv.lines().filter { it.isNotBlank() }
             .map { it.split('\t').getOrNull(0) ?: "?" }
         val hints = tsv.lines().filter { it.isNotBlank() }
@@ -2498,6 +2515,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     // --- surface + loop (padrão FASE 7 — ADR-039/040) --------------------------------------
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        // P3 §0: a última operação viva antes de qualquer crash de
+        // surface/render fica no logcat (dump ANTES de criar o renderer).
+        EditorJni.nativeEditorDumpState(handle, "surfaceCreated")
         if (handle != 0L) {
             EditorJni.nativeEditorSurfaceCreated(handle, holder.surface)
         }

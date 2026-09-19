@@ -38,6 +38,21 @@ object EditorJni {
     external fun nativeEditorHasProject(handle: Long): Boolean
     external fun nativeEditorSetProjectName(handle: Long, name: String): Boolean
 
+    // --- startup (P3 §0 — bug Android "AlreadyExists") -------------------------
+    //
+    // A POLÍTICA (criar quando não há NENHUM projeto / reabrir o último
+    // usado / default / primeiro) vive no C++ e é testada no Linux; a
+    // Activity chama UM ponto e só reporta o erro controlado.
+
+    /** Cria OU reabre o projeto da política de startup; devolve o nome
+     * do projeto aberto, ou null + lastError (jamais AlreadyExists no
+     * caminho automático). */
+    external fun nativeEditorEnsureProject(handle: Long): String?
+    /** Projetos do workspace (linhas \n — dirs com project.goni.json). */
+    external fun nativeEditorListProjects(handle: Long): String?
+    /** Estado completo do host no logcat [GONI] (diagnóstico de crash). */
+    external fun nativeEditorDumpState(handle: Long, origin: String)
+
     // --- cena (§8.2) ------------------------------------------------------------
 
     external fun nativeEditorNewScene(handle: Long): Boolean
