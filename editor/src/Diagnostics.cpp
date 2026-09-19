@@ -130,8 +130,11 @@ void crashHandler(int sig, siginfo_t* info, void* context) {
             info != nullptr ? info->si_code : 0, addr,
             g.lastStage, g.lastDetail);
         if (n > 0) {
-            (void)::write(g_crashFd, line,
-                          static_cast<std::size_t>(n));  // best-effort
+            // best-effort: o retorno é consumido (GCC 13 do CI pune
+            // (void)::write com warn_unused_result → -Werror)
+            const auto written =
+                ::write(g_crashFd, line, static_cast<std::size_t>(n));
+            (void)written;
         }
         // Header do tombstone-own: momento do crash (relógio pode estar
         // indisponível em crash — usamos apenas como metadado).
@@ -171,8 +174,10 @@ void appendFileLine(const char* path, const char* text) {
         return;
     }
     if (int fd = ::open(path, O_WRONLY | O_CREAT | O_APPEND, 0644); fd >= 0) {
-        (void)::write(fd, text, std::strlen(text));
-        (void)::fsync(fd);
+        const auto written = ::write(fd, text, std::strlen(text));
+        const auto synced = ::fsync(fd);
+        (void)written;
+        (void)synced;
         ::close(fd);
     }
 }
