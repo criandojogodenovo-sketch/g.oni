@@ -17,6 +17,15 @@ object EditorJni {
         System.loadLibrary("goni")
     }
 
+    // --- P3.1: diagnóstico de startup persistente + crash handler ---------
+    // Chamado pela Activity ANTES de qualquer outra chamada nativa: abre
+    // filesDir/goni_startup.log (cada estágio é gravado na HORA — sobrevive
+    // à morte do processo) e instala o handler de crash (grava goni_crash.log
+    // e RE-ENTREGA o sinal — tombstone/debuggerd preservados).
+    fun bootstrap(context: android.content.Context) {
+        nativeStartupInit(context.filesDir.absolutePath)
+    }
+
     // --- host / surface / lifecycle ------------------------------------------
 
     external fun nativeEditorCreate(backend: String, workspaceRoot: String): Long
@@ -52,6 +61,15 @@ object EditorJni {
     external fun nativeEditorListProjects(handle: Long): String?
     /** Estado completo do host no logcat [GONI] (diagnóstico de crash). */
     external fun nativeEditorDumpState(handle: Long, origin: String)
+
+    // --- P3.1: diagnóstico (FASES 4/5/6) --------------------------------------
+
+    /** Inicializa o diagnóstico persistente (filesDir) + crash handler. */
+    external fun nativeStartupInit(dir: String)
+    /** Marca estágio de startup (persistido na hora + logcat [GONI]). */
+    external fun nativeStartupMark(stage: String, status: String, detail: String?)
+    /** true se há relatório de crash de execução anterior. */
+    external fun nativeStartupHasCrashReport(): Boolean
 
     // --- cena (§8.2) ------------------------------------------------------------
 

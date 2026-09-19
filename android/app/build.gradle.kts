@@ -21,8 +21,14 @@ android {
         versionName = "0.1.0"
         // Backend por argumento (missão §XV): intent extra "backend"
         // ∈ {auto, vulkan, gles}; default auto.
+        //
+        // P3.1: x86_64 ADICIONADO ao lado do arm64-v8a (nada removido).
+        // O MESMO APK passa a ser executável no Android Emulator x86_64
+        // (validação automatizada BUILD→INSTALL→LAUNCH→OBSERVE) E nos
+        // dispositivos físicos arm64 (Realme C33). Não é uma "versão de
+        // teste": é o artefato único com cobertura de ABI estendida.
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
         externalNativeBuild {
             cmake {

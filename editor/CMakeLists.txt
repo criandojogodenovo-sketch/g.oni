@@ -25,6 +25,7 @@ add_library(eng_editor STATIC
     src/NiRuntime.cpp
     src/TextureCache.cpp
     src/AnimationAssets.cpp
+    src/Diagnostics.cpp
 )
 add_library(eng::editor ALIAS eng_editor)
 

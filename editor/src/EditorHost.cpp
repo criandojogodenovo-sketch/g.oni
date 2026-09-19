@@ -1,5 +1,7 @@
 #include "eng/editor/EditorHost.hpp"
 
+#include "eng/editor/Diagnostics.hpp"
+
 /// EditorHost — host Android do editor (FASE 8). Espelha o AndroidRuntime
 /// (FASE 7) com o MESMO contrato de surface/lifecycle (ADR-039/040), mas
 /// renderiza o viewport do EditorDocument.
@@ -98,6 +100,7 @@ eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
 #endif
 
     EditorHost* host = new EditorHost{};
+    diag::mark("STARTUP_EDITOR_HOST", "begin");
     // FRONTEIRA DO WORKSPACE (RECOVERY P0 — bug do APK: "destino absoluto
     // é proibido" / "caminho absoluto proibido"): o root físico (absoluto
     // no Android) é absorvido AQUI, no RootedFileSystem. O documento vê
@@ -109,11 +112,15 @@ eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
                                     : std::string_view(workspaceRootCStr)};
     host->rooted_ = std::make_unique<eng::fs::RootedFileSystem>(
         host->fs_, workspaceRoot);
+    diag::mark("STARTUP_FILESYSTEM", "ok", workspaceRoot.str().c_str());
     auto document = EditorDocument::create(*host->rooted_, eng::fs::Path{"."});
     if (document.isError()) {
+        diag::mark("STARTUP_EDITOR_DOCUMENT", "failed",
+                   document.error().message.c_str());
         delete host;
         return eng::core::makeUnexpected(document.error());
     }
+    diag::mark("STARTUP_EDITOR_DOCUMENT", "ok");
     host->requested_ = backendFromName(backend);
     host->document_ = std::move(document.value());
     ENG_INFO("Editor host criado (backend '{}', workspace root '{}')",
@@ -416,6 +423,10 @@ bool EditorHost::renderFrame(float deltaSeconds)
         document_->assets(), textureCache_, &gizmoDraw_);
 
     if (drew) {
+        if (!stats_.startupComplete) {
+            stats_.startupComplete = true;
+            diag::mark("STARTUP_COMPLETE", "ok", "first frame presented");
+        }
         ++stats_.framesSubmitted;
         stats_.framesPresented = viewportRenderer_->framesPresented();
         watchdogOnFramePresented();  // P3 §0: promove trying → good
@@ -449,7 +460,17 @@ eng::core::Result<std::string> EditorHost::ensureStartupProject()
     // Origem registrada: a Activity chama UM ponto (nativeEditorEnsureProject)
     // — a política inteira (listar/decidir/criar/abrir) vive no documento,
     // testável no Linux sem Android.
-    return document_->ensureStartupProject();
+    auto opened = document_->ensureStartupProject();
+    if (opened.isError()) {
+        diag::mark("STARTUP_PROJECT", "failed",
+                   opened.error().message.c_str());
+    } else {
+        diag::mark("STARTUP_PROJECT", "ok", opened.value().c_str());
+        // STARTUP_MATERIAL: o sistema de materiais inicializa junto ao
+        // projeto (assets/materials + cache de resolução — P3 §3).
+        diag::mark("STARTUP_MATERIAL", "ok", opened.value().c_str());
+    }
+    return opened;
 }
 
 void EditorHost::dumpState(const char* origin) const noexcept

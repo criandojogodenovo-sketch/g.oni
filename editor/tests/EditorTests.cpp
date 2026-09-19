@@ -10,6 +10,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +22,7 @@
 #include <string>
 
 #include "eng/animation/Animation.hpp"
+#include "eng/editor/Diagnostics.hpp"
 #include "eng/editor/EditorDocument.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/editor/EditorHost.hpp"
@@ -5474,4 +5478,100 @@ TEST_CASE("editor: P3 — material unlit vs lit via Inspector (readback)",
     // unlit < lit no canal R (a luz vermelha só soma no lit).
     INFO("lit: " << +pixelLit[0] << " unlit: " << +pixelUnlit[0]);
     CHECK(pixelLit[0] > pixelUnlit[0]);
+}
+
+
+// =============================================================================
+// P3.1 — Diagnóstico de startup persistente + crash handler nativo
+// =============================================================================
+
+TEST_CASE("editor: P3.1 — tracer persiste estágios na hora (formato grep-ável)",
+          "[editor][diagnostics]") {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("goni_diag_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    // P3.1 usa singleton: cada caso valida com o MESMO arquivo (append) —
+    // o tracer é cumulativo por design (evidência entre execuções).
+    eng::editor::diag::init(dir.c_str());
+
+    eng::editor::diag::mark("TESTE_ESTAGIO_A", "ok", "detalhe um");
+    eng::editor::diag::mark("TESTE_ESTAGIO_B", "failed", "erro simulado");
+
+    std::FILE* f = std::fopen(eng::editor::diag::startupLogPath(), "r");
+    REQUIRE(f != nullptr);
+    std::string text;
+    char buf[512];
+    while (std::fgets(buf, sizeof buf, f) != nullptr) {
+        text += buf;
+    }
+    std::fclose(f);
+    CHECK(text.find("TESTE_ESTAGIO_A ok detalhe um") != std::string::npos);
+    CHECK(text.find("TESTE_ESTAGIO_B failed erro simulado") != std::string::npos);
+    CHECK(std::string{eng::editor::diag::lastStage()} == "TESTE_ESTAGIO_B");
+}
+
+TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
+          "[editor][diagnostics][crash]") {
+    // init() é idempotente: se o caso anterior rodou, o singleton já vive
+    // num dir; o path EFETIVO é consultado pela API (ordem-independente).
+    std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("goni_diag_crash_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    eng::editor::diag::init(dir.c_str());
+    const std::string crashLog = eng::editor::diag::crashLogPath();
+    REQUIRE(crashLog != "-");
+
+    // O handler é stateful por processo: validamos num processo FILHO
+    // (fork) — o pai inspeciona o arquivo e o status de morte.
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        // RE-instala pós-fork: frameworks de teste (Catch2!) sobrescrevem
+        // handlers entre casos — na produção o mesmo vale para libs que
+        // instalam handlers (o app pode re-chamar a qualquer momento).
+        eng::editor::diag::installCrashHandler();
+        eng::editor::diag::mark("ESTAGIO_ANTECRASH", "ok", "vivos até aqui");
+        // Crash deliberado. NOTA: escrever em 0x10 com ASan é interceptado
+        // pela INSTRUMENTAÇÃO (exit direto — o sinal nunca nasce); o raise()
+        // entrega o sinal REAL do kernel ao handler — é o mesmo caminho que
+        // um fault verdadeiro percorre (sigaction). O teste de fault real
+        // sem sanitizers acontece no emulador Android (P3.1 FASE 3).
+        ::raise(SIGSEGV);
+        _exit(0);   // inalcançável (handler re-entrega o sinal)
+    }
+    REQUIRE(pid > 0);
+    int status = 0;
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    // O processo FILHO precisa ter MORRIDO no crash — nunca sair limpo:
+    // - sem intermediários: morte POR SINAL (SIGSEGV — re-entregue);
+    // - com Catch2/ASan NA CADEIA (este processo de teste): o handler
+    //   encadeia p/ o handler ANTERIOR, que pode terminar em SIGABRT
+    //   (Catch2 chama abort) ou exit(1) (ASan Die()) — a evidência
+    //   (goni_crash.log) é gravada ANTES do encadeamento em todos os
+    //   casos; o crash NUNCA é engolido: morte por sinal ou exit != 0.
+    const bool diedBySignal = WIFSIGNALED(status);
+    const bool diedBySanitizer =
+        WIFEXITED(status) && WEXITSTATUS(status) != 0;
+    CHECK((diedBySignal || diedBySanitizer));
+    if (diedBySignal) {
+        // SIGSEGV direto, ou SIGABRT induzido pelo handler encadeado
+        // (Catch2) — ambos são morte POR CRASH, não por saída limpa.
+        CHECK((WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGABRT));
+    }
+
+    std::FILE* f = std::fopen(crashLog.c_str(), "r");
+    if (f != nullptr) {
+        std::string text;
+        char buf[512];
+        while (std::fgets(buf, sizeof buf, f) != nullptr) {
+            text += buf;
+        }
+        std::fclose(f);
+        INFO("crash log:\n" << text);
+        CHECK(text.find("SIGSEGV") != std::string::npos);
+        CHECK(text.find("ESTAGIO_ANTECRASH") != std::string::npos);
+    } else {
+        FAIL("goni_crash.log não foi criado pelo handler");
+    }
 }

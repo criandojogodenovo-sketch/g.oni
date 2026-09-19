@@ -41,16 +41,17 @@ constexpr std::size_t kMaxBackendArg = 32;
         out[0] = '\0';
         return true;
     }
-    // Limite em BYTES MUTF-8 — é o que GetStringUTFRegion ESCREVE.
-    // GetStringLength devolve unidades UTF-16 (até 3 bytes/unidade em
-    // MUTF-8): usar uma para limitar a outra era overflow de stack
-    // (bug C-1 da auditoria final FASES 4–10).
-    const jsize utfLength = env->GetStringUTFLength(value);
-    if (utfLength <= 0 || static_cast<std::size_t>(utfLength) >= capacity) {
+    // P3.1: GetStringUTFRegion espera UNIDADES UTF-16 — passar bytes
+    // MUTF-8 lançava exceção em strings acentuadas (mesma correção do
+    // EditorJni.cpp).
+    const jsize utfLength = env->GetStringUTFLength(value);  // bytes MUTF-8
+    const jsize units = env->GetStringLength(value);          // unidades
+    if (utfLength <= 0 || units < 0 ||
+        static_cast<std::size_t>(utfLength) >= capacity) {
         out[0] = '\0';
         return false;
     }
-    env->GetStringUTFRegion(value, 0, utfLength, out);
+    env->GetStringUTFRegion(value, 0, units, out);
     out[utfLength] = '\0';
     return true;
 }

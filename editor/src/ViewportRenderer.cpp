@@ -1,5 +1,7 @@
 #include "eng/editor/ViewportRenderer.hpp"
 
+#include "eng/editor/Diagnostics.hpp"
+
 /// ViewportRenderer — pipeline pos+cor, VBO dinâmico CPU→clip (FASE 8, D3).
 
 #include <algorithm>
@@ -252,21 +254,33 @@ Result<ViewportRenderer> ViewportRenderer::create(
     config.allowFallback = false;
     config.surface = surface;
     config.applicationName = "goni.editor";
+    diag::mark("STARTUP_RHI", "begin", "creating renderer");
     auto renderer = eng::rhi::Renderer::create(config);
     if (renderer.isError()) {
+        diag::mark("STARTUP_RHI", "failed", renderer.error().message.c_str());
         return makeUnexpected(renderer.error());
     }
 
     ViewportRenderer self;
     self.renderer_ = std::move(renderer.value());
+    // Backend EFETIVO (Auto resolve aqui: Vulkan→GLES na ausência de GPU).
+    const char* backendStage = self.renderer_->activeBackend() ==
+                                       eng::rhi::BackendType::Vulkan
+                                   ? "STARTUP_VULKAN"
+                                   : "STARTUP_GLES";
+    diag::mark(backendStage, "ok",
+               self.renderer_->capabilities().backendName.c_str());
 
     // Shader Core (P3 §2): os shaders/pipelines do 2D vivem na
     // ShaderLibrary do eng::render (color/unlit/lit — MESMOS fixtures
     // canônicos de sempre + o par LIT novo com bloco PerFrame).
     auto shaders = eng::render::ShaderLibrary::create(*self.renderer_);
     if (shaders.isError()) {
+        diag::mark("STARTUP_SHADER_CORE", "failed",
+                   shaders.error().message.c_str());
         return makeUnexpected(shaders.error());
     }
+    diag::mark("STARTUP_SHADER_CORE", "ok");
     self.shaders_ = std::move(shaders.value());
     return self;
 }

@@ -11,6 +11,7 @@
 
 #include "eng/editor/EditorHost.hpp"
 #include "eng/editor/TextureCache.hpp"
+#include "eng/editor/Diagnostics.hpp"
 #include "eng/image/Image.hpp"
 
 /// EditorJni.cpp — fronteira JNI do EDITOR (FASE 8, missão §5).
@@ -69,17 +70,19 @@ bool record(jlong handle, const ResultT& result)
         out[0] = '\0';
         return true;
     }
-    // Limite em BYTES MUTF-8 — é o que GetStringUTFRegion ESCREVE.
-    // GetStringLength devolve unidades UTF-16 (até 3 bytes/unidade em
-    // MUTF-8): usar uma para limitar a outra era overflow de stack
-    // (bug C-1 da auditoria final FASES 4–10; strings CJK de nome no
-    // editor digitavam além do buffer de 512 bytes).
-    const jsize utfLength = env->GetStringUTFLength(value);
-    if (utfLength < 0 || static_cast<std::size_t>(utfLength) >= capacity) {
+    // P3.1 (bug real achado pela FASE 4): GetStringUTFRegion espera o
+    // comprimento em UNIDADES UTF-16 — passar BYTES MUTF-8 ( GetString-
+    // UTFLength) lançava StringIndexOutOfBoundsException em qualquer
+    // string com acento ("UI construída", projeto "Ação"...). O LIMITE
+    // continua em bytes (é o que cabe no buffer); a REGIÃO usa unidades.
+    const jsize utfLength = env->GetStringUTFLength(value);  // bytes MUTF-8
+    const jsize units = env->GetStringLength(value);          // unidades UTF-16
+    if (utfLength < 0 || units < 0 ||
+        static_cast<std::size_t>(utfLength) >= capacity) {
         out[0] = '\0';
         return false;
     }
-    env->GetStringUTFRegion(value, 0, utfLength, out);
+    env->GetStringUTFRegion(value, 0, units, out);
     out[utfLength] = '\0';
     return true;
 }
@@ -97,18 +100,70 @@ bool record(jlong handle, const ResultT& result)
     if (value == nullptr) {
         return {};
     }
-    const jsize utfLength = env->GetStringUTFLength(value);
-    if (utfLength <= 0) {
+    const jsize utfLength = env->GetStringUTFLength(value);  // bytes
+    const jsize units = env->GetStringLength(value);          // unidades
+    if (utfLength <= 0 || units < 0) {
         return {};
     }
     std::string out(static_cast<std::size_t>(utfLength), '\0');
-    env->GetStringUTFRegion(value, 0, utfLength, out.data());
+    env->GetStringUTFRegion(value, 0, units, out.data());
     return out;
 }
 
 }  // namespace
 
 extern "C" {
+
+// =============================================================================
+// Diagnóstico de startup P3.1 (FASES 4/5/6) — fronteira mínima
+// =============================================================================
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeStartupInit(JNIEnv* env,
+                                                  jobject /*thiz*/,
+                                                  jstring dir)
+{
+    char dirBuf[512];
+    if (!copyJString(env, dir, dirBuf, sizeof(dirBuf))) {
+        dirBuf[0] = '\0';
+    }
+    eng::editor::diag::init(dirBuf);
+    // Biblioteca carregada = processo vivo até aqui (o arquivo só existe
+    // a partir do init — por isso o estágio é marcado DEPOIS de abrir).
+    eng::editor::diag::mark("STARTUP_NATIVE_LIBRARY", "ok", "libgoni.so loaded");
+    eng::editor::diag::mark("STARTUP_JNI", "ok", dirBuf);
+}
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeStartupMark(JNIEnv* env,
+                                                  jobject /*thiz*/,
+                                                  jstring stage,
+                                                  jstring status,
+                                                  jstring detail)
+{
+    char stageBuf[64];
+    char statusBuf[32];
+    char detailBuf[256];
+    if (!copyJString(env, stage, stageBuf, sizeof(stageBuf))) {
+        return;
+    }
+    if (!copyJString(env, status, statusBuf, sizeof(statusBuf))) {
+        statusBuf[0] = '\0';
+    }
+    if (!copyJString(env, detail, detailBuf, sizeof(detailBuf))) {
+        detailBuf[0] = '\0';
+    }
+    eng::editor::diag::mark(stageBuf,
+                            statusBuf[0] == '\0' ? "ok" : statusBuf,
+                            detailBuf);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeStartupHasCrashReport(JNIEnv* /*env*/,
+                                                            jobject /*thiz*/)
+{
+    return eng::editor::diag::hasPreviousCrashReport() ? JNI_TRUE : JNI_FALSE;
+}
 
 // =============================================================================
 // Host / surface / lifecycle (contrato FASE 7 — ADR-039/040)

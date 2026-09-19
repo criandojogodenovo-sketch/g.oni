@@ -52,6 +52,9 @@ struct HostStats {
     std::uint32_t surfaceDestructions{0};
     bool firstFrameSubmitted{false};
     bool firstFramePresented{false};
+    /// P3.1: primeiro frame APRESENTADO marcado como STARTUP_COMPLETE no
+    /// diagnóstico persistente (uma vez por sessão do host).
+    bool startupComplete{false};
 };
 
 class EditorHost final {

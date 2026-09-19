@@ -101,6 +101,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // P3.1 (FASE 4/5): diagnóstico persistente ANTES de qualquer
+        // subsistema — cada estágio daqui para frente é gravado na HORA em
+        // filesDir/goni_startup.log (sobrevive à morte do processo) e o
+        // crash handler nativo grava goni_crash.log antes do tombstone.
+        EditorJni.bootstrap(this)
+        EditorJni.nativeStartupMark("STARTUP_APPLICATION", "ok", "process")
+        EditorJni.nativeStartupMark("STARTUP_ACTIVITY", "ok", "EditorActivity")
+        maybeOfferCrashExport()
+
         // Workspace: filesDir/projects (interno — sem permissões). Paths
         // DENTRO do projeto seguem relativos (§8.1 — ADR-032).
         val workspace = File(filesDir, "projects").apply { mkdirs() }
@@ -112,6 +121,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
 
         buildUi()
+        EditorJni.nativeStartupMark("STARTUP_EDITOR_UI", "ok", "UI construída")
         ensureProjectOnFirstRun()
         refreshAll()
         // P2 (§5): o DOCUMENTO é a fonte da verdade — a ferramenta da UI
@@ -1940,7 +1950,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             "Novo projeto…", "Abrir projeto…", "Salvar projeto",
             "Configurações do projeto…",
             "Pasta de exportação (SAF)…", "Exportar projeto (zip)…",
-            "Importar projeto (zip)…", "Diagnóstico (logcat)"
+            "Importar projeto (zip)…", "Diagnóstico (logcat)",
+            "Exportar diagnóstico (arquivos)…"
         )
         AlertDialog.Builder(this)
             .setTitle("Projeto")
@@ -1982,6 +1993,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         EditorJni.nativeEditorDumpState(handle, "menu-projeto")
                         toast("Estado gravado no logcat (tag GONI)")
                     }
+                    // P3.1 (FASE 6): exporta goni_startup.log + goni_crash.log
+                    // SEM depender de logcat — fluxo de arquivos do usuário.
+                    8 -> exportDiagnosticsZip()
                 }
             }
             .show()
@@ -2008,6 +2022,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private val reqSafFolder = 4101
     private val reqSafExport = 4102
     private val reqSafImport = 4103
+    private val reqSafDiag = 4104
 
     /** Dispatch SAF (chamado pelo onActivityResult ÚNICO da Activity). */
     private fun handleSafResult(requestCode: Int, resultCode: Int, uri: Uri?) {
@@ -2030,11 +2045,59 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
             reqSafExport -> writeProjectZipTo(uri)
             reqSafImport -> importProjectZipFrom(uri)
+            reqSafDiag -> writeDiagnosticsZipTo(uri)
         }
     }
 
     private fun pickSafFolder() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), reqSafFolder)
+    }
+
+    // --- P3.1 (FASE 6): diagnóstico exportável SEM logcat -------------------
+    //
+    // Rota alternativa para quando o editor NEM CHEGA a abrir: o crash
+    // handler persiste a evidência; na PRÓXIMA abertura este diálogo
+    // oferece o export ANTES de qualquer carga pesa.
+
+    private fun maybeOfferCrashExport() {
+        if (!EditorJni.nativeStartupHasCrashReport()) return
+        AlertDialog.Builder(this)
+            .setTitle("Crash anterior detectado")
+            .setMessage(
+                "A execução anterior terminou em crash nativo.\n" +
+                "Exportar o diagnóstico (startup + crash) agora?"
+            )
+            .setPositiveButton("Exportar") { _, _ -> exportDiagnosticsZip() }
+            .setNegativeButton("Agora não", null)
+            .show()
+    }
+
+    private fun exportDiagnosticsZip() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(Intent.EXTRA_TITLE, "goni-diagnostics.zip")
+        }
+        startActivityForResult(intent, reqSafDiag)
+    }
+
+    private fun writeDiagnosticsZipTo(uri: Uri) {
+        try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                ZipOutputStream(out).use { zip ->
+                    for (name in listOf("goni_startup.log", "goni_crash.log")) {
+                        val f = File(filesDir, name)
+                        if (!f.exists()) continue
+                        zip.putNextEntry(ZipEntry(name))
+                        f.inputStream().use { it.copyTo(zip) }
+                        zip.closeEntry()
+                    }
+                }
+            }
+            toast("Diagnóstico exportado")
+        } catch (e: Exception) {
+            toast("Falha ao exportar: ${e.message}")
+        }
     }
 
     private fun exportProjectZip() {
