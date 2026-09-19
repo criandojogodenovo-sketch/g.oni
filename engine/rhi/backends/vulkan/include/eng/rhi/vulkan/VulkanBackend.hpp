@@ -83,6 +83,8 @@ public:
                                                  IndexType indexType) override;
     eng::core::Result<void> frameBindTexture(std::uint64_t frameId, TextureHandle texture,
                                             SamplerHandle sampler, std::uint32_t slot) override;
+    eng::core::Result<void> frameSetUniformData(
+        std::uint64_t frameId, std::span<const std::byte> data) override;
     eng::core::Result<void> frameDraw(std::uint64_t frameId, std::uint32_t vertexCount,
                                       std::uint32_t firstVertex) override;
     eng::core::Result<void> frameDrawIndexed(std::uint64_t frameId, std::uint32_t indexCount,
@@ -139,6 +141,16 @@ private:
         /// Layout do pipeline em vigor nesta sessão (bind de descriptor set
         // precisa do layout REAL — rastreado em frameSetPipeline).
         VkPipelineLayout boundPipelineLayout{VK_NULL_HANDLE};
+        // --- UBO dinâmico do frame (P3 §2: uniforms — luzes 2D) ---------------
+        // Buffer HOST_VISIBLE persistente mapeado, bump-alocado por chamada
+        // de frameSetUniformData. Cada FRAME usa apenas o SEU slot — sem
+        // hazard entre frames in flight (região escrita ANTES da
+        // submissão, lida apenas por este frame).
+        VkBuffer uniformBuffer{VK_NULL_HANDLE};
+        VkDeviceMemory uniformMemory{VK_NULL_HANDLE};
+        void* uniformMapped{nullptr};
+        VkDescriptorSet uniformDescriptor{VK_NULL_HANDLE};
+        std::uint32_t uniformCursor{0};
     };
 
     // --- helpers internos (definidos nos .cpp correspondentes) ------------------
@@ -200,6 +212,13 @@ private:
     /// completo em destroyTexture/destroySampler (simples e correto).
     std::map<std::pair<std::uint64_t, std::uint64_t>, VkDescriptorSet>
         textureSetCache_{};
+
+    // --- uniforms do frame (P3 §2): UBO DINÂMICO no set 1/binding 0 ---------
+    /// Layout do set 1 (UBO dinâmico, vertex|fragment). Pipelines declaram
+    /// [set0 texturas, set1 uniforms]; shaders sem bloco apenas ignoram.
+    VkDescriptorSetLayout uniformSetLayout_{VK_NULL_HANDLE};
+    /// Alinhamento das regiões do UBO (mín. garantido: 256B — spec).
+    static constexpr std::uint32_t kUniformRegionAlign = 256;
 
     // --- frames ---------------------------------------------------------------------
     std::vector<FrameSlot> frameSlots_{};

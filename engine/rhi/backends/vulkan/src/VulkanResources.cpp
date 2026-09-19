@@ -457,13 +457,14 @@ Result<GraphicsPipelineHandle> VulkanBackend::createGraphicsPipeline(
             ? fromVkFormat(swapchainFormat_)
             : desc.renderTarget.colorFormat;
 
-    // Layout com o set 0 de textura (combined image sampler, fragment).
-    // TODOS os pipelines compartilham o MESMO layout — shaders que não
-    // amostram apenas ignoram o binding (evolução: sprites/UI/preview).
-    VkDescriptorSetLayout setLayouts[1] = {textureSetLayout_};
+    // Layout com set 0 (textura) + set 1 (UBO dinâmico de uniforms do
+    // frame — P3 §2: luzes 2D). TODOS os pipelines compartilham o MESMO
+    // par de sets — shaders que não usam apenas ignoram os bindings
+    // (evolução: sprites/UI/preview/iluminação).
+    VkDescriptorSetLayout setLayouts[2] = {textureSetLayout_, uniformSetLayout_};
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount = 1;
+    layoutInfo.setLayoutCount = 2;
     layoutInfo.pSetLayouts = setLayouts;
     VkResult result = fn.vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &entry.layout);
     if (result != VK_SUCCESS) {

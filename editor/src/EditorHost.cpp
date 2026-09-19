@@ -404,8 +404,11 @@ bool EditorHost::renderFrame(float deltaSeconds)
     // assets nulos: sprites caem no caminho de cor (honesto). Gizmo P1:
     // desenhado por cima (tool ativa + seleção; Edit apenas).
     const eng::scene::Scene* scene = document_->sceneInFocus();
-    const auto quads = document_->viewport().buildQuads(
-        *scene, document_->selection());
+    auto quads = document_->viewport().buildQuads(*scene,
+                                                   document_->selection());
+    // P3 §3: material do sprite → shader/tint do quad (cache do documento;
+    // sem projeto/default os quads já saem "lit" com tint intacto).
+    document_->resolveMaterials(quads);
     const auto particles = document_->viewport().buildParticleQuads(*scene);
     gizmoDraw_ = document_->gizmoDraw(&textureCache_);
     const bool drew = viewportRenderer_->renderFrame(

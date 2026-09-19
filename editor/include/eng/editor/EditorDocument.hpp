@@ -35,6 +35,7 @@
 #include "eng/audio/Audio.hpp"
 #include "eng/ecs/Ecs.hpp"
 #include "eng/editor/AssetBrowser.hpp"
+#include "eng/render/SpriteMaterial.hpp"
 #include "eng/editor/Gizmo.hpp"
 #include "eng/editor/Inspector.hpp"
 #include "eng/editor/Viewport.hpp"
@@ -427,6 +428,53 @@ public:
     [[nodiscard]] eng::core::Result<void> animationDelete(
         std::string_view name);
 
+    // --- materiais (P3 §3): assets/materials/<nome>.mat.json -------------
+    //
+    // O material REAL do sprite 2D (shader + tint): o renderer consome via
+    // resolveMaterials (cache interno por nome — invalidada em write/delete
+    // e troca de projeto).
+
+    /// Resumo de um material (para a UI listar/inspetor).
+    struct MaterialSummary {
+        std::string name;    ///< nome do arquivo (com .mat.json)
+        std::string shader;  ///< "lit" | "unlit"
+        float tintR = 1.f;
+        float tintG = 1.f;
+        float tintB = 1.f;
+        float tintA = 1.f;
+    };
+
+    /// Lista os materiais do projeto (decode completo p/ resumo).
+    [[nodiscard]] eng::core::Result<std::vector<MaterialSummary>>
+    materialList() const;
+
+    /// Lê o conteúdo cru (JSON — round-trip do editor).
+    [[nodiscard]] eng::core::Result<std::string> materialRead(
+        std::string_view name) const;
+
+    /// Escreve o conteúdo cru (valida com o codec ANTES de gravar).
+    [[nodiscard]] eng::core::Result<void> materialWrite(
+        std::string_view name, std::string_view json);
+
+    /// Cria um material NOVO (template "lit" com tint neutro).
+    [[nodiscard]] eng::core::Result<void> materialCreate(
+        std::string_view name);
+
+    /// Apaga o asset de material (arquivo + registry). Sprites que o
+    /// referenciam caem no default (lit neutro) — sem estado quebrado.
+    [[nodiscard]] eng::core::Result<void> materialDelete(
+        std::string_view name);
+
+    /// Nomes dos materiais do projeto (linhas — picker do Inspector).
+    [[nodiscard]] eng::core::Result<std::vector<std::string>>
+    materialNames() const;
+
+    /// Resolve o material de cada QUAD de sprite (P3 §3): shader em
+    /// materialShader + tint do material MULTIPLICADO em tintR/G/B/A.
+    /// Material ausente/vazio → default "lit" neutro (o look clássico).
+    /// Cache por nome; best-effort (JSON ilegível → default + log único).
+    void resolveMaterials(std::vector<EntityQuad>& quads) const;
+
     /// Anexa o clip à entidade: Animator.clip = nome do clip (adiciona
     /// Animator default quando ausente; cria SpriteData quando o clip
     /// tem FRAMES e a entidade não tem sprite — auto-criação SEGURA,
@@ -574,6 +622,11 @@ private:
 
     eng::fs::FileSystem* fs_ = nullptr;  ///< emprestado
     eng::fs::Path workspaceRoot_{};
+    /// Cache de materiais por nome (P3 §3 — resolveMaterials). Mutable:
+    /// resolução é leitura com memoização; invalidada em write/delete.
+    mutable std::unordered_map<std::string, eng::render::SpriteMaterial>
+        materialCache_{};
+
     std::optional<eng::project::ProjectFile> project_{};
     bool projectDirty_{false};
 

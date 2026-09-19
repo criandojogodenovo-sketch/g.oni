@@ -78,6 +78,13 @@ public:
     [[nodiscard]] eng::core::Result<void> bindTexture(TextureHandle texture,
                                                       SamplerHandle sampler,
                                                       std::uint32_t slot = 0);
+    /// Dados de uniform do frame (bloco std140 "PerFrame" — ex.: luzes 2D):
+    /// copiados para região própria do frame-slot; valem para os draws
+    /// seguintes até a próxima chamada. Teto somado: kMaxFrameUniformData.
+    /// Múltiplas chamadas = múltiplas regiões (ex.: conjunto de luzes por
+    /// camada, re-bindado entre grupos de draw).
+    [[nodiscard]] eng::core::Result<void> setUniformData(
+        std::span<const std::byte> data);
     [[nodiscard]] eng::core::Result<void> draw(std::uint32_t vertexCount,
                                               std::uint32_t firstVertex = 0);
     [[nodiscard]] eng::core::Result<void> drawIndexed(std::uint32_t indexCount,

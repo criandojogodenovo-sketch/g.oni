@@ -140,6 +140,9 @@ bool GlesLibrary::open(std::string& outError) {
     ENG_GL_LOAD(glesLibrary_, glGenerateMipmap, GlGenerateMipmapFn);
     ENG_GL_LOAD(glesLibrary_, glActiveTexture, GlActiveTextureFn);
     ENG_GL_LOAD(glesLibrary_, glPixelStorei, GlPixelStoreiFn);
+    ENG_GL_LOAD(glesLibrary_, glBindBufferRange, GlBindBufferRangeFn);
+    ENG_GL_LOAD(glesLibrary_, glGetUniformBlockIndex, GlGetUniformBlockIndexFn);
+    ENG_GL_LOAD(glesLibrary_, glUniformBlockBinding, GlUniformBlockBindingFn);
 #undef ENG_GL_LOAD
 
     ENG_INFO("rhi.gles: libEGL + libGLESv2 carregadas");

@@ -105,6 +105,19 @@ eng::core::Result<void> Frame::bindTexture(TextureHandle texture, SamplerHandle 
     return state_->backend->frameBindTexture(frameId_, texture, sampler, slot);
 }
 
+eng::core::Result<void> Frame::setUniformData(std::span<const std::byte> data) {
+    if (auto usable = checkUsable(); !usable) {
+        return eng::core::makeUnexpected(usable.error());
+    }
+    if (data.size() > kMaxFrameUniformData) {
+        return eng::core::makeUnexpected(eng::core::Error{
+            eng::core::StatusCode::InvalidArgument,
+            "rhi.frame: setUniformData excede kMaxFrameUniformData (" +
+                std::to_string(kMaxFrameUniformData) + " bytes)"});
+    }
+    return state_->backend->frameSetUniformData(frameId_, data);
+}
+
 eng::core::Result<void> Frame::draw(std::uint32_t vertexCount, std::uint32_t firstVertex) {
     if (auto usable = checkUsable(); !usable) {
         return eng::core::makeUnexpected(usable.error());

@@ -22,6 +22,7 @@
 #include "eng/editor/AudioSource.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
 #include "eng/editor/SpriteData.hpp"
+#include "eng/render/Light2D.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneIdentity.hpp"
@@ -205,6 +206,7 @@ Result<void> EditorDocument::newProject(std::string_view name)
     assets_ = std::make_unique<AssetBrowser>(
         *fs_, project_->paths().assetsRoot(),
         project_->paths().resolve(project_->config.assetRegistryPath));
+    materialCache_.clear();  // projeto novo: materiais novos
     auto loaded = assets_->loadRegistry();
     if (loaded.isError()) {
         return makeUnexpected(loaded.error());
@@ -240,6 +242,7 @@ Result<void> EditorDocument::openProject(const eng::fs::Path& projectRoot)
 
     project_ = std::move(opened.value());
     projectDirty_ = false;
+    materialCache_.clear();  // projeto aberto: materiais do anterior não valem
     assets_ = std::make_unique<AssetBrowser>(
         *fs_, project_->paths().assetsRoot(),
         project_->paths().resolve(project_->config.assetRegistryPath));
@@ -2018,6 +2021,39 @@ namespace {
 
 constexpr std::string_view kAnimCategory = "animations";
 
+// --- materiais (P3 §3) -------------------------------------------------------
+constexpr std::string_view kMaterialCategory = "materials";
+constexpr std::string_view kMaterialExt = ".mat.json";
+
+/// Nome de asset de material válido (mesma política de scripts/animações).
+[[nodiscard]] bool isValidMaterialName(std::string_view rawName)
+{
+    if (rawName.empty() || rawName.size() > 96) {
+        return false;
+    }
+    for (const char c : rawName) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+                        c == ' ' || c == '.';
+        if (!ok) {
+            return false;
+        }
+    }
+    return rawName != "." && rawName != "..";
+}
+
+/// Força a extensão .mat.json (a UI envia o nome cru).
+[[nodiscard]] std::string withMaterialExtension(std::string_view name)
+{
+    std::string out{name};
+    if (out.size() < kMaterialExt.size() ||
+        out.compare(out.size() - kMaterialExt.size(), kMaterialExt.size(),
+                    kMaterialExt) != 0) {
+        out += kMaterialExt;
+    }
+    return out;
+}
+
 /// Nome de asset de animação válido (mesma política de scripts: sem
 /// path/nul; a extensão é forçada por animationCreate).
 [[nodiscard]] bool isValidAnimName(std::string_view name) noexcept
@@ -2191,6 +2227,213 @@ Result<void> EditorDocument::animationDelete(std::string_view name)
                                             "nenhum projeto aberto"));
     }
     return assets_->remove(kAnimCategory, name);
+}
+
+// =============================================================================
+// Materiais (P3 §3) — assets/materials/<nome>.mat.json
+// =============================================================================
+
+Result<std::vector<EditorDocument::MaterialSummary>>
+EditorDocument::materialList() const
+{
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto listed = assets_->list(kMaterialCategory);
+    if (listed.isError()) {
+        return makeUnexpected(listed.error());
+    }
+    std::vector<MaterialSummary> out;
+    out.reserve(listed.value().size());
+    for (const auto& entry : listed.value()) {
+        auto content = materialRead(entry.name);
+        if (content.isError()) {
+            continue;  // ilegível: NÃO lista (a UI só oferece o válido)
+        }
+        auto decoded = eng::render::materialDecode(content.value());
+        if (decoded.isError()) {
+            continue;
+        }
+        MaterialSummary summary;
+        summary.name = entry.name;
+        summary.shader = decoded.value().material.shader;
+        summary.tintR = decoded.value().material.tintR;
+        summary.tintG = decoded.value().material.tintG;
+        summary.tintB = decoded.value().material.tintB;
+        summary.tintA = decoded.value().material.tintA;
+        out.push_back(std::move(summary));
+    }
+    return out;
+}
+
+Result<std::string> EditorDocument::materialRead(
+    std::string_view name) const
+{
+    if (!isValidMaterialName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de material inválido"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto bytes = assets_->read(kMaterialCategory, name);
+    if (bytes.isError()) {
+        return makeUnexpected(bytes.error());
+    }
+    std::string text;
+    text.reserve(bytes.value().size());
+    for (const std::byte b : bytes.value()) {
+        text.push_back(static_cast<char>(b));
+    }
+    return text;
+}
+
+Result<void> EditorDocument::materialWrite(std::string_view name,
+                                            std::string_view json)
+{
+    if (!isValidMaterialName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de material inválido"));
+    }
+    if (assets_ == nullptr || !project_.has_value()) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    // Valida ANTES de gravar: lixo não entra no projeto (§15).
+    auto decoded = eng::render::materialDecode(json);
+    if (decoded.isError()) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "JSON rejeitado: " + decoded.error().message));
+    }
+    const eng::fs::Path path =
+        project_->paths().assetsRoot() /
+        eng::fs::Path{std::string(kMaterialCategory)} /
+        eng::fs::Path{std::string(name)};
+    if (path.isAbsolute()) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "caminho absoluto proibido"));
+    }
+    auto existed = fs_->exists(path);
+    if (existed.isError()) {
+        return makeUnexpected(existed.error());
+    }
+    auto written = fs_->writeAllText(path, std::string(json));
+    if (written.isError()) {
+        return makeUnexpected(written.error());
+    }
+    if (!existed.value()) {
+        auto registered = assets_->registerExisting(kMaterialCategory, name);
+        if (registered.isError()) {
+            return makeUnexpected(registered.error());
+        }
+    }
+    // Cache sai (shader/tint podem ter mudado — o próximo resolve relê).
+    materialCache_.erase(std::string(name));
+    return {};
+}
+
+Result<void> EditorDocument::materialCreate(std::string_view rawName)
+{
+    if (!isValidMaterialName(rawName)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "nome de material inválido (vazio/caracteres proibidos)"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    const std::string name = withMaterialExtension(rawName);
+    auto existing = assets_->list(kMaterialCategory);
+    if (existing.isError()) {
+        return makeUnexpected(existing.error());
+    }
+    for (const auto& entry : existing.value()) {
+        if (entry.name == name) {
+            return makeUnexpected(documentError(
+                StatusCode::AlreadyExists,
+                "material '" + name + "' já existe"));
+        }
+    }
+    eng::render::MaterialAsset asset;
+    asset.name = rawName;
+    asset.material.shader = eng::render::kShaderLit;
+    auto encoded = eng::render::materialEncode(asset);
+    if (encoded.isError()) {
+        return makeUnexpected(encoded.error());
+    }
+    return materialWrite(name, encoded.value());
+}
+
+Result<void> EditorDocument::materialDelete(std::string_view name)
+{
+    if (!isValidMaterialName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de material inválido"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    materialCache_.erase(std::string(name));
+    return assets_->remove(kMaterialCategory, name);
+}
+
+Result<std::vector<std::string>> EditorDocument::materialNames() const
+{
+    auto listed = materialList();
+    if (listed.isError()) {
+        return makeUnexpected(listed.error());
+    }
+    std::vector<std::string> names;
+    names.reserve(listed.value().size());
+    for (const auto& summary : listed.value()) {
+        names.push_back(summary.name);
+    }
+    return names;
+}
+
+void EditorDocument::resolveMaterials(std::vector<EntityQuad>& quads) const
+{
+    if (assets_ == nullptr) {
+        return;  // sem projeto: default já está nos quads ("lit" neutro)
+    }
+    for (EntityQuad& quad : quads) {
+        if (!quad.isSprite || quad.materialAsset.empty()) {
+            continue;  // default: materialShader="lit", tint intactos
+        }
+        const std::string name = withMaterialExtension(quad.materialAsset);
+        auto cached = materialCache_.find(name);
+        if (cached == materialCache_.end()) {
+            auto content = materialRead(name);
+            if (content.isError()) {
+                ENG_WARN("material '{}' ilegível — usando default lit "
+                         "neutro",
+                         name);
+                materialCache_[name] = eng::render::SpriteMaterial{};
+            } else {
+                auto decoded = eng::render::materialDecode(content.value());
+                if (decoded.isError()) {
+                    ENG_WARN("material '{}' inválido ({}) — usando default "
+                             "lit neutro",
+                             name, decoded.error().message);
+                    materialCache_[name] = eng::render::SpriteMaterial{};
+                } else {
+                    materialCache_[name] = decoded.value().material;
+                }
+            }
+            cached = materialCache_.find(name);
+        }
+        const eng::render::SpriteMaterial& material = cached->second;
+        quad.materialShader = material.shader;
+        quad.tintR *= material.tintR;
+        quad.tintG *= material.tintG;
+        quad.tintB *= material.tintB;
+        quad.tintA *= material.tintA;
+    }
 }
 
 Result<void> EditorDocument::animationAssign(eng::ecs::Entity entity,

@@ -313,6 +313,13 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
     stats_.contextVersion = version;
     capabilities_ = caps;
     outCapabilities = caps;
+    // --- uniforms do frame (P3 §2): UBO compartilhado, região por chamada ---
+    fn.glGenBuffers(1, &uniformGlBuffer_);
+    fn.glBindBuffer(GL_UNIFORM_BUFFER, uniformGlBuffer_);
+    fn.glBufferData(GL_UNIFORM_BUFFER, kMaxFrameUniformData, nullptr, GL_DYNAMIC_DRAW);
+    fn.glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    uniformCursor_ = 0;
+
     initialized_ = true;
     ENG_INFO("rhi.gles: inicializado — {} ({})", version,
              hasSurface_ ? "com pbuffer (present real)" : "device-only");
@@ -334,6 +341,10 @@ const RendererCapabilities& GlesBackend::capabilities() const {
 void GlesBackend::destroyAll() noexcept {
     if (display_ != EGL_NO_DISPLAY) {
         const auto& fn = library_.functions();
+        if (uniformGlBuffer_ != 0) {
+            fn.glDeleteBuffers(1, &uniformGlBuffer_);
+            uniformGlBuffer_ = 0;
+        }
         fn.eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         for (auto entry : buffers_.drainAll()) {
             fn.glDeleteBuffers(1, &entry.buffer);
@@ -532,6 +543,22 @@ Result<ShaderHandle> GlesBackend::createShader(const ShaderDesc& desc) {
     // Estágias podem ser liberadas após o link (spec ES 3).
     fn.glDeleteShader(vertex.value());
     fn.glDeleteShader(fragment.value());
+    // Bloco de uniforms do frame (P3 §2): GLSL ES 3.00 não tem qualifier
+    // binding — o backend atribui o bloco nomeado ao índice 0 de
+    // GL_UNIFORM_BUFFER (contrato do ShaderDesc::uniformBlockName).
+    if (!desc.uniformBlockName.empty()) {
+        const GLuint blockIndex = fn.glGetUniformBlockIndex(
+            program, std::string(desc.uniformBlockName).c_str());
+        if (blockIndex == 0xFFFFFFFFu) {
+            fn.glDeleteProgram(program);
+            return eng::core::makeUnexpected(makeError(
+                StatusCode::InvalidArgument,
+                "rhi.gles.shader: bloco de uniform '" +
+                    std::string(desc.uniformBlockName) +
+                    "' não existe no shader (GL_INVALID_INDEX)"));
+        }
+        fn.glUniformBlockBinding(program, blockIndex, 0);
+    }
     return ShaderHandle{shaders_.insert(ShaderEntry{program})};
 }
 
@@ -767,6 +794,7 @@ Result<BeginFrameResult> GlesBackend::beginFrame() {
     fn.glClearColor(0.f, 0.f, 0.f, 1.f);
     fn.glClear(GL_COLOR_BUFFER_BIT);
     activeFrameId_ = ++nextFrameId_;
+    uniformCursor_ = 0;  // orçamento de uniforms do frame recomeça
     pipelineSet_ = false;
     boundVbo_ = 0;
     boundEbo_ = 0;
@@ -930,6 +958,43 @@ Result<void> GlesBackend::frameBindTexture(std::uint64_t frameId, TextureHandle 
     fn.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
                        s.addressV == A::ClampToEdge ? GL_CLAMP_TO_EDGE : GL_REPEAT);
     applied_[slot] = AppliedTexture{texture.id, sampler.id};
+    return {};
+}
+
+Result<void> GlesBackend::frameSetUniformData(std::uint64_t frameId,
+                                                std::span<const std::byte> data) {
+    if (!isRecording(frameId)) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.gles.frame: sessão inválida"));
+    }
+    if (data.empty()) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument, "rhi.gles.frame: setUniformData com dados vazios"));
+    }
+    if (data.size() > kMaxFrameUniformData) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument,
+                      "rhi.gles.frame: setUniformData excede kMaxFrameUniformData"));
+    }
+    // Região bump-alocada (análogo do dynamic offset Vulkan).
+    const GLsizeiptr cursor = uniformCursor_;
+    const GLsizeiptr aligned =
+        (cursor + kUniformRegionAlign - 1) & ~(kUniformRegionAlign - 1);
+    const GLsizeiptr end = aligned + static_cast<GLsizeiptr>(data.size());
+    if (end > kMaxFrameUniformData) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.gles.frame: orçamento de uniforms do frame exaurido"));
+    }
+    const auto& fn = library_.functions();
+    fn.glBindBuffer(GL_UNIFORM_BUFFER, uniformGlBuffer_);
+    fn.glBufferSubData(GL_UNIFORM_BUFFER, aligned,
+                       static_cast<GLsizeiptr>(data.size()), data.data());
+    // O bloco "PerFrame" do program vive no binding 0 (atribuído no link);
+    // a REGIÃO seleciona o conjunto de dados (luzes por camada, ...).
+    fn.glBindBufferRange(GL_UNIFORM_BUFFER, 0, uniformGlBuffer_, aligned,
+                         static_cast<GLsizeiptr>(data.size()));
+    uniformCursor_ = end;
     return {};
 }
 

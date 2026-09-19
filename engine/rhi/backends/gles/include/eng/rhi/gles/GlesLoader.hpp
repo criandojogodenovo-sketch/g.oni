@@ -90,6 +90,10 @@ using GlTexParameteriFn = void (*)(GLenum, GLenum, GLint);
 using GlGenerateMipmapFn = void (*)(GLenum);
 using GlActiveTextureFn = void (*)(GLenum);
 using GlPixelStoreiFn = void (*)(GLenum, GLint);
+// UBO do frame (P3 §2 — luzes 2D; core de GLES 3.0):
+using GlBindBufferRangeFn = void (*)(GLenum, GLuint, GLuint, GLintptr, GLsizeiptr);
+using GlGetUniformBlockIndexFn = GLuint (*)(GLuint, const GLchar*);
+using GlUniformBlockBindingFn = void (*)(GLuint, GLuint, GLuint);
 
 /// Tabela de funções EGL + GLES usadas pelo backend.
 struct GlesFunctions {
@@ -161,6 +165,9 @@ struct GlesFunctions {
     GlGenerateMipmapFn glGenerateMipmap{nullptr};
     GlActiveTextureFn glActiveTexture{nullptr};
     GlPixelStoreiFn glPixelStorei{nullptr};
+    GlBindBufferRangeFn glBindBufferRange{nullptr};
+    GlGetUniformBlockIndexFn glGetUniformBlockIndex{nullptr};
+    GlUniformBlockBindingFn glUniformBlockBinding{nullptr};
 };
 
 /// Bibliotecas carregadas (EGL + GLESv2) + tabela.

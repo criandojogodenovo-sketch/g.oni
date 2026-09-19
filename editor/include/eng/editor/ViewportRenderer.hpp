@@ -3,12 +3,13 @@
 /// eng::editor::ViewportRenderer — desenho do viewport via eng::rhi
 /// (FASE 8, missão §8.6; auditoria D3).
 ///
-/// DECISÃO (ADR-042): a abstraction RHI não tem uniforms (FASE 4 — fora de
-/// escopo então). O viewport v1 transforma vértices na CPU (world→clip em
-/// C++) e envia um VBO dinâmico por updateBuffer — MESMO pipeline
-/// pos+cor dos demos das FASES 5–7 (shaders embutidos com procedência).
-/// Correto para a escala de um editor (centenas de quads); o gatilho de
-/// revisão (uniforms no RHI) é quando o RENDER DE JOGO existir.
+/// DECISÃO (revisada no P3 §2 — o gatilho da ADR-042 aconteceu): o RHI
+/// ganhou o caminho de uniforms do frame (Frame::setUniformData — UBO
+/// dinâmico por frame-slot). O viewport MANTÉM a transformação CPU
+/// world→clip (correta p/ centenas de quads) e usa o caminho de uniforms
+/// para o que a CPU não faz: ILUMINAÇÃO por fragmento (bloco PerFrame —
+/// sprite.lit). Shaders/pipelines agora vivem na ShaderLibrary do
+/// eng::render (Shader Core); a draw data 2D genérica é a DrawList.
 ///
 /// Conteúdo por frame: fundo cinza-escuro, grade (1 unidade; eixo mais
 /// claro), um quad por entidade (tint determinístico), borda branca na
@@ -20,6 +21,8 @@
 
 #include "eng/core/Result.hpp"
 #include "eng/editor/Gizmo.hpp"
+#include "eng/render/RenderTypes.hpp"
+#include "eng/render/ShaderLibrary.hpp"
 #include "eng/editor/Viewport.hpp"
 #include "eng/rhi/Renderer.hpp"
 #include "eng/rhi/Types.hpp"
@@ -93,6 +96,14 @@ public:
         float r, g, b, a;
         float u, v;
     };
+    /// Vertex de sprite LIT (P3 §5): + posição MUNDO vec2 (48 bytes) — o
+    /// fragment de iluminação precisa da posição mundial interpolada.
+    struct LitSpriteVertex {
+        float x, y, z, w;
+        float r, g, b, a;
+        float u, v;
+        float worldX, worldY;
+    };
     static constexpr std::uint32_t kVerticesPerQuad = 6;
 
     /// Vértices do último frame (prova de conteúdo nos testes sem GPU).
@@ -112,6 +123,19 @@ public:
     {
         return spriteVertices_;
     }
+    /// Vértices de sprite LIT do último frame (clip + cor + UV + mundo).
+    [[nodiscard]] const std::vector<LitSpriteVertex>& lastFrameLitSpriteVertices()
+        const noexcept
+    {
+        return litSpriteVertices_;
+    }
+    /// Bloco PerFrame do último frame por GRUPO de camada (P3 §5 —
+    /// prova de conteúdo nos testes sem GPU: luzes que chegaram ao shader).
+    [[nodiscard]] const std::vector<eng::render::FrameUniforms>&
+    lastFrameFrameUniforms() const noexcept
+    {
+        return frameUniformsSent_;
+    }
     /// Vértices do LOTE DE GIZMO do último frame (P1 — prova de conteúdo
     /// nos testes: handles por cima de sprites).
     [[nodiscard]] const std::vector<Vertex>& lastFrameGizmoVertices()
@@ -130,6 +154,7 @@ private:
 
     [[nodiscard]] bool ensureCapacity(std::size_t vertexCount);
     [[nodiscard]] bool ensureSpriteCapacity(std::size_t vertexCount);
+    [[nodiscard]] bool ensureLitSpriteCapacity(std::size_t vertexCount);
     [[nodiscard]] bool buildAndDraw(const Viewport& viewport,
                                     const std::vector<EntityQuad>& quads,
                                     const std::vector<ParticleQuad>& particles,
@@ -144,12 +169,19 @@ private:
     std::size_t vertexCapacity_ = 0;
 
     // --- sprite pipeline (evolução P0-3) --------------------------------------
-    eng::rhi::ShaderHandle spriteShader_{};
-    eng::rhi::GraphicsPipelineHandle spritePipeline_{};
-    eng::rhi::BufferHandle spriteBuffer_{};
+    /// Shaders/pipelines do 2D (P3 §2): color/unlit/lit — ShaderLibrary
+    /// do eng::render; destruída no destroyResources ANTES do renderer.
+    eng::render::ShaderLibrary shaders_{};
+    eng::rhi::BufferHandle spriteBuffer_{};       ///< VBO unlit (40B)
     std::size_t spriteCapacity_ = 0;
     std::vector<SpriteVertex> spriteVertices_{};
     std::size_t lastFrameTexturedSprites_ = 0;
+
+    // --- sprite LIT (P3 §5 — iluminação 2D por fragmento) --------------------
+    eng::rhi::BufferHandle litSpriteBuffer_{};    ///< VBO lit (48B)
+    std::size_t litSpriteCapacity_ = 0;
+    std::vector<LitSpriteVertex> litSpriteVertices_{};
+    std::vector<eng::render::FrameUniforms> frameUniformsSent_{};
 
     /// Arena de vértices do frame (reusada — zero alocação por frame após
     /// estabilizar; missão §10 mobile).

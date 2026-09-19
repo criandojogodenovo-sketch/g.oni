@@ -586,26 +586,133 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
             StatusCode::Unknown, "rhi.vulkan: vkCreateDescriptorSetLayout (textura)", result));
     }
 
+    // --- uniforms do frame (P3 §2): set 1 com UBO DINÂMICO -------------------------
+    // Cada frame-slot tem seu PRÓPRIO buffer HOST_VISIBLE (mapeado
+    // persistentemente) e um descriptor set escrito UMA vez — a região é
+    // escolhida por dynamic offset no momento do bind. A escrita acontece
+    // ANTES da submissão do frame e é lida apenas por ele: sem hazard.
+    VkDescriptorSetLayoutBinding uniformBinding{};
+    uniformBinding.binding = 0;
+    uniformBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    uniformBinding.descriptorCount = 1;
+    uniformBinding.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    uniformBinding.pImmutableSamplers = nullptr;
+    VkDescriptorSetLayoutCreateInfo uniformLayoutInfo{};
+    uniformLayoutInfo.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    uniformLayoutInfo.bindingCount = 1;
+    uniformLayoutInfo.pBindings = &uniformBinding;
+    result = library_.functions().vkCreateDescriptorSetLayout(
+        device_, &uniformLayoutInfo, nullptr, &uniformSetLayout_);
+    if (result != VK_SUCCESS) {
+        library_.functions().vkDestroyDescriptorSetLayout(device_, textureSetLayout_,
+                                                          nullptr);
+        textureSetLayout_ = VK_NULL_HANDLE;
+        return eng::core::makeUnexpected(vkErr(
+            StatusCode::Unknown, "rhi.vulkan: vkCreateDescriptorSetLayout (uniform)",
+            result));
+    }
+
     // Pool: sets NUNCA são liberados individualmente (cache por par
     // textura+sampler; invalidação = destroy do pool inteiro quando vazio de
     // uso — nesta escala o pool é destruído junto com o backend). 256 pares é
     // folga honesta para sprites/UI; exaustão = erro preciso (não silêncio).
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 256;
+    // +1 UBO dinâmico por frame-slot (P3 §2 — luzes 2D).
+    const VkDescriptorPoolSize poolSizes[2] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 256},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+         static_cast<std::uint32_t>(frameSlots_.size())},
+    };
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
     descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descriptorPoolInfo.maxSets = 256;
-    descriptorPoolInfo.poolSizeCount = 1;
-    descriptorPoolInfo.pPoolSizes = &poolSize;
+    descriptorPoolInfo.maxSets = 256 + static_cast<std::uint32_t>(frameSlots_.size());
+    descriptorPoolInfo.poolSizeCount = 2;
+    descriptorPoolInfo.pPoolSizes = poolSizes;
     result = library_.functions().vkCreateDescriptorPool(
         device_, &descriptorPoolInfo, nullptr, &textureDescriptorPool_);
     if (result != VK_SUCCESS) {
         library_.functions().vkDestroyDescriptorSetLayout(device_, textureSetLayout_,
                                                            nullptr);
         textureSetLayout_ = VK_NULL_HANDLE;
+        library_.functions().vkDestroyDescriptorSetLayout(device_, uniformSetLayout_,
+                                                          nullptr);
+        uniformSetLayout_ = VK_NULL_HANDLE;
         return eng::core::makeUnexpected(vkErr(
             StatusCode::Unknown, "rhi.vulkan: vkCreateDescriptorPool (textura)", result));
+    }
+
+    // UBO por frame-slot: buffer + memória mapeada + descriptor escrito 1x.
+    for (auto& slot : frameSlots_) {
+        VkBufferCreateInfo uniformInfo{};
+        uniformInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        uniformInfo.size = kMaxFrameUniformData;
+        uniformInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        uniformInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        result = library_.functions().vkCreateBuffer(device_, &uniformInfo, nullptr,
+                                                    &slot.uniformBuffer);
+        if (result != VK_SUCCESS) {
+            return eng::core::makeUnexpected(vkErr(
+                StatusCode::Unknown, "rhi.vulkan: vkCreateBuffer (uniform)", result));
+        }
+        VkMemoryRequirements uniformRequirements{};
+        library_.functions().vkGetBufferMemoryRequirements(
+            device_, slot.uniformBuffer, &uniformRequirements);
+        auto uniformType = pickMemoryType(
+            uniformRequirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "uniform do frame");
+        if (!uniformType) {
+            return eng::core::makeUnexpected(uniformType.error());
+        }
+        VkMemoryAllocateInfo uniformAlloc{};
+        uniformAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        uniformAlloc.allocationSize = uniformRequirements.size;
+        uniformAlloc.memoryTypeIndex = uniformType.value();
+        result = library_.functions().vkAllocateMemory(device_, &uniformAlloc, nullptr,
+                                                       &slot.uniformMemory);
+        if (result != VK_SUCCESS) {
+            return eng::core::makeUnexpected(vkErr(
+                StatusCode::OutOfMemory, "rhi.vulkan: vkAllocateMemory (uniform)", result));
+        }
+        result = library_.functions().vkBindBufferMemory(
+            device_, slot.uniformBuffer, slot.uniformMemory, 0);
+        if (result != VK_SUCCESS) {
+            return eng::core::makeUnexpected(vkErr(
+                StatusCode::Unknown, "rhi.vulkan: vkBindBufferMemory (uniform)", result));
+        }
+        result = library_.functions().vkMapMemory(device_, slot.uniformMemory, 0,
+                                                  kMaxFrameUniformData, 0,
+                                                  &slot.uniformMapped);
+        if (result != VK_SUCCESS || slot.uniformMapped == nullptr) {
+            return eng::core::makeUnexpected(vkErr(
+                StatusCode::Unknown, "rhi.vulkan: vkMapMemory (uniform)", result));
+        }
+        VkDescriptorSetAllocateInfo uniformSetInfo{};
+        uniformSetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        uniformSetInfo.descriptorPool = textureDescriptorPool_;
+        uniformSetInfo.descriptorSetCount = 1;
+        uniformSetInfo.pSetLayouts = &uniformSetLayout_;
+        result = library_.functions().vkAllocateDescriptorSets(
+            device_, &uniformSetInfo, &slot.uniformDescriptor);
+        if (result != VK_SUCCESS) {
+            return eng::core::makeUnexpected(vkErr(
+                StatusCode::OutOfMemory,
+                "rhi.vulkan: descriptor set de uniform (pool exaurido?)", result));
+        }
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = slot.uniformBuffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = kMaxFrameUniformData;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = slot.uniformDescriptor;
+        write.dstBinding = 0;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        write.pBufferInfo = &bufferInfo;
+        library_.functions().vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
     }
 
     initialized_ = true;
@@ -643,6 +750,21 @@ void VulkanBackend::destroyAll() noexcept {
             }
             if (slot.renderFinished != VK_NULL_HANDLE) {
                 library_.functions().vkDestroySemaphore(device_, slot.renderFinished, nullptr);
+            }
+        }
+        for (auto& slot : frameSlots_) {
+            if (slot.uniformMapped != nullptr) {
+                library_.functions().vkUnmapMemory(device_, slot.uniformMemory);
+                slot.uniformMapped = nullptr;
+            }
+            if (slot.uniformBuffer != VK_NULL_HANDLE) {
+                library_.functions().vkDestroyBuffer(device_, slot.uniformBuffer,
+                                                     nullptr);
+                slot.uniformBuffer = VK_NULL_HANDLE;
+            }
+            if (slot.uniformMemory != VK_NULL_HANDLE) {
+                library_.functions().vkFreeMemory(device_, slot.uniformMemory, nullptr);
+                slot.uniformMemory = VK_NULL_HANDLE;
             }
         }
         frameSlots_.clear();
@@ -683,6 +805,11 @@ void VulkanBackend::destroyAll() noexcept {
             library_.functions().vkDestroyDescriptorSetLayout(device_, textureSetLayout_,
                                                                 nullptr);
             textureSetLayout_ = VK_NULL_HANDLE;
+        }
+        if (uniformSetLayout_ != VK_NULL_HANDLE) {
+            library_.functions().vkDestroyDescriptorSetLayout(device_, uniformSetLayout_,
+                                                               nullptr);
+            uniformSetLayout_ = VK_NULL_HANDLE;
         }
         library_.functions().vkDestroyDevice(device_, nullptr);
         device_ = VK_NULL_HANDLE;

@@ -74,6 +74,8 @@ public:
                                                  IndexType indexType) override;
     eng::core::Result<void> frameBindTexture(std::uint64_t frameId, TextureHandle texture,
                                             SamplerHandle sampler, std::uint32_t slot) override;
+    eng::core::Result<void> frameSetUniformData(
+        std::uint64_t frameId, std::span<const std::byte> data) override;
     eng::core::Result<void> frameDraw(std::uint64_t frameId, std::uint32_t vertexCount,
                                       std::uint32_t firstVertex) override;
     eng::core::Result<void> frameDrawIndexed(std::uint64_t frameId, std::uint32_t indexCount,
@@ -154,6 +156,18 @@ private:
         std::uint64_t sampler{0};
     };
     AppliedTexture applied_[kMaxTextureSlots]{};
+
+    // --- uniforms do frame (P3 §2 — luzes 2D) -------------------------------
+    /// Buffer GL_UNIFORM_BUFFER compartilhado, região bump-alocada por
+    /// chamada de frameSetUniformData (o cursor renasce a cada frame). O
+    /// modelo é sequencial (uma gravação por vez — ADR-035), então um
+    /// único buffer basta; o bind por região é o análogo GLES do dynamic
+    /// offset do Vulkan.
+    GLuint uniformGlBuffer_{0};
+    GLsizeiptr uniformCursor_{0};
+    /// Alinhamento das regiões (análogo do dynamic offset — 256B).
+    static constexpr GLsizeiptr kUniformRegionAlign = 256;
+
     bool initialized_{false};
     bool hasSurface_{false};
     bool surfaceLost_{false};

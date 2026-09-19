@@ -71,6 +71,17 @@ struct EntityQuad {
     /// desenhado, senão o autor toca na imagem e "não seleciona nada".
     std::uint32_t textureWidthPx{0u};
     std::uint32_t textureHeightPx{0u};
+    /// Material do sprite (P3 §3): nome do asset materials/<n>.mat.json;
+    /// VAZIO = material default (shader "lit", tint neutro). O renderer
+    /// resolve (shader/tint multiplicativo) via cache do host.
+    std::string materialAsset{};
+    /// Shader do material RESOLVIDO pelo documento (P3 §3 — EditorDocument::
+    /// resolveMaterials): "lit" (default) ou "unlit". O tint do material
+    /// já está multiplicado em tintR/G/B/A.
+    std::string materialShader{"lit"};
+    /// Camada da ENTIDADE (LayerMember; "GAME" default — P3 §5): agrupa o
+    /// draw no conjunto de luzes da MESMA camada (mask real da Light2D).
+    std::string layer{"GAME"};
 
     // --- collider (RECOVERY §10) — preenchido quando o nó tem Collider ---
     /// O AUTOR precisa VER o shape de colisão que está editando: o quad
@@ -104,6 +115,20 @@ struct EntityQuad {
     float emitterDirX{0.f};    ///< direção NORMALIZADA em mundo
     float emitterDirY{1.f};
     float emitterSize{0.5f};   ///< meia-aresta do marcador (mundo)
+
+    // --- luz 2D (P3 §5) — preenchido quando o nó tem Light2D ativa --------
+    /// A luz contribui para o bloco PerFrame dos sprites da MESMA camada
+    /// (Light2D.layer). enabled=false NÃO entra (custo zero).
+    bool hasLight{false};
+    float lightIntensity{1.f};
+    float lightRadius{4.f};      ///< unidades de mundo
+    float lightFalloff{1.5f};    ///< expoente da atenuação
+    float lightColorR{1.f};
+    float lightColorG{0.93f};
+    float lightColorB{0.78f};
+    /// Camada que a luz ilumina (Light2D.layer — "GAME" ilumina todos sem
+    /// LayerMember próprio).
+    std::string lightLayer{"GAME"};
 };
 
 /// Quad de PARTÍCULA viva (marcador de gameplay — FASE 10). Auditoria

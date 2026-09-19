@@ -4898,3 +4898,550 @@ TEST_CASE("p3-watchdog: Auto pula backend morto e promove o saudável",
     }
     std::filesystem::remove_all(std::filesystem::path{ws});
 }
+
+// =============================================================================
+// P3 — SHADER/MATERIAL/LIGHT2D: componentes reais, material authorável,
+// iluminação por fragmento (bloco PerFrame), EDIT/PLAY parity.
+// =============================================================================
+
+TEST_CASE("editor: P3 — Light2D entra no catálogo e serializa (round-trip)",
+          "[editor][p3light]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Lamp", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+
+    // Catálogo ADDÁVEL real: registro do ComponentRegistration.
+    auto catalog = f.doc->addableComponents(e.value());
+    bool found = false;
+    for (const auto& meta : catalog) {
+        found |= meta.name == "eng::render::Light2D";
+    }
+    REQUIRE(found);
+
+    // Add → componente vivo com defaults.
+    REQUIRE(f.doc->addComponent(e.value(), "eng::render::Light2D").ok());
+    // Inspector lê/escreve por caminho (reflexão — §7).
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "intensity", "2.5")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "radius", "6.5")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "colorR", "0.1")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "layer", "UI")
+                .ok());
+    const auto fields = f.doc->inspectorFields(e.value(), "eng::render::Light2D");
+    bool hasIntensity = false, hasLayer = false, hasEnabled = false,
+         hasFalloff = false;
+    for (const auto& field : fields) {
+        hasIntensity |= field.path == "intensity" && field.value == "2.5";
+        hasLayer |= field.path == "layer" && field.value == "UI";
+        hasEnabled |= field.path == "enabled";
+        hasFalloff |= field.path == "falloff";
+    }
+    CHECK(hasIntensity);
+    CHECK(hasLayer);
+    CHECK(hasEnabled);
+    CHECK(hasFalloff);
+
+    // Save → reload: o componente SOBREVIVE com os valores.
+    REQUIRE(f.doc->saveScene("luz.json").ok());
+    REQUIRE(f.doc->loadScene("luz.json").ok());
+    const auto after = f.doc->inspectorFields(e.value(), "eng::render::Light2D");
+    for (const auto& field : after) {
+        if (field.path == "intensity") {
+            CHECK(field.value == "2.5");
+        }
+        if (field.path == "radius") {
+            CHECK(field.value == "6.5");
+        }
+        if (field.path == "colorR") {
+            CHECK(field.value == "0.1");
+        }
+        if (field.path == "layer") {
+            CHECK(field.value == "UI");
+        }
+    }
+
+    // Remove: sai limpo.
+    REQUIRE(f.doc->removeComponent(e.value(), "eng::render::Light2D").ok());
+    // Componente removido: a consulta por caminho FALHA (Inspector).
+    auto gone = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::render::Light2D", "radius");
+    CHECK(gone.isError());
+}
+
+TEST_CASE("editor: P3 — buildQuads coleta a luz com posição de mundo",
+          "[editor][p3light]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Lanterna", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    eng::editor::TransformDesc desc{};
+    desc.position = {3.f, -2.f, 0.f};
+    REQUIRE(f.doc->setTransform(e.value(), desc).ok());
+    REQUIRE(f.doc->addComponent(e.value(), "eng::render::Light2D").ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "intensity", "3")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "radius", "9")
+                .ok());
+
+    const auto quads =
+        f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(quads.size() == 1);
+    CHECK(quads[0].hasLight);
+    CHECK(quads[0].lightIntensity == Catch::Approx(3.f));
+    CHECK(quads[0].lightRadius == Catch::Approx(9.f));
+    // Posição da luz = TRANSFORM da entidade (não campo da luz).
+    CHECK(quads[0].worldX == Catch::Approx(3.f).margin(1e-3f));
+    CHECK(quads[0].worldY == Catch::Approx(-2.f).margin(1e-3f));
+
+    // Desligada → fora do bloco (custo zero).
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "enabled", "false")
+                .ok());
+    const auto offQuads =
+        f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(offQuads.size() == 1);
+    CHECK_FALSE(offQuads[0].hasLight);
+}
+
+TEST_CASE("editor: P3 — material CRUD + resolve (shader/tint reais)",
+          "[editor][p3light]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Sem materiais ainda.
+    auto empty = f.doc->materialList();
+    REQUIRE(empty.ok());
+    CHECK(empty.value().empty());
+
+    // Create → lista com template lit neutro.
+    REQUIRE(f.doc->materialCreate("Gema").ok());
+    auto listed = f.doc->materialList();
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0].name == "Gema.mat.json");
+    CHECK(listed.value()[0].shader == "lit");
+    CHECK(listed.value()[0].tintR == 1.f);
+
+    // Duplicado → AlreadyExists controlado.
+    auto dup = f.doc->materialCreate("Gema");
+    REQUIRE(dup.isError());
+    CHECK(dup.error().code == eng::core::StatusCode::AlreadyExists);
+
+    // Write com shader inválido → rejeitado ANTES de gravar.
+    auto bad = f.doc->materialWrite(
+        "Gema.mat.json", R"({"name":"Gema","shader":"pbr-mega"})");
+    REQUIRE(bad.isError());
+
+    // Write válido: unlit vermelho meio-transparente.
+    REQUIRE(f.doc->materialWrite(
+                "Gema.mat.json",
+                R"({"name":"Gema","shader":"unlit","tint":[1,0.25,0.25,0.5]})")
+                .ok());
+    listed = f.doc->materialList();
+    REQUIRE(listed.ok());
+    REQUIRE(listed.value().size() == 1);
+    CHECK(listed.value()[0].shader == "unlit");
+    CHECK(listed.value()[0].tintG == Catch::Approx(0.25f));
+    CHECK(listed.value()[0].tintA == Catch::Approx(0.5f));
+
+    // Read (round-trip do JSON cru).
+    auto content = f.doc->materialRead("Gema.mat.json");
+    REQUIRE(content.ok());
+    CHECK(content.value().find("unlit") != std::string::npos);
+
+    // Names (picker do Inspector).
+    auto names = f.doc->materialNames();
+    REQUIRE(names.ok());
+    REQUIRE(names.value().size() == 1);
+    CHECK(names.value()[0] == "Gema.mat.json");
+
+    // Resolve: sprite com material → shader + tint multiplicado.
+    auto e = f.doc->createEntity("Pedra", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->addComponent(e.value(), "eng::editor::SpriteData").ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::editor::SpriteData",
+                                     "textureAsset", "rocha.png")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::editor::SpriteData",
+                                     "tintB", "0.5")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::editor::SpriteData",
+                                     "materialAsset", "Gema")
+                .ok());
+
+    auto quads = f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(quads.size() == 1);
+    CHECK(quads[0].materialAsset == "Gema");
+    CHECK(quads[0].materialShader == "lit");  // default ANTES do resolve
+
+    f.doc->resolveMaterials(quads);
+    CHECK(quads[0].materialShader == "unlit");           // do material
+    CHECK(quads[0].tintG == Catch::Approx(0.25f));       // 1 × 0.25
+    CHECK(quads[0].tintB == Catch::Approx(0.125f));      // 0.5 × 0.25
+    CHECK(quads[0].tintA == Catch::Approx(0.5f));
+
+    // Sprite SEM material → default lit, tint intacto.
+    auto e2 = f.doc->createEntity("Neutro", eng::scene::kNoEntity);
+    REQUIRE(e2.ok());
+    REQUIRE(f.doc->addComponent(e2.value(), "eng::editor::SpriteData").ok());
+    auto quads2 = f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(quads2.size() == 2);
+    f.doc->resolveMaterials(quads2);
+    bool checked = false;
+    for (const auto& q : quads2) {
+        if (q.entity == e2.value()) {
+            CHECK(q.materialShader == "lit");
+            CHECK(q.tintR == 1.f);
+            checked = true;
+        }
+    }
+    CHECK(checked);
+
+    // Save/Reload do projeto inteiro: material persiste como ASSET.
+    REQUIRE(f.doc->saveProject().ok());
+    // (cena pode não ter sido salva — o que conta é o projeto/asset)
+    auto stillThere = f.doc->materialList();
+    REQUIRE(stillThere.ok());
+    CHECK(stillThere.value().size() == 1);
+
+    // Delete → some; sprite referenciando cai no default (sem estado ruim).
+    REQUIRE(f.doc->materialDelete("Gema.mat.json").ok());
+    auto afterDelete = f.doc->materialList();
+    REQUIRE(afterDelete.ok());
+    CHECK(afterDelete.value().empty());
+
+    auto quads3 = f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(quads3.size() == 2);
+    f.doc->resolveMaterials(quads3);
+    for (const auto& q : quads3) {
+        CHECK(q.materialShader == "lit");
+        if (q.entity == e.value()) {
+            // tint DO SPRITE preservado (0.5), SEM o do material apagado.
+            CHECK(q.tintB == Catch::Approx(0.5f));
+            CHECK(q.tintR == 1.f);
+        }
+    }
+}
+
+TEST_CASE("editor: P3 — Play clona a luz (render idêntico Edit/Play)",
+          "[editor][p3light]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Tocha", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->addComponent(e.value(), "eng::render::Light2D").ok());
+    REQUIRE(f.doc->setInspectorField(e.value(), "eng::render::Light2D",
+                                     "intensity", "4")
+                .ok());
+
+    // Edit: luz coletada.
+    auto editQuads =
+        f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(editQuads.size() == 1);
+    CHECK(editQuads[0].hasLight);
+    CHECK(editQuads[0].lightIntensity == Catch::Approx(4.f));
+
+    // Play: o CLONE carrega a luz (serialização — §10 parity).
+    REQUIRE(f.doc->play().ok());
+    auto playQuads =
+        f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(playQuads.size() == 1);
+    CHECK(playQuads[0].hasLight);
+    CHECK(playQuads[0].lightIntensity == Catch::Approx(4.f));
+
+    // Edição em Play é REJEITADA (clone somente-leitura — §8.7): a luz do
+    // clone NÃO pode ser editada (contrato), e a EDIÇÃO fica intacta.
+    auto rejected = f.doc->setInspectorField(e.value(),
+                                             "eng::render::Light2D",
+                                             "enabled", "false");
+    CHECK(rejected.isError());
+    f.doc->stop();
+    auto editAfter =
+        f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(editAfter.size() == 1);
+    CHECK(editAfter[0].hasLight);   // edição intacta após Play/Stop
+    CHECK(editAfter[0].lightIntensity == Catch::Approx(4.f));
+}
+
+TEST_CASE("editor: P3 — camada da luz mascara sprites (LayerRegistry)",
+          "[editor][p3light]")
+{
+    DocFixture f;
+    f.withProject();
+    // Camada nomeada "UI" na cena (LayerRegistry da Scene).
+    REQUIRE(f.doc->sceneInFocus()->layers().addLayer("UI").ok());
+
+    auto luz = f.doc->createEntity("LuzUI", eng::scene::kNoEntity);
+    REQUIRE(luz.ok());
+    REQUIRE(f.doc->addComponent(luz.value(), "eng::render::Light2D").ok());
+    REQUIRE(f.doc->setInspectorField(luz.value(), "eng::render::Light2D",
+                                     "layer", "UI")
+                .ok());
+
+    auto spriteGame =
+        f.doc->createEntity("SpriteGame", eng::scene::kNoEntity);
+    REQUIRE(spriteGame.ok());
+    REQUIRE(f.doc->addComponent(spriteGame.value(),
+                                "eng::editor::SpriteData")
+                .ok());
+
+    auto spriteUi = f.doc->createEntity("SpriteUI", eng::scene::kNoEntity);
+    REQUIRE(spriteUi.ok());
+    REQUIRE(f.doc->addComponent(spriteUi.value(), "eng::editor::SpriteData")
+                .ok());
+    REQUIRE(f.doc->addComponent(spriteUi.value(), "eng::scene::LayerMember")
+                .ok());
+    REQUIRE(f.doc->setInspectorField(spriteUi.value(),
+                                     "eng::scene::LayerMember", "layer", "UI")
+                .ok());
+
+    auto quads = f.doc->viewport().buildQuads(*f.doc->sceneInFocus(), {});
+    REQUIRE(quads.size() == 3);
+    // A luz carrega a camada; o sprite UI carrega LayerMember; o sprite
+    // GAME fica com "GAME" (default).
+    bool sawLight = false, sawUiSprite = false, sawGameSprite = false;
+    for (const auto& q : quads) {
+        if (q.hasLight) {
+            CHECK(q.lightLayer == "UI");
+            sawLight = true;
+        }
+        if (q.isSprite && q.entity == spriteUi.value()) {
+            CHECK(q.layer == "UI");
+            sawUiSprite = true;
+        }
+        if (q.isSprite && q.entity == spriteGame.value()) {
+            CHECK(q.layer == "GAME");
+            sawGameSprite = true;
+        }
+    }
+    CHECK(sawLight);
+    CHECK(sawUiSprite);
+    CHECK(sawGameSprite);
+
+    // O pack da DrawList respeita a mask (a luz UI NÃO ilumina GAME).
+    eng::render::DrawList drawList;
+    for (const auto& q : quads) {
+        if (q.hasLight) {
+            eng::render::DrawList::LightItem item;
+            item.worldX = q.worldX;
+            item.worldY = q.worldY;
+            item.radius = q.lightRadius;
+            item.intensity = q.lightIntensity;
+            item.r = q.lightColorR;
+            item.g = q.lightColorG;
+            item.b = q.lightColorB;
+            item.falloff = q.lightFalloff;
+            item.layer = q.lightLayer;
+            drawList.lights.push_back(item);
+        }
+    }
+    CHECK(drawList.packUniformsFor("GAME").lightCount() == 0);
+    CHECK(drawList.packUniformsFor("UI").lightCount() == 1);
+}
+
+// --- P3 §14 RENDERING VISUAL (readback — iluminação provada por pixel) --------
+
+TEST_CASE("editor: P3 — sprite com Light2D muda o pixel (A != B, readback)",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p3luz");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    int marker = 0;
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless,
+                          128, 128);
+    if (owned->state() != eng::editor::HostSurfaceState::Available) {
+        SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
+    }
+
+    auto& doc = owned->document();
+    ensureProject(doc, "P3LuzGame");
+
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    {
+        eng::fs::FileSystem& ws = owned->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws
+                    .writeAllBytes(
+                        eng::fs::Path{".import_tmp/quad.png"},
+                        std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                                  sizeof(kPng2x2)})
+                    .ok());
+    }
+    REQUIRE(browser->import(".import_tmp/quad.png", "textures", "quad").ok());
+
+    // Sprite cobrindo o centro (entidade em 0,0; ppu=1 → 2x2 unidades).
+    auto sprite = doc.createSprite("Alvo");
+    REQUIRE(sprite.ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "textureAsset", "quad.png").ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "1").ok());
+
+    // DADOS primeiro: bloco PerFrame com ZERO luzes + ambiente neutro.
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    auto* renderer = owned->viewportRenderer();
+    REQUIRE(renderer != nullptr);
+    CHECK(renderer->lastFrameTexturedSprites() == 1);
+    CHECK(renderer->lastFrameLitSpriteVertices().size() == 6);  // lit default
+    REQUIRE_FALSE(renderer->lastFrameFrameUniforms().empty());
+    CHECK(renderer->lastFrameFrameUniforms()[0].lightCount() == 0);
+
+    // (A) Sprite SEM luz: albedo × ambiente(1) — o look clássico.
+    std::uint8_t pixelA[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixelA).ok());
+    INFO("readback A: " << +pixelA[0] << " " << +pixelA[1] << " "
+                       << +pixelA[2] << " " << +pixelA[3]);
+    CHECK(pixelA[3] == 255);  // sprite opaco no centro
+
+    // (B) Light2D forte NO centro: albedo × (1 + luz) — pixel muda.
+    auto light = doc.createEntity("Tocha", eng::scene::kNoEntity);
+    REQUIRE(light.ok());
+    REQUIRE(doc.addComponent(light.value(), "eng::render::Light2D").ok());
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "intensity", "3").ok());
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "radius", "10").ok());
+    // Cor VERMELHA saturada (canal G/B baixo): a mudança é inequívoca.
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "colorR", "1").ok());
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "colorG", "0.05").ok());
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "colorB", "0.05").ok());
+
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    // Bloco PerFrame AGORA carrega a luz (count == 1).
+    REQUIRE_FALSE(renderer->lastFrameFrameUniforms().empty());
+    CHECK(renderer->lastFrameFrameUniforms()[0].lightCount() == 1);
+    const auto& block = renderer->lastFrameFrameUniforms()[0];
+    CHECK(block.lightA[0][0] == Catch::Approx(0.f).margin(1e-3f));  // x
+    CHECK(block.lightA[0][1] == Catch::Approx(0.f).margin(1e-3f));  // y
+    CHECK(block.lightA[0][2] == Catch::Approx(10.f));              // raio
+    CHECK(block.lightA[0][3] == Catch::Approx(3.f));               // intens
+    CHECK(block.lightB[0][2] == Catch::Approx(0.05f).margin(0.02f));  // b
+
+    std::uint8_t pixelB[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixelB).ok());
+    INFO("readback B: " << +pixelB[0] << " " << +pixelB[1] << " "
+                       << +pixelB[2] << " " << +pixelB[3]);
+
+    // (C) A != B — a iluminação é REAL (não um círculo desenhado).
+    const bool differs = pixelA[0] != pixelB[0] || pixelA[1] != pixelB[1] ||
+                         pixelA[2] != pixelB[2];
+    CHECK(differs);
+    // Direção coerente: luz vermelha forte (intenção 3) → canal R SOBE.
+    CHECK(pixelB[0] >= pixelA[0]);
+    CHECK(pixelB[0] > 140);  // vermelho saturado brilhante
+
+    // (D) Play/Stop parity: a MESMA luz ilumina o CLONE no Play.
+    REQUIRE(doc.play().ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    std::uint8_t pixelPlay[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixelPlay).ok());
+    CHECK(pixelPlay[0] == pixelB[0]);  // idêntico ao Edit com a mesma luz
+    CHECK(pixelPlay[1] == pixelB[1]);
+    doc.stop();
+
+    // (E) Desligar a luz volta ao look A (reversível — sem estado preso).
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "enabled", "false").ok());
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    std::uint8_t pixelOff[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixelOff).ok());
+    CHECK(pixelOff[0] == pixelA[0]);
+    CHECK(pixelOff[1] == pixelA[1]);
+    CHECK(pixelOff[2] == pixelA[2]);
+}
+
+TEST_CASE("editor: P3 — material unlit vs lit via Inspector (readback)",
+          "[editor][rhi_hardware]")
+{
+    if (editorGraphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p3mat");
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+    int marker = 0;
+    owned->surfaceCreated(&marker, eng::rhi::NativeWindowKind::Headless,
+                          128, 128);
+    if (owned->state() != eng::editor::HostSurfaceState::Available) {
+        SKIP("OpenGL ES indisponível (renderer não criado sem driver)");
+    }
+
+    auto& doc = owned->document();
+    ensureProject(doc, "P3MatGame");
+    auto* browser = doc.assets();
+    REQUIRE(browser != nullptr);
+    {
+        eng::fs::FileSystem& ws = owned->workspace();
+        REQUIRE(ws.mkdirs(eng::fs::Path{".import_tmp"}).ok());
+        REQUIRE(ws
+                    .writeAllBytes(
+                        eng::fs::Path{".import_tmp/quad.png"},
+                        std::span{reinterpret_cast<const std::byte*>(kPng2x2),
+                                  sizeof(kPng2x2)})
+                    .ok());
+    }
+    REQUIRE(browser->import(".import_tmp/quad.png", "textures", "quad").ok());
+
+    auto sprite = doc.createSprite("Pedra");
+    REQUIRE(sprite.ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "textureAsset", "quad.png").ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "pixelsPerUnit", "1").ok());
+
+    // Luz forte vermelha (o discriminador entre lit e unlit).
+    auto light = doc.createEntity("Brasa", eng::scene::kNoEntity);
+    REQUIRE(light.ok());
+    REQUIRE(doc.addComponent(light.value(), "eng::render::Light2D").ok());
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "intensity", "3").ok());
+    REQUIRE(doc.setInspectorField(light.value(), "eng::render::Light2D",
+                                  "colorR", "1").ok());
+
+    // Default (lit): pixel iluminado.
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    auto* renderer = owned->viewportRenderer();
+    REQUIRE(renderer != nullptr);
+    std::uint8_t pixelLit[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixelLit).ok());
+
+    // Material UNLIT atribuído ao sprite: a MESMA luz NÃO o afeta.
+    REQUIRE(doc.materialCreate("Cru").ok());
+    REQUIRE(doc.materialWrite(
+                "Cru.mat.json", R"({"name":"Cru","shader":"unlit"})").ok());
+    REQUIRE(doc.setInspectorField(sprite.value(), "eng::editor::SpriteData",
+                                  "materialAsset", "Cru").ok());
+
+    REQUIRE(owned->renderFrame(1.f / 60.f));
+    // Vertices foram para o caminho UNLIT (40B), não o lit (48B).
+    CHECK(renderer->lastFrameLitSpriteVertices().empty());
+    CHECK_FALSE(renderer->lastFrameSpriteVertices().empty());
+
+    std::uint8_t pixelUnlit[4] = {0, 0, 0, 0};
+    REQUIRE(renderer->renderer()->readCenterPixel(pixelUnlit).ok());
+
+    // unlit < lit no canal R (a luz vermelha só soma no lit).
+    INFO("lit: " << +pixelLit[0] << " unlit: " << +pixelUnlit[0]);
+    CHECK(pixelLit[0] > pixelUnlit[0]);
+}

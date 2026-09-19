@@ -406,6 +406,7 @@ Result<BeginFrameResult> VulkanBackend::beginFrame() {
     fn.vkCmdSetScissor(slot->command, 0, 1, &scissor);
 
     slot->recording = true;
+    slot->uniformCursor = 0;  // P3 §2: orçamento do frame recomeça
     slot->inFlight = false;
     slot->imageIndex = imageIndex;
     slot->frameId = ++nextFrameId_;
@@ -583,6 +584,53 @@ Result<void> VulkanBackend::frameBindTexture(std::uint64_t frameId, TextureHandl
     library_.functions().vkCmdBindDescriptorSets(
         slot->command, VK_PIPELINE_BIND_POINT_GRAPHICS, slot->boundPipelineLayout, 0, 1,
         &cached->second, 0, nullptr);
+    return {};
+}
+
+Result<void> VulkanBackend::frameSetUniformData(
+    std::uint64_t frameId, std::span<const std::byte> data) {
+    FrameSlot* slot = findRecordingSlot(frameId);
+    if (slot == nullptr) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument, "rhi.vulkan.frame: sessão inválida"));
+    }
+    if (slot->boundPipelineLayout == VK_NULL_HANDLE) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.frame: setUniformData exige pipeline já definido (layout do bind)"));
+    }
+    if (data.empty()) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.frame: setUniformData com dados vazios"));
+    }
+    if (data.size() > kMaxFrameUniformData) {
+        return eng::core::makeUnexpected(
+            makeError(StatusCode::InvalidArgument,
+                      "rhi.vulkan.frame: setUniformData excede kMaxFrameUniformData"));
+    }
+    // Região bump-alocada, alinhada (dynamic offset exige alinhamento do
+    // device; 256B é o mínimo garantido pela spec p/ UNIFORM_BUFFER).
+    const std::uint32_t cursor = slot->uniformCursor;
+    const std::uint32_t aligned = (cursor + kUniformRegionAlign - 1) &
+                                  ~(kUniformRegionAlign - 1);
+    const std::uint32_t end = aligned + static_cast<std::uint32_t>(data.size());
+    if (end > kMaxFrameUniformData) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.frame: orçamento de uniforms do frame exaurido ("
+            + std::to_string(kMaxFrameUniformData) + " bytes)"));
+    }
+    // Escrita ANTES da submissão deste frame (região do PRÓPRIO slot):
+    // sem hazard com frames in flight (modelo do UBO dinâmico).
+    std::memcpy(static_cast<char*>(slot->uniformMapped) + aligned, data.data(),
+                data.size());
+    slot->uniformCursor = end;
+    const auto& fn = library_.functions();
+    const std::uint32_t dynamicOffsets[1] = {aligned};
+    fn.vkCmdBindDescriptorSets(slot->command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               slot->boundPipelineLayout, 1, 1,
+                               &slot->uniformDescriptor, 1, dynamicOffsets);
     return {};
 }
 

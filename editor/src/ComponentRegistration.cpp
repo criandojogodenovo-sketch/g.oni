@@ -6,6 +6,7 @@
 #include "eng/editor/NiScriptComponent.hpp"
 #include "eng/editor/SpriteData.hpp"
 #include "eng/particles/Particles.hpp"
+#include "eng/render/Light2D.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/scene/Layers.hpp"
 #include "eng/scene/SceneSerializer.hpp"
@@ -49,6 +50,10 @@ const bool goni_editor_components_registered = [] {
     // REAL (AudioTick do documento no Play).
     (void)SceneSerializer::registerComponentType<eng::editor::AudioSource>(
         "eng::editor::AudioSource");
+    // P3: Light2D — luz 2D real alimentando o bloco PerFrame do sprite.lit
+    // (renderiza no Edit e no Play; clone via serializacao).
+    (void)SceneSerializer::registerComponentType<eng::render::Light2D>(
+        "eng::render::Light2D");
     return true;
 }();
 

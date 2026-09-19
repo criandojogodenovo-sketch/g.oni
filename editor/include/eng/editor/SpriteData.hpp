@@ -28,6 +28,11 @@ struct SpriteData {
     /// Nome do asset de textura (vazio = sem textura — quad de cor).
     std::string textureAsset{};
 
+    /// Material (P3 §3): nome do asset materials/<n>.mat.json (vazio =
+    /// default "lit" com tint neutro — o look NÃO muda por osmose). O
+    /// shader/tint do material dirigem o pipeline do sprite.
+    std::string materialAsset{};
+
     // --- região (UV) -------------------------------------------------------
     float u0{0.f};
     float v0{0.f};
@@ -65,6 +70,7 @@ struct SpriteData {
 /// clang-format off
 ENG_REFLECT_BEGIN(eng::editor::SpriteData)
     ENG_REFLECT_FIELD_HINT(textureAsset, "texture")
+    ENG_REFLECT_FIELD_HINT(materialAsset, "material")
     ENG_REFLECT_FIELD(u0)
     ENG_REFLECT_FIELD(v0)
     ENG_REFLECT_FIELD(u1)

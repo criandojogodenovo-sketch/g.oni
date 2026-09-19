@@ -122,6 +122,23 @@ public:
     [[nodiscard]] virtual eng::core::Result<void> frameDrawIndexed(
         std::uint64_t frameId, std::uint32_t indexCount, std::uint32_t firstIndex) = 0;
 
+    /// Dados de uniform do frame (bloco std140 — ex.: iluminação 2D):
+    /// `data` é COPIADO no ato da chamada para uma REGIÃO própria do
+    /// frame-slot em gravação (bump-alocada; sem hazard com frames in
+    /// flight) e vale para os draws SEGUINTES até a próxima chamada.
+    /// Limite somado por frame: kMaxFrameUniformData. Regiões alinhadas a
+    /// 256B. Implementação de referência: backends Vulkan (UBO dinâmico,
+    /// set 1/binding 0) e GLES (GL_UNIFORM_BUFFER binding 0).
+    [[nodiscard]] virtual eng::core::Result<void> frameSetUniformData(
+        std::uint64_t frameId, std::span<const std::byte> data)
+    {
+        (void)frameId;
+        (void)data;
+        return eng::core::makeUnexpected(eng::core::Error{
+            eng::core::StatusCode::NotSupported,
+            "rhi: backend sem dados de uniform do frame"});
+    }
+
     /// Submete o frame (uma vez por frameId). Depois disso `present()`.
     /// Auditoria FASE 5 (L3): o frame submetido fica PENDENTE de
     /// apresentação; `present()` apresenta TODOS os pendentes, em ordem

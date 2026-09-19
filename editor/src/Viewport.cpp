@@ -1,5 +1,7 @@
 #include "eng/editor/Viewport.hpp"
 
+#include "eng/render/Light2D.hpp"
+
 /// Viewport — câmera 2D, conversões, quads e hit-test (FASE 8).
 ///
 /// Ver header para o modelo de coordenadas e decisões (auditoria D3).
@@ -128,6 +130,12 @@ std::vector<EntityQuad> Viewport::buildQuads(
         quad.rotation = std::atan2(world.at(0, 1), world.at(0, 0));
         quad.tint = hueOf(node);
         quad.selected = selection.has_value() && *selection == node;
+        // Camada da entidade (P3): agrupa o draw no conjunto de luzes
+        // da camada (Light2D.layer). Sem LayerMember = GAME.
+        if (const auto* member =
+                scene.world().get<eng::scene::LayerMember>(node)) {
+            quad.layer = member->layer;
+        }
 
         // Sprite (evolução P0-3): SpriteData REAL substitui o marcador hue.
         // Tamanho do sprite em mundo = escala local × (região em PIXELS do
@@ -153,6 +161,7 @@ std::vector<EntityQuad> Viewport::buildQuads(
                                                          : 1.f;
             quad.pivotX = sprite->pivotX;
             quad.pivotY = sprite->pivotY;
+            quad.materialAsset = sprite->materialAsset;
         }
 
         // Collider (RECOVERY §10): geometria nas MESMAS convenções do
@@ -212,6 +221,21 @@ std::vector<EntityQuad> Viewport::buildQuads(
             }
             quad.emitterSize = std::max(0.35f, quad.sizeX * 0.5f);
         }
+        // Luz 2D (P3): dados para o bloco PerFrame (posicao = worldX/Y
+        // do no - fonte unica de verdade). Desligada nao entra.
+        if (const auto* light = scene.world().get<eng::render::Light2D>(node)) {
+            if (light->enabled) {
+                quad.hasLight = true;
+                quad.lightIntensity = light->intensity;
+                quad.lightRadius = light->radius;
+                quad.lightFalloff = light->falloff;
+                quad.lightColorR = light->colorR;
+                quad.lightColorG = light->colorG;
+                quad.lightColorB = light->colorB;
+                quad.lightLayer = light->layer;
+            }
+        }
+
         quads.push_back(quad);
         (void)depth; // profundidade não muda o quad — reserva de API futura
 

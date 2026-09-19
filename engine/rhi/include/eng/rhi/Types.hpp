@@ -195,6 +195,12 @@ struct ShaderDesc {
     std::span<const std::byte> fragmentSpirv{};
     std::string_view vertexGlsl{};
     std::string_view fragmentGlsl{};
+    /// Nome do BLOCO de uniforms std140 consumido pelo par (ex.: "PerFrame"
+    /// — iluminação 2D). O backend GLES atribui o bloco ao binding 0 de
+    /// GL_UNIFORM_BUFFER após o link; o Vulkan consome set=1/binding=0
+    /// declarado no próprio SPIR-V (o nome fica aqui só para documentação
+    /// e reflexão futura). VAZIO = shader sem bloco de frame.
+    std::string_view uniformBlockName{};
 };
 
 struct VertexLayout {
@@ -264,6 +270,14 @@ enum class AddressMode : std::uint8_t { ClampToEdge, Repeat };
 /// Máximo de slots de textura por draw (interface pequena: 1 por enquanto —
 /// batching por textura; slots extras entram com materiais 3D).
 inline constexpr std::uint32_t kMaxTextureSlots = 1;
+
+/// Orçamento de dados de uniform do frame (bloco std140 "PerFrame" dos
+/// shaders de 2D — iluminação/ambiente). Cada chamada de
+/// Frame::setUniformData carve uma REGIÃO própria no buffer do frame-slot
+/// em uso (sem hazard entre frames in flight); o orçamento é o teto de
+/// BYTES somados de todas as regiões do frame. Regiões alinhadas a 256B
+/// (std140-friendly; limite prático de dynamic-offset UNIFORM_BUFFER).
+inline constexpr std::uint32_t kMaxFrameUniformData = 16 * 1024;
 
 /// Textura 2D IMUTÁVEL (upload único na criação — modelo de sprite/UI).
 ///

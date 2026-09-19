@@ -51,6 +51,7 @@ target_link_libraries(eng_editor PUBLIC
     eng::animation
     eng::particles
     eng::audio
+    eng::render
     eng::log
     eng::core
     eng::rhi

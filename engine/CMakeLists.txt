@@ -29,6 +29,11 @@ add_subdirectory(image)   # eng::image — decode PNG/JPEG em memória
 # targets separados linkados no executável final — eng::rhi permanece 100%
 # livre de dependências gráficas (ADR-035).
 add_subdirectory(rhi)     # Renderer/Frame/RhiBackend — sobre core/log (ADR-035/036)
+
+# P3 (§2-§5): Shader Core / Material / Light2D / DrawList — camada entre o
+# editor/runtime e o RHI (nenhuma dependência do editor; o editor PREENCHE
+# a DrawList com os seus componentes).
+add_subdirectory(render)   # eng::render — shaders/materiais/luz 2D sobre rhi
 # FASE 9 (missão §6): sistemas de gameplay interativo — input/ui/audio.
 # Nenhum conhece Android/RHI: eventos canônicos na fronteira JNI; UI produz
 # draw-list; áudio é mixado por software com backend abstraído (ADR-045..047).
