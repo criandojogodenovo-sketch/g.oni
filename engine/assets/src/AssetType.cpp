@@ -14,6 +14,7 @@ std::string_view assetTypeName(AssetType type) noexcept
     case AssetType::Shader: return "Shader";
     case AssetType::Audio: return "Audio";
     case AssetType::Script: return "Script";
+    case AssetType::Animation: return "Animation";
     case AssetType::Unknown: break;
     }
     return "Unknown";
@@ -25,7 +26,8 @@ eng::core::Result<AssetType> assetTypeFromName(std::string_view name)
                             AssetType::Json, AssetType::Texture,
                             AssetType::Mesh, AssetType::Material,
                             AssetType::Shader, AssetType::Audio,
-                            AssetType::Script, AssetType::Unknown}) {
+                            AssetType::Script, AssetType::Animation,
+                            AssetType::Unknown}) {
         if (name == assetTypeName(type)) {
             return type;
         }

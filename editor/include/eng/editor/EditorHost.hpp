@@ -24,6 +24,7 @@
 #include <optional>
 #include <string_view>
 
+#include "eng/audio/Audio.hpp"
 #include "eng/core/Result.hpp"
 #include "eng/editor/EditorDocument.hpp"
 #include "eng/editor/TextureCache.hpp"
@@ -87,6 +88,16 @@ public:
     void onResume();
     void setBackend(const char* backend);
 
+    /// ÁUDIO do editor (P2 §12): liga o mixer do documento ao backend
+    /// da plataforma (AAudio no Android — real device output; null no
+    /// Linux/testes). Idempotente; onResume religa se necessário.
+    [[nodiscard]] bool startAudio();
+    void stopAudio() noexcept;
+    [[nodiscard]] bool audioRunning() const noexcept
+    {
+        return audioBackend_ != nullptr && audioBackend_->isRunning();
+    }
+
     // --- frame (Choreographer) -----------------------------------------------
 
     /// tick do runtime (Play) + render do viewport (foco do modo).
@@ -143,6 +154,8 @@ private:
     [[nodiscard]] bool createRendererForWindow(std::uint32_t width,
                                                std::uint32_t height);
     void logSelection() const noexcept;
+    /// pauseAll/stop vs resumeAll do mixer (onPause/onResume — P2 §12).
+    void audioMixerLifecycle(const char* reason) noexcept;
 
     static void releaseWindow(void* window) noexcept;
     static void acquireWindow(void* window) noexcept;
@@ -173,6 +186,10 @@ private:
     std::optional<ViewportRenderer> viewportRenderer_{};
     TextureCache textureCache_{};  ///< texturas GPU por nome de asset (P0-3)
     GizmoDrawData gizmoDraw_{};   ///< geometria do gizmo do frame (P1)
+    /// Backend de áudio (P2 §12): AAudio no Android, null no Linux. O
+    /// mixer vive no DOCUMENTO (vozes do Play + previews) — o backend
+    /// apenas PUXA o mix na thread própria do device.
+    std::unique_ptr<eng::audio::IAudioBackend> audioBackend_{};
     HostStats stats_{};
 };
 

@@ -632,6 +632,84 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         }
     }
 
+    // --- CÂMERA de jogo (P2 §11): retângulo da VISTA -----------------------
+    // A MESMA conta do Play (entidade + offset, tela/zoom): o autor vê
+    // EXATAMENTE o que a câmera cobriria. Ativa = contorno azul-ciano;
+    // inativa = tracejado escuro (o renderer de quads aproxima com
+    // cantos mais curtos — leitura honesta sem shader dedicado).
+    {
+        const float kCamR = 0.42f, kCamG = 0.66f, kCamB = 0.98f;
+        const float kOffR = 0.30f, kOffG = 0.32f, kOffB = 0.36f;
+        const float halfThick = 1.2f / w;
+        for (const EntityQuad& quad : quads) {
+            if (!quad.hasCamera) {
+                continue;
+            }
+            const float r = quad.cameraActive ? kCamR : kOffR;
+            const float g = quad.cameraActive ? kCamG : kOffG;
+            const float b = quad.cameraActive ? kCamB : kOffB;
+            const float cx = worldToClipX(quad.cameraCenterX);
+            const float cy = worldToClipY(quad.cameraCenterY);
+            const float hx = quad.cameraHalfW * zoom * 2.f / w;
+            const float hy = quad.cameraHalfH * zoom * 2.f / h;
+            const float corners[4][2] = {
+                {-hx, -hy}, {hx, -hy}, {hx, hy}, {-hx, hy}};
+            float vx[4];
+            float vy[4];
+            for (int i = 0; i < 4; ++i) {
+                vx[i] = cx + corners[i][0];
+                vy[i] = cy + corners[i][1];
+            }
+            for (int i = 0; i < 4; ++i) {
+                const int next = (i + 1) % 4;
+                pushSegment(frameVertices_, vx[i], vy[i], vx[next],
+                            vy[next], halfThick, r, g, b);
+            }
+        }
+    }
+
+    // --- EMISSOR de partículas (P2 §10): marcador editável ------------------
+    // Quad roxo + SETA na direção de emissão: o authoring tem feedback
+    // visual do que o ParticleTick fará no Play (direção do emitter no
+    // frame do nó). Pools vivas continuam sendo quads no Play.
+    if (!playMode) {  // em Play o que vale é a SIMULAÇÃO (partículas)
+        const float kEmR = 0.72f, kEmG = 0.44f, kEmB = 0.98f;
+        const float halfThick = 1.0f / w;
+        for (const EntityQuad* quadPtr : untexturedQuads) {
+            const EntityQuad& quad = *quadPtr;
+            if (!quad.hasEmitter) {
+                continue;
+            }
+            const float cx = worldToClipX(quad.worldX);
+            const float cy = worldToClipY(quad.worldY);
+            const float half = quad.emitterSize * zoom * 2.f / w;
+            const float halfY = quad.emitterSize * zoom * 2.f / h;
+            // Quad-marcador na rotação do nó.
+            pushQuad(frameVertices_, cx, cy, half, halfY, quad.rotation,
+                     kEmR * 0.35f, kEmG * 0.35f, kEmB * 0.35f);
+            // Seta: direção (mundo) do emissor escalada ~2x o marcador.
+            const float dirX = quad.emitterDirX;
+            const float dirY = quad.emitterDirY;
+            const float tipX = cx + dirX * half * 2.6f;
+            const float tipY = cy - dirY * halfY * 2.6f;  // Y mundo ↑, clip ↓
+            pushSegment(frameVertices_, cx + dirX * half, cy - dirY * halfY,
+                        tipX, tipY, halfThick, kEmR, kEmG, kEmB);
+            // Ponta da seta: duas pernas para trás±perpendicular (em
+            // clip space — Y invertido: "trás" em mundo = +dirY em clip).
+            const float legX = half * 0.6f;
+            const float legYc = halfY * 0.6f;
+            const float perpX = -dirY, perpY = dirX;
+            pushSegment(frameVertices_, tipX, tipY,
+                        tipX - dirX * legX - perpX * legX,
+                        tipY + dirY * legYc + perpY * legYc,
+                        halfThick, kEmR, kEmG, kEmB);
+            pushSegment(frameVertices_, tipX, tipY,
+                        tipX - dirX * legX + perpX * legX,
+                        tipY + dirY * legYc - perpY * legYc,
+                        halfThick, kEmR, kEmG, kEmB);
+        }
+    }
+
     // --- SPRITES: vértices pos+cor+uv (pipeline texturizado com blending) ----
     // Tamanho real em mundo = escala local × (região em PIXELS / ppu).
     // Pivot: desloca o centro do quad (pivot 0.5 = centrado).

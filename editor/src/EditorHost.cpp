@@ -6,8 +6,10 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <utility>
 
+#include "eng/audio/Audio.hpp"
 #include "eng/log/Macros.hpp"
 #include "eng/rhi/Renderer.hpp"
 #include "eng/rhi/gles/GlesBackend.hpp"
@@ -103,6 +105,7 @@ eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
 
 EditorHost::~EditorHost()
 {
+    stopAudio();  // P2 §12: device audio morre ANTES do mixer (documento)
     destroyRendererAndWindow();
 }
 
@@ -221,11 +224,62 @@ void EditorHost::surfaceDestroyed()
 void EditorHost::onPause()
 {
     paused_ = true; // flag apenas — robusto a qualquer ordem (§VI FASE 7)
+    audioMixerLifecycle("onPause");  // P2 §12: vozes pausam com o app
 }
 
 void EditorHost::onResume()
 {
     paused_ = false;
+    (void)startAudio();  // P2 §12: religa o device após pausa
+}
+
+bool EditorHost::startAudio()
+{
+    if (document_ == nullptr) {
+        return false;
+    }
+    if (audioBackend_ != nullptr && audioBackend_->isRunning()) {
+        return true;  // idempotente
+    }
+    audioBackend_ = eng::audio::createDefaultBackend();
+    if (audioBackend_ == nullptr) {
+        return false;
+    }
+    auto started = audioBackend_->start(document_->audioMixer());
+    if (started.isError()) {
+        ENG_WARN("audio backend: {} — previews/Play continuam sem device",
+                 started.error().message);
+        audioBackend_.reset();
+        return false;
+    }
+    ENG_INFO("audio backend '{}' ativo", audioBackend_->name());
+    return true;
+}
+
+void EditorHost::stopAudio() noexcept
+{
+    if (audioBackend_ != nullptr) {
+        audioBackend_->stop();
+        audioBackend_.reset();
+    }
+    if (document_ != nullptr) {
+        document_->audioMixer().stopAll();
+    }
+}
+
+void EditorHost::audioMixerLifecycle(const char* reason) noexcept
+{
+    if (document_ == nullptr) {
+        return;
+    }
+    if (std::string_view(reason) == "onPause") {
+        document_->audioMixer().pauseAll();
+        if (audioBackend_ != nullptr) {
+            audioBackend_->stop();
+        }
+    } else {
+        document_->audioMixer().resumeAll();
+    }
 }
 
 void EditorHost::setBackend(const char* backend)

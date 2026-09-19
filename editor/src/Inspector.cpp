@@ -322,7 +322,15 @@ template <typename Ptr>
         return "int";
     }
     if (type.name == "string") {
-        return property.hint == "texture" ? "texture" : "text";
+        if (property.hint == "texture") {
+            return "texture";
+        }
+        // P2 (§12): mesmo mecanismo do hint texture — o picker lista os
+        // WAVs de assets/audio no host.
+        if (property.hint == "audio") {
+            return "audio";
+        }
+        return "text";
     }
     return "text";
 }

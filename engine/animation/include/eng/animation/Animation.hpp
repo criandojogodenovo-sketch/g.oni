@@ -38,16 +38,41 @@ using PositionKey = Keyframe<eng::math::Vec3>;
 using RotationKey = Keyframe<eng::math::Quat>;
 using ScaleKey = Keyframe<eng::math::Vec3>;
 
-/// Um clip de animação de TRANSFORM (§7.7/§7.8).
+/// Key de FRAME de sprite (P2, authoring 2D): a MEMA track de keyframes
+/// da clip — o valor é a região do sprite que passa a valer a partir de
+/// `time` (flipbook 2D). Dados PUROS (string + floats): a engine não
+/// conhece o componente visual; o CONSUMIDOR (editor/runtime host)
+/// aplica ao sprite da entidade.
+struct SpriteFrameKey {
+    float time{0.f};
+    std::string textureAsset{};  ///< nome do asset de textura
+    float u0{0.f}, v0{0.f}, u1{1.f}, v1{1.f};  ///< região UV
+};
+
+/// Um clip de animação de TRANSFORM (§7.7/§7.8) + frames de sprite (P2).
 struct AnimationClip {
     std::string name;
     std::vector<PositionKey> position;
     std::vector<RotationKey> rotation;
     std::vector<ScaleKey> scale;
+    /// Track de frames (flipbook): amostragem discreta — o último key
+    /// com time <= cursor vale. APLICADA pelo consumidor (editor), não
+    /// pelo AnimationSystem (a engine não conhece SpriteData).
+    std::vector<SpriteFrameKey> frames;
+    /// P2 (semântica de flipbook): quanto tempo o ÚLTIMO frame SEGURA
+    /// (o slot 1/fps). A duração do clip estende frames.back().time +
+    /// frameHold — sem isto o loop voltaria EXATAMENTE no último frame e
+    /// ele nunca seria exibido (fmod no ponto de corte).
+    float frameHold{0.f};
 
     /// Duração = último keyframe de qualquer track.
     [[nodiscard]] float duration() const noexcept;
 };
+
+/// Frame ativo da clip no instante `time` (nullptr quando a track de
+/// frames está vazia ou o cursor está antes do primeiro key).
+[[nodiscard]] const SpriteFrameKey* sampleFrame(
+    const AnimationClip& clip, float time) noexcept;
 
 /// Biblioteca de clips por nome (banco do runtime — §9: API C++).
 class AnimationBank final {
@@ -79,6 +104,9 @@ struct Animator {
     float speed{1.f};          ///< 0.5 = metade, 2 = dobro
     bool loop{true};
     bool playing{false};
+    /// P2: aplica a track de FRAMES ao sprite da entidade (quando houver
+    /// sprite E track de frames no clip). TRS continua sob apply*.
+    bool applySprite{true};
     bool applyPosition{true};
     bool applyRotation{true};
     bool applyScale{true};
@@ -94,6 +122,7 @@ ENG_REFLECT_BEGIN(eng::animation::Animator)
     ENG_REFLECT_FIELD(speed)
     ENG_REFLECT_FIELD(loop)
     ENG_REFLECT_FIELD(playing)
+    ENG_REFLECT_FIELD(applySprite)
     ENG_REFLECT_FIELD(applyPosition)
     ENG_REFLECT_FIELD(applyRotation)
     ENG_REFLECT_FIELD(applyScale)

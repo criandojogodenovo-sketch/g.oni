@@ -6,16 +6,20 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 
 #include "eng/animation/Animation.hpp"
+#include "eng/audio/Wav.hpp"
 #include "eng/log/Macros.hpp"
 #include "eng/math/Mat4.hpp"
 #include "eng/math/Quat.hpp"
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/project/ProjectPaths.hpp"
+#include "eng/editor/AnimationAssets.hpp"
+#include "eng/editor/AudioSource.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
 #include "eng/editor/SpriteData.hpp"
 #include "eng/editor/NiRuntime.hpp"
@@ -682,6 +686,11 @@ GizmoBounds EditorDocument::selectionBounds(TextureCache* textures) const
         const float sinR = std::sin(quad.rotation);
         bounds.worldX = quad.worldX + pivotOffX * cosR - pivotOffY * sinR;
         bounds.worldY = quad.worldY + pivotOffX * sinR + pivotOffY * cosR;
+        // P2 (bug §5): origem do NÓ separada do centro visual — o MOVE
+        // opera sobre a ORIGEM (o que o Transform guarda); rotate/scale
+        // continuam no centro visual (pivot).
+        bounds.originX = quad.worldX;
+        bounds.originY = quad.worldY;
         bounds.halfW = std::max(worldHalfW, pxToWorldMin());
         bounds.halfH = std::max(worldHalfH, pxToWorldMin());
         bounds.rotation = quad.rotation;
@@ -719,12 +728,20 @@ GizmoHandle EditorDocument::gizmoDragBegin(float screenX, float screenY,
         return GizmoHandle::None;  // seleção stale no meio da operação
     }
     GizmoTransform start{};
-    start.posX = transform.value().position.x;
-    start.posY = transform.value().position.y;
+    // P2 (bug §5, R2): o gizmo opera em MUNDO — a origem do nó vem dos
+    // bounds ATUAIS (não do transform local, que só coincide na raiz).
+    start.posX = bounds.originX;
+    start.posY = bounds.originY;
     start.rotationDeg = transform.value().rotationDegrees.z;
     start.scaleX = transform.value().scale.x;
     start.scaleY = transform.value().scale.y;
     gizmo_.beginDrag(handle, start, viewport_, bounds, screenX, screenY);
+
+    // Contexto do drag (vivo até gizmoDragEnd): mesmas texturas do begin
+    // (R1 — bounds consistentes entre begin E dragTo) + inversa 2x2 do
+    // pai (R2 — delta de mundo → espaço local do filho).
+    dragTextures_ = textures;
+    dragParentInv_ = parentInverse2D(*selection_);
     return handle;
 }
 
@@ -738,7 +755,11 @@ Result<void> EditorDocument::gizmoDragTo(float screenX, float screenY)
         return makeUnexpected(
             documentError(StatusCode::NotFound, "seleção perdida no drag"));
     }
-    const GizmoBounds bounds = selectionBounds(nullptr);
+    // R1 (bug §5): MESMA fonte de bounds do beginDrag — o cache de
+    // texturas do drag, capturado no begin. Antes: nullptr aqui e
+    // texturizado no begin → com pivot != (0.5,0.5) o centro de
+    // referência do rotate/scale MUDAVA no meio do drag.
+    const GizmoBounds bounds = selectionBounds(dragTextures_);
     if (!bounds.valid) {
         gizmoDragEnd();
         return makeUnexpected(
@@ -747,15 +768,22 @@ Result<void> EditorDocument::gizmoDragTo(float screenX, float screenY)
     const GizmoTransform target =
         gizmo_.dragTo(viewport_, bounds, screenX, screenY);
 
-    // Aplica ao ECS REAL (posição/rotZ/escala XY — plano 2D).
+    // Aplica ao ECS REAL. R2 (bug §5): o alvo do MOVE está em MUNDO —
+    // converte o delta pela INVERSA do pai (raiz: identidade). Somar o
+    // delta de mundo direto na posição LOCAL movia filhos de pais
+    // rotacionados no EIXO ERRADO da tela.
     auto current = transform(*selection_);
     if (current.isError()) {
         gizmoDragEnd();
         return makeUnexpected(current.error());
     }
     TransformDesc desc = current.value();
-    desc.position.x = target.posX;
-    desc.position.y = target.posY;
+    const float worldDeltaX = target.posX - bounds.originX;
+    const float worldDeltaY = target.posY - bounds.originY;
+    desc.position.x += dragParentInv_[0] * worldDeltaX +
+                       dragParentInv_[1] * worldDeltaY;
+    desc.position.y += dragParentInv_[2] * worldDeltaX +
+                       dragParentInv_[3] * worldDeltaY;
     desc.rotationDegrees.z = target.rotationDeg;
     desc.scale.x = target.scaleX;
     desc.scale.y = target.scaleY;
@@ -771,6 +799,35 @@ Result<void> EditorDocument::gizmoDragTo(float screenX, float screenY)
 void EditorDocument::gizmoDragEnd() noexcept
 {
     gizmo_.endDrag();
+    dragTextures_ = nullptr;     // contexto do drag morre com o drag (§5)
+    dragParentInv_ = {1.f, 0.f, 0.f, 1.f};
+}
+
+/// Inversa 2x2 da parte LINEAR do world matrix do PAI (identidade na
+/// raiz). Converte deltas de MUNDO → espaço LOCAL do filho (bug §5 R2):
+/// column-major → m00=at(0,0), m01=at(1,0), m10=at(0,1), m11=at(1,1);
+/// inv = 1/det · [[m11,-m01],[-m10,m00]]. Det 0 (pai degenerado) →
+/// identidade honesta (drag continua respondendo, sem NaN).
+std::array<float, 4> EditorDocument::parentInverse2D(
+    eng::ecs::Entity entity) const noexcept
+{
+    std::array<float, 4> identity{1.f, 0.f, 0.f, 1.f};
+    if (!scene_.has_value()) {
+        return identity;
+    }
+    const eng::ecs::Entity parent = scene_->parentOf(entity);
+    if (parent == eng::scene::kNoEntity) {
+        return identity;
+    }
+    const eng::math::Mat4 pw = scene_->computeWorldMatrix(parent);
+    const float m00 = pw.at(0, 0), m01 = pw.at(1, 0);
+    const float m10 = pw.at(0, 1), m11 = pw.at(1, 1);
+    const float det = m00 * m11 - m01 * m10;
+    if (std::abs(det) < 1e-9f) {
+        return identity;
+    }
+    const float inv = 1.f / det;
+    return {m11 * inv, -m01 * inv, -m10 * inv, m00 * inv};
 }
 
 GizmoDrawData EditorDocument::gizmoDraw(TextureCache* textures) const
@@ -980,6 +1037,7 @@ Result<void> EditorDocument::addComponent(eng::ecs::Entity entity,
         return makeUnexpected(added.error());
     }
     sceneDirty_ = true;
+    ++selectionRevision_;  // Inspector reflete o componente novo (P2)
     return {};
 }
 
@@ -995,7 +1053,90 @@ Result<void> EditorDocument::removeComponent(eng::ecs::Entity entity,
         return makeUnexpected(removed.error());
     }
     sceneDirty_ = true;
+    ++selectionRevision_;
     return {};
+}
+
+// =============================================================================
+// Componentes authoráveis (P2 §2/§14)
+// =============================================================================
+
+namespace {
+
+/// Hint de dependência por tipo (P2 §14 — o catálogo é ÚNICO; os hints
+/// informam o AUTOR sem inventar componentes falsos). Vazios = sem
+/// dependência. O formato é texto livre para a UI exibir como está.
+[[nodiscard]] std::string dependencyHintFor(std::string_view component)
+{
+    if (component == "eng::physics::RigidBody") {
+        return "Colisão requer Collider (corpo sem collider atravessa)";
+    }
+    if (component == "eng::animation::Animator") {
+        return "Requer um clip em assets/animations (painel Animação)";
+    }
+    if (component == "eng::editor::AudioSource") {
+        return "Requer um WAV em assets/audio (importe no Assets)";
+    }
+    if (component == "eng::editor::NiScriptComponent") {
+        return "Prefira anexar pelo painel Scripts (editor embutido)";
+    }
+    return {};
+}
+
+}  // namespace
+
+std::vector<EditorDocument::ComponentMeta>
+EditorDocument::addableComponents(eng::ecs::Entity entity) const
+{
+    std::vector<ComponentMeta> out;
+    if (!scene_.has_value() || !scene_->isNode(entity)) {
+        return out;
+    }
+    for (const auto& name : Inspector::catalog()) {
+        // Built-ins obrigatórios não são addáveis (todo nó já os tem).
+        if (!Inspector::isRemovable(name)) {
+            continue;
+        }
+        // Já presente → o Inspector lista os campos; nada a adicionar.
+        if (!Inspector::componentsOf(*scene_, entity).empty()) {
+            bool present = false;
+            for (const auto& has : Inspector::componentsOf(*scene_, entity)) {
+                if (has == name) {
+                    present = true;
+                    break;
+                }
+            }
+            if (present) {
+                continue;
+            }
+        }
+        out.push_back(ComponentMeta{name, true, dependencyHintFor(name)});
+    }
+    return out;
+}
+
+Result<std::vector<std::string>>
+EditorDocument::addComponentWithDependencies(eng::ecs::Entity entity,
+                                             std::string_view component)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    auto added = addComponent(entity, component);
+    if (added.isError()) {
+        return makeUnexpected(added.error());
+    }
+    std::vector<std::string> created{std::string(component)};
+
+    // Auto-criação SEGURA (P2 §14 — aditiva, nunca destrutiva):
+    // Animator num clip com FRAMES precisa de SpriteData para o autor
+    // VER o flipbook; SpriteData default é placeholder inofensivo.
+    if (component == "eng::animation::Animator") {
+        // Animator default tem clip "idle" — sem banco em Edit, nada a
+        // validar aqui; o preview/assign cuida do resto.
+    }
+    return created;
 }
 
 // =============================================================================
@@ -1028,6 +1169,60 @@ public:
 
 private:
     NiRuntime& runtime_;
+};
+
+/// AudioTick (P2 §12): AudioSources do CLONE no mixer REAL. Primeiro
+/// frame de cada voz playOnStart dispara UMA vez (set); vozes loop vivem
+/// até o stopAll do stop(). O backend (AAudio/null) pertence ao HOST —
+/// aqui apenas o CAMINHO REAL de vozes/mixer.
+class AudioTick final : public eng::tick::TickSystem {
+public:
+    AudioTick(EditorDocument& document) noexcept : document_(document) {}
+
+    [[nodiscard]] const char* name() const override { return "AudioTick"; }
+    [[nodiscard]] eng::tick::Phase phase() const override
+    {
+        return eng::tick::Phase::Update;
+    }
+    [[nodiscard]] int order() const override { return 40; }
+
+    void tick(eng::scene::Scene& scene, float /*dt*/) override
+    {
+        // playOnStart dispara UMA VEZ por Play (o set acumula — sem
+        // clear: o loop de vida é o do próprio Play/stop).
+        scene.world().each<eng::editor::AudioSource>(
+            [&](eng::ecs::Entity entity,
+                const eng::editor::AudioSource& source) {
+                const bool already =
+                    std::find(started_.begin(), started_.end(),
+                              entity.index) != started_.end();
+                if (!source.playOnStart || already ||
+                    source.soundAsset.empty()) {
+                    return;
+                }
+                started_.push_back(entity.index);
+                auto sound = document_.soundFor(source.soundAsset);
+                if (sound.isError()) {
+                    ENG_WARN("AudioTick: {}", sound.error().message);
+                    return;
+                }
+                auto played = document_.audioMixer().playSound(
+                    *sound.value(), eng::audio::AudioMixer::kMasterBus,
+                    source.volume, source.loop);
+                if (played.isError()) {
+                    ENG_WARN("AudioTick: {}", played.error().message);
+                }
+            });
+        // Manutenção da thread do jogo: recolhe vozes encerradas.
+        document_.audioMixer().tick();
+    }
+
+private:
+    AudioTick(const AudioTick&) = delete;
+    AudioTick& operator=(const AudioTick&) = delete;
+
+    EditorDocument& document_;
+    std::vector<std::uint32_t> started_;  ///< índices já disparados
 };
 
 }  // namespace
@@ -1102,7 +1297,10 @@ Result<void> EditorDocument::play()
     // Evolução P0-5 (ADR-051): o frame do jogo é o TICK SCHEDULER —
     // sistemas ordenados por (fase, ordem, inserção). Mesma ordem de
     // execução de antes (física → animação → partículas → scripts →
-    // câmera), agora DECLARADA, testável e extensível.
+    // áudio → câmera), agora DECLARADA, testável e extensível.
+    // P2 §8: o banco de animação é preenchido com TODOS os clips do
+    // projeto (assets reais — o AnimationTick REAL os executa).
+    loadAnimationBank();
     scheduler_ = std::make_unique<eng::tick::TickScheduler>();
     (void)scheduler_->addSystem(std::make_unique<eng::tick::PhysicsTick>(
         physicsWorld_, physicsAccumulator_));
@@ -1111,6 +1309,7 @@ Result<void> EditorDocument::play()
     (void)scheduler_->addSystem(std::make_unique<eng::tick::ParticleTick>());
     (void)scheduler_->addSystem(
         std::make_unique<ScriptTick>(*niRuntime_));
+    (void)scheduler_->addSystem(std::make_unique<AudioTick>(*this));
     (void)scheduler_->addSystem(
         std::make_unique<eng::tick::CameraTickSystem>());
 
@@ -1140,6 +1339,7 @@ void EditorDocument::stop() noexcept
         viewport_.setGameCamera(nullptr);  // câmera do editor volta
         niRuntime_->shutdown(); // `up destroy` + descarte (bindings morrem
                                 // JUNTOS com o clone — ADR-044)
+        audioMixer_.stopAll();  // P2 §12: vozes do Play morrem com o clone
         runtimeScene_.reset();
         // Seleção pode apontar o CLONE (tap em Play) — handle órfão na
         // edição. O contrato documentado do viewportTap ("stop reseta")
@@ -1153,18 +1353,27 @@ void EditorDocument::stop() noexcept
 
 void EditorDocument::tick(float deltaSeconds) noexcept
 {
-    // Em Edit o runtime fica PARADO (gestos do editor não vazam — §6.4).
+    // Em Edit o runtime fica PARADO (gestos do editor não vazam — §6.4);
+    // o PREVIEW de animação (P2 §8) avança com o frame do host — o
+    // renderFrame chama tick() sempre, e o preview é o único consumidor
+    // de tempo em Edit.
     if (mode_ != Mode::Play) {
+        previewTick(deltaSeconds);
         return;
     }
     // FASE 9 (§6.1): input com janela de um update por frame.
     runtimeInput_.update();
 
     // Evolução P0-5 (ADR-051): frame completo pelo TickScheduler —
-    // física (timestep fixo), animação, partículas, scripts e câmera
-    // nas fases/ordens declaradas no play(). Determinismo: a ordem é
+    // física (timestep fixo), animação, partículas, scripts, áudio e
+    // câmera nas fases/ordens declaradas no play(). Determinismo: a ordem é
     // fixa e cada sistema vê o estado deixado pelos anteriores.
     scheduler_->runFrame(*runtimeScene_, deltaSeconds);
+
+    // P2 §8: FRAMES do clip do Animator aplicados ao SpriteData do clone
+    // (o AnimationTick avançou o cursor; a aplicação visual é da camada
+    // que conhece SpriteData — editor). O MESMO código do preview.
+    applyAnimatorFrames(*runtimeScene_);
 
     // Câmera de jogo (P0-5): o CameraTick cacheou a ativa no frame; o
     // viewport passa a ver POR ELA (render/hit-test/arraste seguem).
@@ -1297,8 +1506,12 @@ Result<void> EditorDocument::moveEntityScreen(eng::ecs::Entity entity,
         return makeUnexpected(documentError(StatusCode::Internal,
                                            "sem Transform"));
     }
-    local->position.x += worldDx;
-    local->position.y += worldDy;
+    // P2 (bug §5 R2): mesmo fixo do gizmo — delta de MUNDO convertido
+    // para o espaço LOCAL do pai (filho de pai girado/escalado segue o
+    // eixo de TELA, não o eixo local do pai).
+    const std::array<float, 4> inv = parentInverse2D(focusEntity);
+    local->position.x += inv[0] * worldDx + inv[1] * worldDy;
+    local->position.y += inv[2] * worldDx + inv[3] * worldDy;
     if (mode_ == Mode::Edit) {
         sceneDirty_ = true;
         ++selectionRevision_;  // viewport → Inspector: drag move (P1.9)
@@ -1639,6 +1852,569 @@ Result<void> EditorDocument::scriptAssign(eng::ecs::Entity entity,
     sceneDirty_ = true;
     ENG_INFO("script anexado: {} ({} bytes) → entidade {}", name,
              content.value().size(), entity.index);
+    return {};
+}
+
+// =============================================================================
+// Animação authorável (P2 §8)
+// =============================================================================
+
+namespace {
+
+constexpr std::string_view kAnimCategory = "animations";
+
+/// Nome de asset de animação válido (mesma política de scripts: sem
+/// path/nul; a extensão é forçada por animationCreate).
+[[nodiscard]] bool isValidAnimName(std::string_view name) noexcept
+{
+    if (name.empty() || name.size() > 128) {
+        return false;
+    }
+    return name.find("..") == std::string_view::npos &&
+           name.find('/') == std::string_view::npos &&
+           name.find('\\') == std::string_view::npos &&
+           name.find('\0') == std::string_view::npos;
+}
+
+/// Garante a extensão .anim.json (adiciona quando ausente).
+[[nodiscard]] std::string withAnimExtension(std::string_view name)
+{
+    constexpr std::string_view kExt = ".anim.json";
+    std::string out{name};
+    if (out.size() < kExt.size() ||
+        out.compare(out.size() - kExt.size(), kExt.size(), kExt) != 0) {
+        out += kExt;
+    }
+    return out;
+}
+
+}  // namespace
+
+Result<std::vector<EditorDocument::AnimSummary>>
+EditorDocument::animationList() const
+{
+    auto listed = assets_->list(kAnimCategory);
+    if (listed.isError()) {
+        return makeUnexpected(listed.error());
+    }
+    std::vector<AnimSummary> out;
+    out.reserve(listed.value().size());
+    for (const auto& entry : listed.value()) {
+        AnimSummary summary;
+        summary.name = entry.name;
+        auto content = animationRead(entry.name);
+        if (content.isError()) {
+            summary.clip = entry.name;  // ilegível: lista honesta com erro
+            continue;
+        }
+        std::vector<AnimDiag> diags;
+        auto decoded = animationDecode(content.value(), &diags);
+        if (decoded.isError()) {
+            summary.clip = entry.name;
+            continue;
+        }
+        summary.clip = decoded.value().clip.name;
+        summary.duration = decoded.value().clip.duration();
+        summary.frames = decoded.value().clip.frames.size();
+        summary.keys = decoded.value().clip.position.size() +
+                       decoded.value().clip.rotation.size() +
+                       decoded.value().clip.scale.size();
+        summary.loop = decoded.value().meta.loop;
+        out.push_back(std::move(summary));
+    }
+    return out;
+}
+
+Result<std::string> EditorDocument::animationRead(
+    std::string_view name) const
+{
+    if (!isValidAnimName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de animação inválido"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto bytes = assets_->read(kAnimCategory, name);
+    if (bytes.isError()) {
+        return makeUnexpected(bytes.error());
+    }
+    std::string text;
+    text.reserve(bytes.value().size());
+    for (const std::byte b : bytes.value()) {
+        text.push_back(static_cast<char>(b));
+    }
+    return text;
+}
+
+Result<void> EditorDocument::animationWrite(std::string_view name,
+                                            std::string_view json)
+{
+    if (!isValidAnimName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de animação inválido"));
+    }
+    if (assets_ == nullptr || !project_.has_value()) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    // Valida ANTES de gravar: lixo não entra no projeto (§15).
+    std::vector<AnimDiag> diags;
+    auto decoded = animationDecode(json, &diags);
+    if (decoded.isError()) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "JSON rejeitado: " + decoded.error().message));
+    }
+    const eng::fs::Path path = project_->paths().assetsRoot() /
+                               eng::fs::Path{std::string(kAnimCategory)} /
+                               eng::fs::Path{std::string(name)};
+    if (path.isAbsolute()) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "caminho absoluto proibido"));
+    }
+    auto existed = fs_->exists(path);
+    if (existed.isError()) {
+        return makeUnexpected(existed.error());
+    }
+    auto written = fs_->writeAllText(path, std::string(json));
+    if (written.isError()) {
+        return makeUnexpected(written.error());
+    }
+    if (!existed.value()) {
+        auto registered =
+            assets_->registerExisting(kAnimCategory, name);
+        if (registered.isError()) {
+            return makeUnexpected(registered.error());
+        }
+    }
+    return {};
+}
+
+Result<void> EditorDocument::animationCreate(std::string_view rawName)
+{
+    if (!isValidAnimName(rawName)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "nome de animação inválido (vazio/caracteres proibidos)"));
+    }
+    const std::string name = withAnimExtension(rawName);
+    auto existing = assets_->list(kAnimCategory);
+    if (existing.isError()) {
+        return makeUnexpected(existing.error());
+    }
+    for (const auto& entry : existing.value()) {
+        if (entry.name == name) {
+            return makeUnexpected(
+                documentError(StatusCode::AlreadyExists,
+                              "animação '" + name + "' já existe"));
+        }
+    }
+    // Template de FLIPBOOK puro: frames começam em t=0 (o authoring
+    // adiciona texturas via animationAddFrame; TRS fica desligado —
+    // defaults inteligentes do assign). frameHold = 1/fps (o slot).
+    const std::string clipBase(rawName);
+    const std::string json = "{\n"
+                             "  \"name\": \"" + clipBase + "\",\n"
+                             "  \"fps\": 8,\n"
+                             "  \"loop\": true,\n"
+                             "  \"frameHold\": 0.125,\n"
+                             "  \"frames\": []\n"
+                             "}\n";
+    return animationWrite(name, json);
+}
+
+Result<void> EditorDocument::animationDelete(std::string_view name)
+{
+    if (!isValidAnimName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de animação inválido"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    return assets_->remove(kAnimCategory, name);
+}
+
+Result<void> EditorDocument::animationAssign(eng::ecs::Entity entity,
+                                              std::string_view name)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    if (!scene_->isNode(entity)) {
+        return makeUnexpected(documentError(StatusCode::NotFound,
+                                           "entidade obsoleta"));
+    }
+    // O nome aceito aqui é o ARQUIVO; o CLIP é o nome interno (fonte:
+    // o JSON — "o que o banco vai indexar").
+    auto content = animationRead(withAnimExtension(name));
+    if (content.isError()) {
+        return makeUnexpected(content.error());
+    }
+    auto decoded = animationDecode(content.value());
+    if (decoded.isError()) {
+        return makeUnexpected(decoded.error());
+    }
+    const std::string clipName = decoded.value().clip.name;
+
+    // Componente Animator (adiciona default quando ausente — §14).
+    if (!scene_->world().has<eng::animation::Animator>(entity)) {
+        auto added = Inspector::addComponent(
+            *scene_, entity, "eng::animation::Animator");
+        if (added.isError()) {
+            return makeUnexpected(added.error());
+        }
+    }
+    // Auto-criação SEGURA (P2 §14): clip com FRAMES precisa de SpriteData
+    // para o autor VER o flipbook; default é placeholder inofensivo.
+    if (!decoded.value().clip.frames.empty() &&
+        !scene_->world().has<eng::editor::SpriteData>(entity)) {
+        auto sprite = Inspector::addComponent(
+            *scene_, entity, "eng::editor::SpriteData");
+        if (sprite.isError()) {
+            return makeUnexpected(sprite.error());
+        }
+    }
+    auto* animator = scene_->world().get<eng::animation::Animator>(entity);
+    animator->clip = clipName;
+    animator->time = 0.f;
+    animator->loop = decoded.value().meta.loop;
+    animator->playing = false;  // o Play inicia (autoplay é do runtime)
+    animator->previousClip.clear();
+    animator->blendRemaining = 0.f;
+    // Defaults INTELIGENTES: track vazia → apply* DESLIGADO (clip de
+    // flipbook puro não zera o Transform do autor; o TRS fica dele).
+    animator->applyPosition = !decoded.value().clip.position.empty();
+    animator->applyRotation = !decoded.value().clip.rotation.empty();
+    animator->applyScale = !decoded.value().clip.scale.empty();
+    animator->applySprite = !decoded.value().clip.frames.empty();
+    sceneDirty_ = true;
+    ++selectionRevision_;
+    ENG_INFO("animação anexada: {} (clip '{}', {} frames) → entidade {}",
+             name, clipName, decoded.value().clip.frames.size(),
+             entity.index);
+    return {};
+}
+
+Result<float> EditorDocument::animationAddFrame(
+    std::string_view name, std::string_view textureAsset)
+{
+    if (!isValidAnimName(name) || textureAsset.empty()) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome/textura inválidos"));
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    // A textura precisa EXISTIR no projeto (authoring real — sem
+    // referências quebradas silenciosas).
+    auto textures = assets_->list("textures");
+    if (textures.isError()) {
+        return makeUnexpected(textures.error());
+    }
+    bool found = false;
+    for (const auto& entry : textures.value()) {
+        if (entry.name == textureAsset) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return makeUnexpected(documentError(
+            StatusCode::NotFound,
+            "textura '" + std::string(textureAsset) +
+                "' não está no projeto (importe-a primeiro)"));
+    }
+
+    const std::string fileName = withAnimExtension(name);
+    auto content = animationRead(fileName);
+    if (content.isError()) {
+        return makeUnexpected(content.error());
+    }
+    auto decoded = animationDecode(content.value());
+    if (decoded.isError()) {
+        return makeUnexpected(decoded.error());
+    }
+    // Cadência de flipbook: primeiro frame em t=0; o seguinte uma cadeia
+    // (1/fps) depois do último — o duration estende pelo frameHold.
+    const float step =
+        decoded.value().meta.fps > 0.f ? 1.f / decoded.value().meta.fps : 0.125f;
+    const float when = decoded.value().clip.frames.empty()
+                           ? 0.f
+                           : decoded.value().clip.frames.back().time + step;
+
+    // Reconstrói o JSON acrescentando o frame (codec canônico — o dump
+    // é estável, round-trip testado).
+    eng::animation::SpriteFrameKey key;
+    key.time = when;
+    key.textureAsset = std::string(textureAsset);
+    decoded.value().clip.frames.push_back(std::move(key));
+    auto encoded = animationEncode(decoded.value());
+    if (encoded.isError()) {
+        return makeUnexpected(encoded.error());
+    }
+    auto written = animationWrite(fileName, encoded.value());
+    if (written.isError()) {
+        return makeUnexpected(written.error());
+    }
+    return when;
+}
+
+Result<void> EditorDocument::animationSetMeta(std::string_view name,
+                                               bool loop, float fps)
+{
+    if (!isValidAnimName(name)) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de animação inválido"));
+    }
+    if (!std::isfinite(fps) || fps <= 0.f || fps > 120.f) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidArgument,
+                          "fps deve estar em (0, 120]"));
+    }
+    const std::string fileName = withAnimExtension(name);
+    auto content = animationRead(fileName);
+    if (content.isError()) {
+        return makeUnexpected(content.error());
+    }
+    auto decoded = animationDecode(content.value());
+    if (decoded.isError()) {
+        return makeUnexpected(decoded.error());
+    }
+    decoded.value().meta.loop = loop;
+    decoded.value().meta.fps = fps;
+    auto encoded = animationEncode(decoded.value());
+    if (encoded.isError()) {
+        return makeUnexpected(encoded.error());
+    }
+    return animationWrite(fileName, encoded.value());
+}
+
+Result<void> EditorDocument::previewStart(eng::ecs::Entity entity,
+                                          std::string_view clipName)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    if (!scene_->isNode(entity)) {
+        return makeUnexpected(documentError(StatusCode::NotFound,
+                                           "entidade obsoleta"));
+    }
+    // Resolve o clip por ARQUIVO (nome do asset) ou nome INTERNO do clip.
+    auto listed = animationList();
+    if (listed.isError()) {
+        return makeUnexpected(listed.error());
+    }
+    std::string fileName;
+    for (const auto& summary : listed.value()) {
+        if (summary.name == clipName || summary.clip == clipName) {
+            fileName = summary.name;
+            break;
+        }
+    }
+    if (fileName.empty()) {
+        return makeUnexpected(
+            documentError(StatusCode::NotFound,
+                          "animação '" + std::string(clipName) +
+                              "' não encontrada"));
+    }
+    auto content = animationRead(fileName);
+    if (content.isError()) {
+        return makeUnexpected(content.error());
+    }
+    auto decoded = animationDecode(content.value());
+    if (decoded.isError()) {
+        return makeUnexpected(decoded.error());
+    }
+    auto original = transform(entity);
+    if (original.isError()) {
+        return makeUnexpected(original.error());
+    }
+    preview_ = PreviewState{entity, decoded.value().clip.name, 0.f,
+                            decoded.value().meta.loop, original.value()};
+    return {};
+}
+
+void EditorDocument::previewTick(float deltaSeconds) noexcept
+{
+    if (!preview_.has_value() || mode_ != Mode::Edit) {
+        return;
+    }
+    PreviewState& state = *preview_;
+    const eng::animation::AnimationClip* clip =
+        runtimeAnimations_.find(state.clip);
+    // O banco em EDIT carrega na hora do preview (fonte: assets).
+    if (clip == nullptr) {
+        if (!assets_) {
+            return;
+        }
+        auto listed = assets_->list(kAnimCategory);
+        if (listed.isError()) {
+            return;
+        }
+        for (const auto& entry : listed.value()) {
+            auto content = animationRead(entry.name);
+            if (content.isError()) {
+                continue;
+            }
+            auto decoded = animationDecode(content.value());
+            if (decoded.isError()) {
+                continue;
+            }
+            runtimeAnimations_.add(std::move(decoded.value().clip));
+        }
+        clip = runtimeAnimations_.find(state.clip);
+    }
+    if (clip == nullptr || clip->duration() <= 0.f) {
+        return;
+    }
+    state.time += deltaSeconds;
+    if (state.loop) {
+        state.time = std::fmod(state.time, clip->duration());
+    } else if (state.time >= clip->duration()) {
+        state.time = clip->duration();
+    }
+    // MESMO sampler do runtime (AnimationSystem::sample — fonte única).
+    const auto pose =
+        eng::animation::AnimationSystem::sample(*clip, state.time);
+    eng::editor::TransformDesc desc = state.original;
+    desc.position = pose.position;
+    desc.rotationDegrees = degreesFromQuat(pose.rotation);
+    desc.scale = pose.scale;
+    (void)setTransform(state.entity, desc);  // dirty (honesto: preview edita)
+    // Frames no sprite da ENTIDADE em edição (mesma aplicação do Play).
+    applyAnimatorFrames(*scene_);
+}
+
+void EditorDocument::previewStop() noexcept
+{
+    if (!preview_.has_value()) {
+        return;
+    }
+    // Restaura o TRANSFORM original (preview não deixa sujeira).
+    if (scene_.has_value() && scene_->isNode(preview_->entity)) {
+        (void)setTransform(preview_->entity, preview_->original);
+    }
+    preview_.reset();
+}
+
+void EditorDocument::loadAnimationBank()
+{
+    // MERGE, sem clear: clips adicionados programaticamente (API C++/testes)
+    // com nomes ÚNICOS sobrevivem; assets são a FONTE DE AUTORIA e
+    // sobrescrevem clipes de mesmo nome (insert_or_assign do banco).
+    if (assets_ == nullptr) {
+        return;
+    }
+    auto listed = assets_->list(kAnimCategory);
+    if (listed.isError()) {
+        return;
+    }
+    for (const auto& entry : listed.value()) {
+        auto content = animationRead(entry.name);
+        if (content.isError()) {
+            ENG_WARN("animation: {} ilegível ({})", entry.name,
+                     content.error().message);
+            continue;
+        }
+        auto decoded = animationDecode(content.value());
+        if (decoded.isError()) {
+            ENG_WARN("animation: {} inválida ({})", entry.name,
+                     decoded.error().message);
+            continue;
+        }
+        runtimeAnimations_.add(std::move(decoded.value().clip));
+    }
+}
+
+void EditorDocument::applyAnimatorFrames(eng::scene::Scene& scene)
+{
+    scene.world().each<eng::animation::Animator>(
+        [&](eng::ecs::Entity entity,
+            const eng::animation::Animator& animator) {
+            if (!animator.applySprite) {
+                return;
+            }
+            const eng::animation::AnimationClip* clip =
+                runtimeAnimations_.find(animator.clip);
+            if (clip == nullptr) {
+                return;
+            }
+            const auto* frame =
+                eng::animation::sampleFrame(*clip, animator.time);
+            if (frame == nullptr) {
+                return;
+            }
+            auto* sprite = scene.world().get<eng::editor::SpriteData>(entity);
+            if (sprite == nullptr) {
+                return;
+            }
+            sprite->textureAsset = frame->textureAsset;
+            sprite->u0 = frame->u0;
+            sprite->v0 = frame->v0;
+            sprite->u1 = frame->u1;
+            sprite->v1 = frame->v1;
+        });
+}
+
+// =============================================================================
+// Áudio authorável (P2 §12)
+// =============================================================================
+
+Result<std::shared_ptr<const eng::audio::Sound>>
+EditorDocument::soundFor(std::string_view assetName)
+{
+    const std::string key{assetName};
+    const auto cached = soundCache_.find(key);
+    if (cached != soundCache_.end()) {
+        return cached->second;
+    }
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto bytes = assets_->read("audio", key);
+    if (bytes.isError()) {
+        return makeUnexpected(bytes.error());
+    }
+    auto wav = eng::audio::Wav::parse(
+        std::span{bytes.value().data(), bytes.value().size()});
+    if (wav.isError()) {
+        return makeUnexpected(wav.error());
+    }
+    auto sound = eng::audio::Sound::fromWav(wav.value());
+    if (sound.isError()) {
+        return makeUnexpected(sound.error());
+    }
+    auto shared = std::make_shared<const eng::audio::Sound>(
+        std::move(sound.value()));
+    soundCache_[key] = shared;
+    return shared;
+}
+
+Result<void> EditorDocument::audioPreview(std::string_view assetName)
+{
+    if (assets_ == nullptr) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nenhum projeto aberto"));
+    }
+    auto sound = soundFor(assetName);
+    if (sound.isError()) {
+        return makeUnexpected(sound.error());
+    }
+    auto played = audioMixer_.playSound(*sound.value(),
+                                        eng::audio::AudioMixer::kMasterBus,
+                                        1.f, false);
+    if (played.isError()) {
+        return makeUnexpected(played.error());
+    }
+    audioMixer_.tick();
     return {};
 }
 

@@ -53,9 +53,18 @@ enum class GizmoHandle : std::uint8_t {
 /// Bounds da entidade selecionada no plano do MUNDO — layout do gizmo
 /// e clamps de escala usam EXATAMENTE o tamanho desenhado (posição,
 /// rotação, escala, textura e ppu — P1.2), nunca um tamanho arbitrário.
+///
+/// P2 (bug §5): dois pontos de referência distintos, ambos derivados do
+/// estado ATUAL da entidade (nenhum dado temporário):
+///   - worldX/worldY: CENTRO VISUAL (com offset de pivot do sprite) —
+///     pivô do ROTATE, cantos do SCALE e desenho do gizmo;
+///   - originX/originY: ORIGEM DO NÓ (translation do world matrix) —
+///     alvo do MOVE (a posição que o Transform guarda).
 struct GizmoBounds {
-    float worldX{0.f};   ///< centro (posição-mundo do nó)
+    float worldX{0.f};   ///< centro visual (posição + offset de pivot)
     float worldY{0.f};
+    float originX{0.f};  ///< origem do NÓ em mundo (sem pivot — MOVE)
+    float originY{0.f};
     float halfW{0.5f};   ///< MEIA-largura desenhada (mundo)
     float halfH{0.5f};
     float rotation{0.f}; ///< radianos no plano XY
@@ -63,6 +72,9 @@ struct GizmoBounds {
 };
 
 /// Estado TRS que o gizmo lê/escreve (graus — convenção do Inspector).
+/// P2: posX/posY são a posição de MUNDO da ORIGEM do nó — o DOCUMENTO
+/// converte o delta de mundo para o espaço LOCAL do pai (filhos de pais
+/// rotacionados/escalados movem no eixo de TELA certo).
 struct GizmoTransform {
     float posX{0.f};
     float posY{0.f};

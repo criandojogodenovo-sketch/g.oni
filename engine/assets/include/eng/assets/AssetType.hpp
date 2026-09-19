@@ -24,6 +24,7 @@ enum class AssetType : std::uint32_t {
     Shader = 103,
     Audio = 104,
     Script = 105,
+    Animation = 106,  ///< P2: clip de animação (.anim.json — codec no editor)
 };
 
 /// Nome estável ("Scene", "Texture", ...) — chave de serialização.

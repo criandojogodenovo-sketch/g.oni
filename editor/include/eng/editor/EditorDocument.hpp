@@ -24,6 +24,7 @@
 
 #include <memory>
 #include <optional>
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -31,6 +32,7 @@
 
 #include "eng/core/Result.hpp"
 #include "eng/animation/Animation.hpp"
+#include "eng/audio/Audio.hpp"
 #include "eng/ecs/Ecs.hpp"
 #include "eng/editor/AssetBrowser.hpp"
 #include "eng/editor/Gizmo.hpp"
@@ -200,6 +202,30 @@ public:
     [[nodiscard]] eng::core::Result<void> removeComponent(
         eng::ecs::Entity entity, std::string_view component);
 
+    // --- componentes authoráveis (P2 §2/§14) -----------------------------------
+
+    /// Um tipo de componente do catálogo, com metadados de AUTHORING.
+    struct ComponentMeta {
+        std::string name;          ///< nome canônico (API do catálogo)
+        bool addable = false;      ///< false: built-in obrigatório (Name/Transform)
+        std::string dependency;   ///< hint de dependência ("" quando nenhuma)
+    };
+
+    /// Catálogo de componentes ADDÁVEIS à entidade (P2 §2): tipos REALMENTE
+    /// registrados no engine, MENOS os que a entidade já possui e os
+    /// built-ins obrigatórios. Nada de componentes falsos — o Inspector
+    /// lista o que o catálogo único tem.
+    [[nodiscard]] std::vector<ComponentMeta> addableComponents(
+        eng::ecs::Entity entity) const;
+
+    /// Adiciona componente COM dependências (P2 §14): retorna a lista de
+    /// TODOS os componentes criados (o pedido + os auto-criados seguros).
+    /// Auto-criação é ADITIVA (nunca destrói dados): hoje Animator→SpriteData
+    /// quando o clip tem frames; o resto é hint claro na UI.
+    [[nodiscard]] eng::core::Result<std::vector<std::string>>
+    addComponentWithDependencies(eng::ecs::Entity entity,
+                                 std::string_view component);
+
     // --- play/stop (§8.7, ADR-044) ---------------------------------------------
 
     [[nodiscard]] eng::core::Result<void> play();
@@ -325,6 +351,98 @@ public:
         std::string message;
     };
 
+    // --- animação authorável (P2 §8) ---------------------------------------------
+    //
+    // Assets .anim.json em assets/animations são a FONTE DE EDIÇÃO; o
+    // banco do RUNTIME (AnimationBank real) é preenchido no play() com
+    // TODOS os clips do projeto — o AnimationTick REAL os executa sobre
+    // o clone. O PREVIEW em Edit usa o MESMO sampler (AnimationSystem)
+    // aplicando/restaurando o Transform da entidade em edição.
+
+    /// Resumo de um asset de animação (para a UI listar).
+    struct AnimSummary {
+        std::string name;       ///< nome do arquivo (com .anim.json)
+        std::string clip;       ///< nome do clip
+        float duration = 0.f;  ///< segundos (último key)
+        std::size_t frames = 0;     ///< keys de frame (flipbook)
+        std::size_t keys = 0;       ///< keys TRS totais
+        bool loop = true;           ///< default ao atribuir
+    };
+
+    /// Lista os assets de animação do projeto (parse leve p/ resumo).
+    [[nodiscard]] eng::core::Result<std::vector<AnimSummary>>
+    animationList() const;
+
+    /// Lê o CONTEÚDO cru do asset (JSON — editor de texto / round-trip).
+    [[nodiscard]] eng::core::Result<std::string> animationRead(
+        std::string_view name) const;
+
+    /// Escreve o conteúdo cru (valida com o codec ANTES de gravar —
+    /// lixo não entra no projeto). Arquivo novo é catalogado no registry.
+    [[nodiscard]] eng::core::Result<void> animationWrite(
+        std::string_view name, std::string_view json);
+
+    /// Cria uma animação NOVA (template mínimo com 2 frames placeholder
+    /// em branco — sem textura; o authoring adiciona frames reais depois).
+    [[nodiscard]] eng::core::Result<void> animationCreate(
+        std::string_view name);
+
+    /// Apaga o asset de animação (arquivo + registry).
+    [[nodiscard]] eng::core::Result<void> animationDelete(
+        std::string_view name);
+
+    /// Anexa o clip à entidade: Animator.clip = nome do clip (adiciona
+    /// Animator default quando ausente; cria SpriteData quando o clip
+    /// tem FRAMES e a entidade não tem sprite — auto-criação SEGURA,
+    /// P2 §14). Só em Edit.
+    [[nodiscard]] eng::core::Result<void> animationAssign(
+        eng::ecs::Entity entity, std::string_view name);
+
+    /// Acrescenta um FRAME ao fim da track de frames do asset (authoring
+    /// rápido: UI escolhe textura; o tempo é o último + 1/fps do meta).
+    [[nodiscard]] eng::core::Result<float> animationAddFrame(
+        std::string_view name, std::string_view textureAsset);
+
+    /// Define o LOOP/FPS do asset (metadados).
+    [[nodiscard]] eng::core::Result<void> animationSetMeta(
+        std::string_view name, bool loop, float fps);
+
+    /// PREVIEW em Edit (§8 "reproduzir preview"): aplica o clip na
+    /// entidade por dt avançando o tempo; restaura o Transform original
+    /// no previewStop. Só uma entidade por vez (preview explícito do
+    /// usuário). Retorna erro quando clip/entidade inválidos.
+    [[nodiscard]] eng::core::Result<void> previewStart(
+        eng::ecs::Entity entity, std::string_view clipName);
+    /// Avança o preview (host chama por frame junto do render). Fora de
+    /// preview → no-op.
+    void previewTick(float deltaSeconds) noexcept;
+    /// Encerra o preview E restaura o Transform original da entidade.
+    void previewStop() noexcept;
+    [[nodiscard]] bool previewing() const noexcept
+    {
+        return preview_.has_value();
+    }
+
+    // --- áudio authorável (P2 §12) -----------------------------------------------
+    //
+    // AudioSource (componente do catálogo) + o AudioMixer REAL da engine.
+    // O device output vem do backend do HOST (AAudio no Android; null em
+    // testes — os contadores do mixer provam o caminho real de DSP).
+
+    /// Mixer REAL (vozes/buses/stats) — o host conecta o backend nele.
+    [[nodiscard]] eng::audio::AudioMixer& audioMixer() noexcept
+    {
+        return audioMixer_;
+    }
+    /// Toca um asset WAV AGORA (preview manual no editor — Edit incluso).
+    [[nodiscard]] eng::core::Result<void> audioPreview(
+        std::string_view assetName);
+    /// Sound decodificado do asset (cache do documento — o AudioTick e o
+    /// host usam; pública para o tick da camada de composição).
+    [[nodiscard]] eng::core::Result<
+        std::shared_ptr<const eng::audio::Sound>>
+    soundFor(std::string_view assetName);
+
     /// Resultado de uma checagem de compilação.
     struct ScriptCheck {
         bool ok = false;                ///< compilou até bytecode?
@@ -366,6 +484,30 @@ public:
 private:
     EditorDocument() = default;
 
+    /// Estado do PREVIEW de animação em Edit (P2 §8): entidade + clip +
+    /// transform ORIGINAL (restaurado no stop). Nulo = sem preview.
+    struct PreviewState {
+        eng::ecs::Entity entity{};
+        std::string clip;
+        float time = 0.f;
+        bool loop = true;
+        TransformDesc original{};  ///< restaurado no previewStop
+    };
+    std::optional<PreviewState> preview_{};
+
+    /// Carrega TODOS os assets de animação no banco do runtime (play). Erros
+    /// individuais viram WARN (o jogo roda com os clips válidos).
+    void loadAnimationBank();
+
+    /// Aplica a track de FRAMES do clip do Animator ao SpriteData das
+    /// entidades (editor→SpriteData; a engine não conhece o componente).
+    /// Usado no Play (clone) — mesmo código do preview em Edit.
+    void applyAnimatorFrames(eng::scene::Scene& scene);
+
+    /// Cache de Sounds decodificados (asset → Sound — o mixer retém o
+    /// shared_ptr; recarrega se o asset mudou de tamanho).
+    // (soundFor é público — ver seção de áudio.)
+
     /// Garantia de modo: TODA escrita de edição passa por aqui.
     [[nodiscard]] eng::core::Result<void> requireEditMode() const;
 
@@ -378,6 +520,12 @@ private:
 
     /// Meio-tamanho mínimo visível em mundo (zoom→mundo, §8.6).
     [[nodiscard]] float pxToWorldMin() const noexcept;
+
+    /// Inversa 2x2 da parte linear do world matrix do PAI da entidade
+    /// (bug §5 R2, P2): converte deltas de MUNDO → espaço LOCAL do filho.
+    /// Raiz → identidade. Det degenerado → identidade (sem NaN).
+    [[nodiscard]] std::array<float, 4> parentInverse2D(
+        eng::ecs::Entity entity) const noexcept;
 
     /// Traduz handle de EDIÇÃO → handle da cena em FOCO (bug do clone
     /// aleatório: save ordena por SceneEntityId/UUID — ADR-033 — e o
@@ -409,6 +557,13 @@ private:
     EditorTool tool_{EditorTool::Select};
     TransformGizmo gizmo_{};
 
+    /// Contexto do DRAG (P2, bug §5): texturas capturadas no begin (o
+    /// dragTo resolve bounds com a MESMA fonte — pivot consistente) e a
+    /// inversa do pai no begin (delta de mundo → local). Ambos morrem no
+    /// gizmoDragEnd — o gizmo nunca opera sobre estado obsoleto.
+    TextureCache* dragTextures_{nullptr};
+    std::array<float, 4> dragParentInv_{1.f, 0.f, 0.f, 1.f};
+
     /// Edição → runtime (construído no play() via SceneIdentity; vivo
     /// enquanto o clone existir — ver toFocus()).
     std::unordered_map<eng::ecs::Entity, eng::ecs::Entity> editToRuntime_{};
@@ -422,6 +577,9 @@ private:
     eng::physics::PhysicsWorld physicsWorld_{};      ///< §7.1–§7.6
     eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
     eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
+    eng::audio::AudioMixer audioMixer_{};      ///< P2 §12 — mixer REAL
+    std::unordered_map<std::string, std::shared_ptr<const eng::audio::Sound>>
+        soundCache_{};                         ///< assets WAV decodificados
     std::unique_ptr<class NiRuntime> niRuntime_;     ///< §FASE 11 (clone)
     std::unique_ptr<eng::tick::TickScheduler> scheduler_{}; ///< P0-5 (Play)
     Viewport::Camera2D gameCamera_{};      ///< cache da câmera ativa (P0-5)

@@ -41,7 +41,7 @@ const std::vector<std::string>& AssetBrowser::categories()
 {
     static const std::vector<std::string> kCategories = {
         "scenes", "prefabs", "json", "textures", "models",
-        "materials", "shaders", "audio", "scripts",
+        "materials", "shaders", "audio", "scripts", "animations",
     };
     return kCategories;
 }
@@ -58,6 +58,7 @@ const char* AssetBrowser::assetTypeFor(std::string_view category)
         {"shaders", eng::assets::AssetType::Shader},
         {"audio", eng::assets::AssetType::Audio},
         {"scripts", eng::assets::AssetType::Script},
+        {"animations", eng::assets::AssetType::Animation},
     };
     const auto it = kMap.find(std::string(category));
     if (it == kMap.end()) {
@@ -76,6 +77,7 @@ const char* AssetBrowser::assetTypeFor(std::string_view category)
     case eng::assets::AssetType::Shader: return "Shader";
     case eng::assets::AssetType::Audio: return "Audio";
     case eng::assets::AssetType::Script: return "Script";
+    case eng::assets::AssetType::Animation: return "Animation";
     default: return nullptr;
     }
 }

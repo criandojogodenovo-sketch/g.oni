@@ -6,6 +6,8 @@
 #include <cmath>
 #include <utility>
 
+#include <string>
+
 namespace eng::animation {
 
 using eng::math::Quat;
@@ -70,7 +72,27 @@ float AnimationClip::duration() const noexcept
     if (!scale.empty()) {
         end = std::max(end, scale.back().time);
     }
+    if (!frames.empty()) {
+        // P2: o último frame SEGURA o slot dele (frameHold) — ver header.
+        end = std::max(end, frames.back().time + frameHold);
+    }
     return end;
+}
+
+const SpriteFrameKey* sampleFrame(const AnimationClip& clip,
+                                   float time) noexcept
+{
+    // Amostragem DISCRETA (flipbook): o último key com time <= cursor
+    // vale — não há interpolação entre regiões de textura.
+    const SpriteFrameKey* active = nullptr;
+    for (const SpriteFrameKey& key : clip.frames) {
+        if (key.time <= time) {
+            active = &key;
+        } else {
+            break;  // track ordenada por tempo
+        }
+    }
+    return active;
 }
 
 void AnimationBank::add(AnimationClip clip)

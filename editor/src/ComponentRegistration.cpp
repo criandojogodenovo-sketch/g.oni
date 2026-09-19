@@ -1,5 +1,6 @@
 #include "eng/animation/Animation.hpp"
 
+#include "eng/editor/AudioSource.hpp"
 #include "eng/editor/EditorDocument.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
@@ -44,6 +45,10 @@ const bool goni_editor_components_registered = [] {
         "eng::tick::CameraData");
     (void)SceneSerializer::registerComponentType<eng::scene::LayerMember>(
         "eng::scene::LayerMember");
+    // P2 (§12): AudioSource — áudio authorável dirigindo o AudioMixer
+    // REAL (AudioTick do documento no Play).
+    (void)SceneSerializer::registerComponentType<eng::editor::AudioSource>(
+        "eng::editor::AudioSource");
     return true;
 }();
 

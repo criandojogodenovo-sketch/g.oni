@@ -1475,4 +1475,313 @@ Java_com_goni_runtime_EditorJni_nativeEditorScriptAssign(JNIEnv* env,
                : JNI_FALSE;
 }
 
+// =============================================================================
+// P2 — componentes authoráveis + animação + áudio
+// =============================================================================
+
+/// TSV: typeName \t dependencyHint (catálogo ADDÁVEL à entidade — sem os
+/// que ela já possui e sem os built-ins obrigatórios).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAddableComponents(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jlong packed)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    const auto metas = host->document().addableComponents(
+        EditorDocument::unpackEntity(static_cast<std::uint64_t>(packed)));
+    std::string tsv;
+    for (const auto& meta : metas) {
+        tsv += meta.name;
+        tsv += '\t';
+        tsv += meta.dependency;
+        tsv += '\n';
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return stringToJni(env, tsv);
+}
+
+/// TSV: name \t clip \t duration \t frames \t keys \t loop.
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationList(JNIEnv* env,
+                                                           jobject /*thiz*/,
+                                                           jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto listed = host->document().animationList();
+    if (listed.isError()) {
+        record(handle, listed);
+        return nullptr;
+    }
+    std::string tsv;
+    for (const auto& anim : listed.value()) {
+        tsv += anim.name;
+        tsv += '\t';
+        tsv += anim.clip;
+        tsv += '\t';
+        tsv += std::to_string(anim.duration);
+        tsv += '\t';
+        tsv += std::to_string(anim.frames);
+        tsv += '\t';
+        tsv += std::to_string(anim.keys);
+        tsv += '\t';
+        tsv += anim.loop ? "1" : "0";
+        tsv += '\n';
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return stringToJni(env, tsv);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationRead(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle,
+                                                          jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return nullptr;
+    }
+    auto content = host->document().animationRead(nameBuf);
+    if (content.isError()) {
+        record(handle, content);
+        return nullptr;
+    }
+    return stringToJni(env, content.value());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationWrite(JNIEnv* env,
+                                                            jobject /*thiz*/,
+                                                            jlong handle,
+                                                            jstring name,
+                                                            jstring json)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    const std::string body = jniToString(env, json);
+    return record(handle, host->document().animationWrite(nameBuf, body))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationCreate(JNIEnv* env,
+                                                             jobject /*thiz*/,
+                                                             jlong handle,
+                                                             jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().animationCreate(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationDelete(JNIEnv* env,
+                                                             jobject /*thiz*/,
+                                                             jlong handle,
+                                                             jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().animationDelete(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationAssign(JNIEnv* env,
+                                                             jobject /*thiz*/,
+                                                             jlong handle,
+                                                             jlong packed,
+                                                             jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().animationAssign(
+                      EditorDocument::unpackEntity(
+                          static_cast<std::uint64_t>(packed)),
+                      nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+/** Tempo do frame adicionado; -1 em falha (lastError tem a causa). */
+JNIEXPORT jfloat JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddFrame(JNIEnv* env,
+                                                               jobject /*thiz*/,
+                                                               jlong handle,
+                                                               jstring name,
+                                                               jstring texture)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return -1.f;
+    }
+    char nameBuf[kMaxStringArg];
+    char texBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf)) ||
+        !copyJString(env, texture, texBuf, sizeof(texBuf))) {
+        return -1.f;
+    }
+    auto when = host->document().animationAddFrame(nameBuf, texBuf);
+    if (when.isError()) {
+        record(handle, when);
+        return -1.f;
+    }
+    return when.value();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationSetMeta(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name,
+    jboolean loop, jfloat fps)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().animationSetMeta(
+                      nameBuf, loop == JNI_TRUE, static_cast<float>(fps)))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorPreviewStart(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle,
+                                                         jlong packed,
+                                                         jstring clip)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char clipBuf[kMaxStringArg];
+    if (!copyJString(env, clip, clipBuf, sizeof(clipBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().previewStart(
+                      EditorDocument::unpackEntity(
+                          static_cast<std::uint64_t>(packed)),
+                      clipBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorPreviewStop(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host != nullptr) {
+        host->document().previewStop();
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorPreviewing(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr && host->document().previewing() ? JNI_TRUE
+                                                            : JNI_FALSE;
+}
+
+/// Toca um asset WAV AGORA (preview manual — Edit incluso).
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAudioPreview(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle,
+                                                         jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().audioPreview(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+/// Nomes dos assets de ÁUDIO (linhas \n) — picker do Inspector (kind audio).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorListAudio(JNIEnv* env,
+                                                       jobject /*thiz*/,
+                                                       jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto* browser = host->document().assets();
+    if (browser == nullptr) {
+        return stringToJni(env, "");
+    }
+    auto listed = browser->list("audio");
+    if (listed.isError()) {
+        record(handle, listed);
+        return stringToJni(env, "");
+    }
+    std::string lines;
+    for (const auto& entry : listed.value()) {
+        lines += entry.name;
+        lines += '\n';
+    }
+    if (!lines.empty()) {
+        lines.pop_back();
+    }
+    return stringToJni(env, lines);
+}
+
 }  // extern "C"

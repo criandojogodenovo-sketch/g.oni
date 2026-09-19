@@ -148,6 +148,31 @@ object EditorJni {
     /** Tamanho do viewport do JOGO em Play (zonas de toque em fração da tela). */
     external fun nativeEditorSetGameViewportSize(handle: Long, width: Int, height: Int)
 
+    // --- P2: componentes authoráveis / animação / áudio ------------------------------
+
+    /** TSV: typeName \t dependencyHint — catálogo ADDÁVEL à entidade (§2/§14). */
+    external fun nativeEditorAddableComponents(handle: Long, packed: Long): String?
+    /** TSV: name \t clip \t duration \t frames \t keys \t loop. */
+    external fun nativeEditorAnimationList(handle: Long): String?
+    external fun nativeEditorAnimationRead(handle: Long, name: String): String?
+    external fun nativeEditorAnimationWrite(handle: Long, name: String, json: String): Boolean
+    /** Cria animação nova (flipbook template — força .anim.json). */
+    external fun nativeEditorAnimationCreate(handle: Long, name: String): Boolean
+    external fun nativeEditorAnimationDelete(handle: Long, name: String): Boolean
+    /** Anexa o clip à entidade (cria Animator; SpriteData quando há frames). */
+    external fun nativeEditorAnimationAssign(handle: Long, packed: Long, name: String): Boolean
+    /** Acrescenta frame (textura real do projeto); devolve o tempo do frame ou -1. */
+    external fun nativeEditorAnimationAddFrame(handle: Long, name: String, texture: String): Float
+    external fun nativeEditorAnimationSetMeta(handle: Long, name: String, loop: Boolean, fps: Float): Boolean
+    /** PREVIEW da animação na entidade (Edit) — avança com o render frame. */
+    external fun nativeEditorPreviewStart(handle: Long, packed: Long, clip: String): Boolean
+    external fun nativeEditorPreviewStop(handle: Long)
+    external fun nativeEditorPreviewing(handle: Long): Boolean
+    /** Toca um asset WAV AGORA (preview manual — Edit incluso). */
+    external fun nativeEditorAudioPreview(handle: Long, name: String): Boolean
+    /** Nomes dos assets de áudio (linhas \n) — picker do Inspector (kind audio). */
+    external fun nativeEditorListAudio(handle: Long): String?
+
     // --- erro da última operação (toasts/diálogos) ----------------------------------------
 
     external fun nativeEditorLastError(handle: Long): String?

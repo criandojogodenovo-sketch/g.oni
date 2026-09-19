@@ -11,6 +11,7 @@
 #include "eng/particles/Particles.hpp"
 #include "eng/physics/Physics.hpp"
 #include "eng/scene/Name.hpp"
+#include "eng/tick/Camera.hpp"
 
 namespace eng::editor {
 
@@ -172,6 +173,44 @@ std::vector<EntityQuad> Viewport::buildQuads(
                 quad.colliderHalfX = collider->halfExtents.x * quad.sizeX;
                 quad.colliderHalfY = collider->halfExtents.y * quad.sizeY;
             }
+        }
+
+        // Câmera de jogo (P2 §11): retângulo de VISTA da CameraData —
+        // mesma fórmula do viewport (tela/zoom), centrada na entidade +
+        // offset (a MESMA semântica de resolveActiveCamera no Play).
+        if (const auto* camera =
+                scene.world().get<eng::tick::CameraData>(node)) {
+            quad.hasCamera = true;
+            quad.cameraActive = camera->active;
+            quad.cameraCenterX = quad.worldX + camera->posX;
+            quad.cameraCenterY = quad.worldY + camera->posY;
+            const float zoom =
+                camera->zoom > 0.f ? camera->zoom : 48.f;
+            quad.cameraHalfW =
+                static_cast<float>(screenW_) / zoom * 0.5f;
+            quad.cameraHalfH =
+                static_cast<float>(screenH_) / zoom * 0.5f;
+        }
+
+        // Emissor de partículas (P2 §10): marcador editável — quad +
+        // seta na DIREÇÃO de emissão (direção do emitter girada pela
+        // rotação do nó, escalada pela norma das colunas).
+        if (const auto* emitter =
+                scene.world().get<eng::particles::ParticleEmitter>(node)) {
+            quad.hasEmitter = true;
+            const float len = std::sqrt(emitter->direction.x *
+                                            emitter->direction.x +
+                                        emitter->direction.y *
+                                            emitter->direction.y);
+            if (len > 1e-6f) {
+                const float dx = emitter->direction.x / len;
+                const float dy = emitter->direction.y / len;
+                const float cosR = std::cos(quad.rotation);
+                const float sinR = std::sin(quad.rotation);
+                quad.emitterDirX = dx * cosR - dy * sinR;
+                quad.emitterDirY = dx * sinR + dy * cosR;
+            }
+            quad.emitterSize = std::max(0.35f, quad.sizeX * 0.5f);
         }
         quads.push_back(quad);
         (void)depth; // profundidade não muda o quad — reserva de API futura

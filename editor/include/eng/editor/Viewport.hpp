@@ -85,6 +85,25 @@ struct EntityQuad {
     bool colliderIsSphere{false};
     /// Trigger → contorno âmbar (contato SEM resolução — §7.2 da física).
     bool colliderTrigger{false};
+
+    // --- câmera de jogo (P2 §11 — "visualizar área da câmera") -------------
+    /// O nó tem CameraData: o renderer desenha o RETÂNGULO DE VISTA
+    /// (o que a câmera veria no Play com a tela ATUAL do editor —
+    /// mesma fórmula do viewport: tela/zoom).
+    bool hasCamera{false};
+    bool cameraActive{true};
+    float cameraCenterX{0.f};  ///< centro da vista em MUNDO (entidade+offset)
+    float cameraCenterY{0.f};
+    float cameraHalfW{1.f};    ///< meia-largura da vista em MUNDO
+    float cameraHalfH{1.f};
+
+    // --- emissor de partículas (P2 §10 — representação editável) ----------
+    /// O nó tem ParticleEmitter: marcador no viewport (quad + seta de
+    /// direção) — o autor VÊ onde/em-que-direção o emissor dispara.
+    bool hasEmitter{false};
+    float emitterDirX{0.f};    ///< direção NORMALIZADA em mundo
+    float emitterDirY{1.f};
+    float emitterSize{0.5f};   ///< meia-aresta do marcador (mundo)
 };
 
 /// Quad de PARTÍCULA viva (marcador de gameplay — FASE 10). Auditoria

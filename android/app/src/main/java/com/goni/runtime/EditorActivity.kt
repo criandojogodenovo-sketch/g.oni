@@ -33,7 +33,12 @@ import android.widget.Switch
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.content.Context
 import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 /**
  * Editor NATIVO do G.ONI (FASE 8) — touch-first, sem lógica de engine.
@@ -108,6 +113,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         buildUi()
         ensureProjectOnFirstRun()
         refreshAll()
+        // P2 (§5): o DOCUMENTO é a fonte da verdade — a ferramenta da UI
+        // sincroniza com a nativa (activity recriada não diverge).
+        editorTool = EditorJni.nativeEditorGetTool(handle)
+        btnTool.text = toolLabel(editorTool)
     }
 
     override fun onResume() {
@@ -262,6 +271,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolButton("Scripts") { togglePanel(PANEL_SCRIPTS) },
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
+        bottomBar.addView(
+            toolButton("Animação") { togglePanel(PANEL_ANIM) },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
 
         // ---- host de painel (sheet inferior / drawer lateral) ----
         panelHost = FrameLayout(this)
@@ -379,6 +392,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_INSPECTOR -> "Inspector"
             PANEL_ASSETS -> "Assets"
             PANEL_SCRIPTS -> "Scripts"
+            PANEL_ANIM -> "Animação"
             else -> ""
         }
         // Cabeçalho do sheet: título + fechar (padrão de drawer moderno).
@@ -413,6 +427,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_INSPECTOR -> buildInspectorPanel()
             PANEL_ASSETS -> panelContainer.addView(assetsRoot)
             PANEL_SCRIPTS -> buildScriptsPanel()
+            PANEL_ANIM -> buildAnimPanel()
         }
         panelContainer.visibility = View.VISIBLE
         refreshPanel()
@@ -424,6 +439,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_INSPECTOR -> refreshInspector()
             PANEL_ASSETS -> refreshAssets()
             PANEL_SCRIPTS -> refreshScripts()
+            PANEL_ANIM -> refreshAnim()
         }
     }
 
@@ -489,6 +505,236 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private lateinit var assetsRoot: LinearLayout
     private lateinit var assetSearch: EditText
     private var assetQuery: String = ""
+
+    // --- painel de ANIMAÇÃO (P2 §8) ----------------------------------------------
+
+    private lateinit var animList: ListView
+    private val animNames = mutableListOf<String>()
+
+    private fun buildAnimPanel() {
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bar.addView(
+            toolButton("+ Nova animação") { newAnimDialog() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        bar.addView(
+            toolButton("▶ Preview") { toggleAnimPreview() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        animList = ListView(this).apply {
+            onItemClickListener =
+                AdapterView.OnItemClickListener { _, _, position, _ ->
+                    animNames.getOrNull(position)?.let { animMenuDialog(it) }
+                }
+        }
+        panelContainer.addView(
+            bar,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        panelContainer.addView(
+            animList,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+    }
+
+    private fun refreshAnim() {
+        if (handle == 0L || !::animList.isInitialized) return
+        val tsv = EditorJni.nativeEditorAnimationList(handle) ?: return
+        animNames.clear()
+        val display = mutableListOf<String>()
+        for (line in tsv.lines().filter { it.isNotBlank() }) {
+            val p = line.split('\t')
+            animNames.add(p.getOrNull(0) ?: continue)
+            // name 	 clip 	 duration 	 frames 	 keys 	 loop
+            val clip = p.getOrNull(1) ?: "?"
+            val dur = p.getOrNull(2)?.toFloatOrNull() ?: 0f
+            val frames = p.getOrNull(3)?.toIntOrNull() ?: 0
+            val keys = p.getOrNull(4)?.toIntOrNull() ?: 0
+            val loop = p.getOrNull(5) == "1"
+            display.add(
+                "$clip  ${"%.1f".format(dur)}s  ${frames}f ${keys}k" +
+                    (if (loop) " ∞" else "")
+            )
+        }
+        // Linha única: "clip 1.0s 4f 2k ∞" (nome do arquivo no título).
+        animList.adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1, display
+        )
+    }
+
+    private fun newAnimDialog() {
+        inputDialog("Nome da animação", "walk") { name ->
+            if (EditorJni.nativeEditorAnimationCreate(handle, name)) {
+                toast("Animação criada — adicione frames com texturas reais")
+                refreshAnim()
+            } else {
+                toast(lastErrorText())
+            }
+        }
+    }
+
+    /** Menu de contexto da animação: adicionar frame, fps/loop, anexar,
+     * preview, editar JSON, apagar. */
+    private fun animMenuDialog(name: String) {
+        val items = arrayOf(
+            "Adicionar frame (textura)…", "FPS / Loop…", "Anexar à seleção…",
+            "Preview na seleção", "Editar JSON…", "Apagar"
+        )
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> pickFrameTexture(name)
+                    1 -> animMetaDialog(name)
+                    2 -> {
+                        if (selection == 0L) {
+                            toast("Selecione uma entidade primeiro")
+                        } else if (EditorJni.nativeEditorAnimationAssign(
+                                handle, selection, name
+                            )
+                        ) {
+                            toast("Animação anexada — Play executa o clip real")
+                            refreshInspectorIfOpen()
+                        } else {
+                            toast(lastErrorText())
+                        }
+                    }
+                    3 -> {
+                        if (selection == 0L) {
+                            toast("Selecione uma entidade primeiro")
+                        } else if (EditorJni.nativeEditorPreviewStart(
+                                handle, selection, name
+                            )
+                        ) {
+                            toast("Preview RODANDO — o transform original volta no Stop")
+                        } else {
+                            toast(lastErrorText())
+                        }
+                    }
+                    4 -> animJsonEditorDialog(name)
+                    5 -> if (EditorJni.nativeEditorAnimationDelete(handle, name)) {
+                        refreshAnim()
+                    } else {
+                        toast(lastErrorText())
+                    }
+                }
+            }
+            .show()
+    }
+
+    /** Frame = textura REAL do projeto (picker com thumbnails — §8). */
+    private fun pickFrameTexture(animName: String) {
+        val tsv = EditorJni.nativeEditorListTextures(handle) ?: return
+        val names = tsv.lines().filter { it.isNotBlank() }
+        if (names.isEmpty()) {
+            toast("Nenhuma textura importada (Assets → textures → Importar)")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Frame: textura")
+            .setItems(names.toTypedArray()) { _, which ->
+                val when_ = EditorJni.nativeEditorAnimationAddFrame(
+                    handle, animName, names[which]
+                )
+                if (when_ >= 0f) {
+                    toast("Frame em t=${"%.2f".format(when_)}s")
+                    refreshAnim()
+                } else {
+                    toast(lastErrorText())
+                }
+            }
+            .show()
+    }
+
+    private fun animMetaDialog(name: String) {
+        val input = EditText(this).apply {
+            hint = "FPS (1..120)"
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+        }
+        val loopCheck = android.widget.CheckBox(this).apply {
+            text = "Loop"
+            setPadding(dp(16), dp(4), dp(16), dp(10))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(input); addView(loopCheck)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("FPS / Loop")
+            .setView(box)
+            .setPositiveButton("OK") { _, _ ->
+                val fps = input.text.toString().toFloatOrNull() ?: 8f
+                if (!EditorJni.nativeEditorAnimationSetMeta(
+                        handle, name, loopCheck.isChecked, fps
+                    )
+                ) {
+                    toast(lastErrorText())
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** Editor JSON cru (round-trip validado no C++ — lixo é rejeitado). */
+    private fun animJsonEditorDialog(name: String) {
+        val content = EditorJni.nativeEditorAnimationRead(handle, name) ?: run {
+            toast(lastErrorText()); return
+        }
+        val edit = EditText(this).apply {
+            setText(content)
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            minLines = 12
+            gravity = Gravity.TOP
+        }
+        val scroll = ScrollView(this).apply { addView(edit) }
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setView(scroll)
+            .setPositiveButton("Salvar") { _, _ ->
+                if (!EditorJni.nativeEditorAnimationWrite(handle, name, edit.text.toString())) {
+                    toast(lastErrorText())
+                }
+            }
+            .setNeutralButton("Cancelar", null)
+            .show()
+    }
+
+    /** Preview liga/desliga na SELEÇÃO (o clip precisa estar anexado ou é
+     * escolhido pelo nome do painel). */
+    private fun toggleAnimPreview() {
+        if (EditorJni.nativeEditorPreviewing(handle)) {
+            EditorJni.nativeEditorPreviewStop(handle)
+            toast("Preview parado — transform restaurado")
+            return
+        }
+        if (selection == 0L) {
+            toast("Selecione uma entidade e anexe uma animação primeiro")
+            return
+        }
+        // Pega o clip do Animator da seleção (Inspector path canônico).
+        val fields = EditorJni.nativeEditorComponentFields(
+            handle, selection, "eng::animation::Animator"
+        ) ?: run { toast("Entidade sem Animator — anexe no painel Animação"); return }
+        val clip = fields.lines().firstOrNull { it.startsWith("clip\t") }
+            ?.split('\t')?.getOrNull(2)
+        if (clip.isNullOrBlank()) {
+            toast("Animator sem clip")
+            return
+        }
+        if (EditorJni.nativeEditorPreviewStart(handle, selection, clip)) {
+            toast("Preview RODANDO (clip '$clip')")
+        } else {
+            toast(lastErrorText())
+        }
+    }
 
     // --- painel de scripts NI-Script (evolução P0-7, ADR-053) -------------------
 
@@ -1163,6 +1409,59 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 parent.addView(row)
                 return
             }
+            "audio" -> {
+                // P2 (§12): AudioSource.soundAsset — picker de WAVs do projeto
+                // + preview que toca AGORA (mesma via do Play: mixer real).
+                parent.addView(labelView(prettyFieldLabel(path)))
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val current = TextView(this).apply {
+                    text = value.ifEmpty { "(nenhum)" }
+                    setTextColor(0xFF8AB4F8.toInt())
+                    setPadding(dp(8), dp(12), dp(8), dp(12))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                }
+                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
+                row.addView(
+                    Button(this).apply {
+                        text = "Ouvir"
+                        minHeight = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        height = dp(36)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                        isAllCaps = false
+                        setTextColor(Ui.TEXT)
+                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
+                        setOnClickListener {
+                            if (value.isNotBlank()) {
+                                if (!EditorJni.nativeEditorAudioPreview(handle, value)) {
+                                    toast(lastErrorText())
+                                }
+                            }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(36), 0.6f)
+                )
+                row.addView(
+                    Button(this).apply {
+                        text = "Escolher…"
+                        minHeight = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        height = dp(36)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                        isAllCaps = false
+                        setTextColor(Ui.TEXT)
+                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
+                        setOnClickListener {
+                            pickAudioFor(component, path) { chosen ->
+                                current.text = chosen.ifEmpty { "(nenhum)" }
+                            }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(36), 0.8f)
+                )
+                parent.addView(row)
+                return
+            }
         }
 
         // number/int/text → EditText (numérico quando aplicável).
@@ -1364,6 +1663,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             .show()
     }
 
+    /** Picker de áudio (P2 §12): WAVs de assets/audio — mesma forma do
+     * picker de texturas (sem thumbnail: áudio não é imagem). */
+    private fun pickAudioFor(
+        component: String, path: String, onApplied: (String) -> Unit
+    ) {
+        val tsv = EditorJni.nativeEditorListAudio(handle) ?: return
+        val names = tsv.lines().filter { it.isNotBlank() }
+        if (names.isEmpty()) {
+            toast("Nenhum áudio importado (Assets → audio → Importar)")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Áudio")
+            .setItems(names.toTypedArray()) { _, which ->
+                setFieldQuiet(component, path, names[which])
+                onApplied(names[which])
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
     // --- thumbnails (P0-6): decode com inSampleSize + cache em memória ---------
 
     private val thumbCache = HashMap<String, android.graphics.Bitmap>()
@@ -1452,7 +1772,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private fun showProjectMenu() {
         val items = arrayOf(
             "Novo projeto…", "Abrir projeto…", "Salvar projeto",
-            "Configurações do projeto…"
+            "Configurações do projeto…",
+            "Pasta de exportação (SAF)…", "Exportar projeto (zip)…",
+            "Importar projeto (zip)…"
         )
         AlertDialog.Builder(this)
             .setTitle("Projeto")
@@ -1478,9 +1800,172 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                             refreshAll()
                         }
                     }
+                    // P2 §17 — SAF: pasta de exportação com permissão
+                    // PERSISTENTE (takePersistableUriPermission) + zip real
+                    // de ida e volta. O projeto VIVE no workspace privado
+                    // (sem permissões, zero risco); o SAF é o canal de
+                    // intercâmbio com o armazenamento do usuário.
+                    4 -> pickSafFolder()
+                    5 -> exportProjectZip()
+                    6 -> importProjectZip()
                 }
             }
             .show()
+    }
+
+    // --- SAF (P2 §17): armazenamento do usuário COM permissão persistente ------
+    //
+    // Modelo documentado: os PROJETOS vivem no workspace privado
+    // (filesDir/projects — sem permissões, nunca "assume acesso
+    // irrestrito", paths sempre relativos — RootedFileSystem na
+    // fronteira). O SAF dá ao AUTOR o canal de intercâmbio:
+    //   - Pasta de exportação: ACTION_OPEN_DOCUMENT_TREE +
+    //     takePersistableUriPermission (sobrevive a reboots — o Android
+    //     MANTÉM o grant; guardamos o URI em prefs, NÃO um path absoluto
+    //     de arquivo);
+    //   - Exportar: zip REAL do projeto escrito via ContentResolver;
+    //   - Importar: zip lido via ContentResolver para o workspace.
+
+    private val safPrefs by lazy {
+        getSharedPreferences("goni_saf", Context.MODE_PRIVATE)
+    }
+
+    // Requests de SAF (dispatch no onActivityResult ÚNICO, abaixo).
+    private val reqSafFolder = 4101
+    private val reqSafExport = 4102
+    private val reqSafImport = 4103
+
+    /** Dispatch SAF (chamado pelo onActivityResult ÚNICO da Activity). */
+    private fun handleSafResult(requestCode: Int, resultCode: Int, uri: Uri?) {
+        if (resultCode != RESULT_OK || uri == null) return
+        when (requestCode) {
+            reqSafFolder -> {
+                // Permissão PERSISTENTE: o grant sobrevive a restarts —
+                // o mecanismo do Android (não um path absoluto salvocrado).
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                    safPrefs.edit().putString("export_tree", uri.toString()).apply()
+                    toast("Pasta de exportação autorizada (permissão persistente)")
+                } catch (e: SecurityException) {
+                    toast("Sem permissão persistível: ${e.message}")
+                }
+            }
+            reqSafExport -> writeProjectZipTo(uri)
+            reqSafImport -> importProjectZipFrom(uri)
+        }
+    }
+
+    private fun pickSafFolder() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), reqSafFolder)
+    }
+
+    private fun exportProjectZip() {
+        val project = EditorJni.nativeEditorProjectName(handle)
+        if (project.isNullOrEmpty()) {
+            toast("Nenhum projeto aberto")
+            return
+        }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(Intent.EXTRA_TITLE, "$project.goni.zip")
+        }
+        startActivityForResult(intent, reqSafExport)
+    }
+
+    /** Zip REAL do projeto (assets + scenes + project.goni.json). */
+    private fun writeProjectZipTo(uri: Uri) {
+        val project = EditorJni.nativeEditorProjectName(handle) ?: return
+        val root = File(File(filesDir, "projects"), project)
+        if (!root.isDirectory) {
+            toast("Pasta do projeto não encontrada")
+            return
+        }
+        try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                ZipOutputStream(out).use { zip ->
+                    root.walkTopDown().filter { it.isFile }.forEach { file ->
+                        val entry =
+                            ZipEntry(file.relativeTo(root).invariantSeparatorsPath)
+                        zip.putNextEntry(entry)
+                        file.inputStream().use { it.copyTo(zip) }
+                        zip.closeEntry()
+                    }
+                }
+            }
+            toast("Projeto '$project' exportado")
+        } catch (e: Exception) {
+            toast("Export falhou: ${e.message}")
+        }
+    }
+
+    private fun importProjectZip() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/octet-stream"))
+        }
+        startActivityForResult(intent, reqSafImport)
+    }
+
+    /** Importa o zip PARA O WORKSPACE (privado) e ABRE o projeto. */
+    private fun importProjectZipFrom(uri: Uri) {
+        try {
+            // Nome do projeto: primeiro componente do zip (ou do nome do arquivo).
+            var projectName: String? = null
+            val staging = File(cacheDir, "saf_import").apply {
+                deleteRecursively(); mkdirs()
+            }
+            contentResolver.openInputStream(uri)?.use { input ->
+                ZipInputStream(input).use { zip ->
+                    var entry: ZipEntry? = zip.nextEntry
+                    while (entry != null) {
+                        // Anti-traversal: caminhos com .. são rejeitados.
+                        if (entry.name.contains("..")) {
+                            toast("Entrada inválida no zip: ${entry.name}")
+                            return
+                        }
+                        val out = File(staging, entry.name)
+                        if (entry.isDirectory) {
+                            out.mkdirs()
+                        } else {
+                            out.parentFile?.mkdirs()
+                            FileOutputStream(out).use { zip.copyTo(it) }
+                        }
+                        val first = entry.name.substringBefore('/')
+                        if (first.isNotEmpty()) projectName = first
+                        zip.closeEntry()
+                        entry = zip.nextEntry
+                    }
+                }
+            }
+            val name = projectName ?: run {
+                toast("Zip sem estrutura de projeto")
+                return
+            }
+            val target = File(File(filesDir, "projects"), name)
+            if (target.exists()) {
+                toast("Projeto '$name' já existe — renomeie o zip ou apague o atual")
+                return
+            }
+            if (!staging.renameTo(target)) {
+                toast("Falha ao mover o projeto para o workspace")
+                return
+            }
+            if (EditorJni.nativeEditorOpenProject(handle, name)) {
+                EditorJni.nativeEditorNewScene(handle)
+                refreshAll()
+                toast("Projeto '$name' importado e aberto")
+            } else {
+                toast(lastErrorText())
+            }
+        } catch (e: Exception) {
+            toast("Import falhou: ${e.message}")
+        }
     }
 
     private fun openProjectDialog() {
@@ -1642,11 +2127,24 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     /** Adicionar componente COM BUSCA (P0-6): filtra o catálogo ao digitar. */
     private fun addComponentDialog() {
-        val tsv = EditorJni.nativeEditorComponentCatalog(handle) ?: return
-        // TSV: name\tremovable — o NOME é a primeira coluna.
+        // P2 (§2/§14): catálogo ADDÁVEL à entidade (sem os presentes/built-ins)
+        // + hint de dependência por tipo — o autor sabe o que falta ANTES de
+        // adicionar. Nada de componentes falsos: vem do registro REAL do
+        // serializer (Reflection → Inspector).
+        val tsv = if (selection != 0L) {
+            EditorJni.nativeEditorAddableComponents(handle, selection)
+        } else {
+            EditorJni.nativeEditorComponentCatalog(handle)
+        } ?: return
+        // TSV: name	dependencyHint.
         val rawNames = tsv.lines().filter { it.isNotBlank() }
             .map { it.split('\t').getOrNull(0) ?: "?" }
-        val display = rawNames.map { prettyComponent(it) }
+        val hints = tsv.lines().filter { it.isNotBlank() }
+            .map { it.split('\t').getOrElse(1) { "" } }
+        val display = rawNames.mapIndexed { i, raw ->
+            val hint = hints.getOrNull(i)?.takeIf { it.isNotBlank() }
+            if (hint != null) "${prettyComponent(raw)} — $hint" else prettyComponent(raw)
+        }
 
         val search = EditText(this).apply {
             hint = "Buscar componente…"
@@ -1712,7 +2210,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     private fun assetMenuDialog(asset: AssetEntry) {
-        val items = arrayOf("Renomear…", "Mover para…", "Apagar")
+        val category = assetCategory.selectedItem?.toString() ?: ""
+        val items = if (category == "audio") {
+            arrayOf("▶ Ouvir (preview)", "Renomear…", "Mover para…", "Apagar")
+        } else {
+            arrayOf("Renomear…", "Mover para…", "Apagar")
+        }
         AlertDialog.Builder(this)
             .setTitle(asset.name)
             .setItems(items) { _, which ->
@@ -1760,6 +2263,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        // P2 §17 — SAF (pasta de exportação / zip ida-e-volta).
+        handleSafResult(requestCode, resultCode, data?.data)
         if (requestCode != REQUEST_IMPORT || resultCode != RESULT_OK) return
         val uri: Uri = data?.data ?: return
 
@@ -2240,6 +2745,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         private const val PANEL_INSPECTOR = 2
         private const val PANEL_ASSETS = 3
         private const val PANEL_SCRIPTS = 4
+        private const val PANEL_ANIM = 5
         private const val REQUEST_IMPORT = 4101
     }
 }

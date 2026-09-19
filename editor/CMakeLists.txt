@@ -24,6 +24,7 @@ add_library(eng_editor STATIC
     src/ComponentRegistration.cpp
     src/NiRuntime.cpp
     src/TextureCache.cpp
+    src/AnimationAssets.cpp
 )
 add_library(eng::editor ALIAS eng_editor)
 
@@ -49,6 +50,7 @@ target_link_libraries(eng_editor PUBLIC
     eng::physics
     eng::animation
     eng::particles
+    eng::audio
     eng::log
     eng::core
     eng::rhi
