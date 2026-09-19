@@ -24,6 +24,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          # Cache de dependências Gradle (Maven Central já deu 403
+          # transitório em runner — cache elimina a rede do caminho).
+          cache: gradle
 
       - name: Instalar NDK + CMake + platform (SDK oficial — §XXXI)
         env:
