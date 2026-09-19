@@ -370,7 +370,7 @@ Java_com_goni_runtime_EditorJni_nativeEditorListProjects(JNIEnv* env,
 
 /// Estado completo do host no logcat [GONI] (diagnóstico P3 §0).
 JNIEXPORT void JNICALL
-Java_com_goni_runtime_EditorJni_nativeEditorDumpState(JNIEnv* /*env*/,
+Java_com_goni_runtime_EditorJni_nativeEditorDumpState(JNIEnv* env,
                                                      jobject /*thiz*/,
                                                      jlong handle,
                                                      jstring origin)
