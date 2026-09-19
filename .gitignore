@@ -65,3 +65,4 @@ scripts/nidbg*
 
 # Workspaces do teste host-sprite (evolução P0-3 — criados no cwd)
 sprite_host_test_*/
+p31_*.log
