@@ -92,6 +92,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private lateinit var scriptsList: ListView
     private val scriptNames = mutableListOf<String>()
 
+    private lateinit var importButton: Button
     private var importTmpDir: File? = null
 
     // --- ciclo de vida ---------------------------------------------------------
@@ -923,8 +924,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             assetCategory,
             LinearLayout.LayoutParams(0, dp(36), 1.4f)
         )
+        importButton = toolButton("Importar") { onImportButton() }
         bar.addView(
-            toolButton("Importar") { pickImportFile() },
+            importButton,
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
         // Busca de assets (P0-6): filtra por nome dentro da categoria.
@@ -1164,6 +1166,22 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
+    /** Importar vs "Novo material…" (P3 §3): materiais são AUTORADOS,
+     *  não importados — o botão da categoria reflete isso. */
+    private fun onImportButton() {
+        val category = assetCategory.selectedItem?.toString() ?: ""
+        if (category == "materials") {
+            inputDialog("Nome do material", "NovoMaterial") { name ->
+                if (EditorJni.nativeEditorMaterialCreate(handle, name)) {
+                    toast("Material '$name' criado")
+                    refreshAssets()
+                } else toast(lastErrorText())
+            }
+            return
+        }
+        pickImportFile()
+    }
+
     private fun refreshAssets() {
         if (handle == 0L) return
         val cats = EditorJni.nativeEditorAssetCategories(handle) ?: return
@@ -1175,6 +1193,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             assetCategory.setSelection(0)
         }
         val category = catList.getOrNull(assetCategory.selectedItemPosition) ?: return
+        if (::importButton.isInitialized) {
+            importButton.text = if (category == "materials") "Novo…" else "Importar"
+        }
         val tsv = EditorJni.nativeEditorAssetList(handle, category)
         // Busca (P0-6): filtro por nome, insensível a caixa.
         val filtered = (tsv ?: "").lines().filter {
@@ -1462,6 +1483,39 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 parent.addView(row)
                 return
             }
+            "material" -> {
+                // P3 §3: SpriteData.materialAsset — picker de materiais do
+                // projeto (vazio = default lit neutro).
+                parent.addView(labelView(prettyFieldLabel(path)))
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val current = TextView(this).apply {
+                    text = value.ifEmpty { "(default lit)" }
+                    setTextColor(0xFF8AB4F8.toInt())
+                    setPadding(dp(8), dp(12), dp(8), dp(12))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                }
+                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
+                row.addView(
+                    Button(this).apply {
+                        text = "Escolher…"
+                        minHeight = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        height = dp(36)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                        isAllCaps = false
+                        setTextColor(Ui.TEXT)
+                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
+                        setOnClickListener {
+                            pickMaterialFor(component, path) { chosen ->
+                                current.text = chosen.ifEmpty { "(default lit)" }
+                            }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(36), 0.8f)
+                )
+                parent.addView(row)
+                return
+            }
         }
 
         // number/int/text → EditText (numérico quando aplicável).
@@ -1592,6 +1646,109 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 val hex = currentHex()
                 setFieldQuiet(component, path, hex)
                 onApplied(hex, currentArgb())
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** kind="material" — picker dos assets/materials (P3 §3). */
+    private fun pickMaterialFor(
+        component: String, path: String, onApplied: (String) -> Unit
+    ) {
+        val tsv = EditorJni.nativeEditorListMaterials(handle)
+        val names = (tsv ?: "").lines().filter { it.isNotBlank() }
+        val options = mutableListOf<String>()
+        options.add("")  // (default lit neutro)
+        options.addAll(names)
+        val labels = options.map { it.ifEmpty { "(default lit)" } }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Material do sprite")
+            .setItems(labels) { _, which ->
+                setFieldQuiet(component, path, options[which])
+                onApplied(options[which])
+            }
+            .setNeutralButton("Novo…") { _, _ ->
+                inputDialog("Nome do material", "NovoMaterial") { name ->
+                    if (EditorJni.nativeEditorMaterialCreate(handle, name)) {
+                        toast("Material '$name' criado (edite em Assets)")
+                        setFieldQuiet(component, path, "${name}.mat.json")
+                        onApplied("${name}.mat.json")
+                    } else toast(lastErrorText())
+                }
+            }
+            .show()
+    }
+
+    /** Edição de material (Assets → materials, long-press): shader + cor.
+     *  Escreve via materialWrite (valida no codec — lixo não entra). */
+    private fun editMaterialDialog(name: String) {
+        val json = EditorJni.nativeEditorMaterialRead(handle, name)
+        if (json == null) {
+            toast(lastErrorText())
+            return
+        }
+        // Estado atual (parse leve do JSON estável do codec).
+        var shader = "lit"
+        var tintR = 1f; var tintG = 1f; var tintB = 1f; var tintA = 1f
+        Regex("\"shader\"\\s*:\\s*\"([^\"]+)\"").find(json)?.let {
+            shader = it.groupValues[1]
+        }
+        Regex("\"tint\"\\s*:\\s*\\[([\\d.eE+-]+),\\s*([\\d.eE+-]+),\\s*([\\d.eE+-]+),\\s*([\\d.eE+-]+)\\]").find(json)?.let {
+            tintR = it.groupValues[1].toFloatOrNull() ?: 1f
+            tintG = it.groupValues[2].toFloatOrNull() ?: 1f
+            tintB = it.groupValues[3].toFloatOrNull() ?: 1f
+            tintA = it.groupValues[4].toFloatOrNull() ?: 1f
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(8))
+        }
+        val shaderLabel = TextView(this).apply {
+            text = "Shader: ${if (shader == "unlit") "unlit" else "lit"}"
+            setTextColor(Ui.TEXT)
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        val alphaEdit = EditText(this).apply {
+            setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(String.format("%.2f", tintA))
+            hint = "Alfa do tint (0-1)"
+        }
+        layout.addView(shaderLabel)
+        layout.addView(alphaEdit)
+        AlertDialog.Builder(this)
+            .setTitle("Material $name")
+            .setView(layout)
+            .setPositiveButton("Salvar") { _, _ ->
+                val newAlpha = alphaEdit.text.toString().toFloatOrNull()
+                if (newAlpha != null && newAlpha >= 0f && newAlpha <= 1f) {
+                    tintA = newAlpha
+                }
+                // Escreve pelo CAMINHO NATIVO (a cor chega via swatch = JSON):
+                val newJson = "{" +
+                    "\"name\": \"${name.removeSuffix(".mat.json")}\", " +
+                    "\"shader\": \"$shader\", " +
+                    "\"tint\": [${fmtFloat(tintR)}, ${fmtFloat(tintG)}, " +
+                    "${fmtFloat(tintB)}, ${fmtFloat(tintA)}]}"
+                if (EditorJni.nativeEditorMaterialWrite(handle, name, newJson)) {
+                    toast("Material salvo")
+                    refreshAssets()
+                } else toast(lastErrorText())
+            }
+            .setNeutralButton("Shader") { _, _ ->
+                // Alterna lit/unlit e REABRE o diálogo (fluxo simples).
+                val toggled = if (shader == "lit") "unlit" else "lit"
+                val newJson = "{" +
+                    "\"name\": \"${name.removeSuffix(".mat.json")}\", " +
+                    "\"shader\": \"$toggled\", " +
+                    "\"tint\": [${fmtFloat(tintR)}, ${fmtFloat(tintG)}, " +
+                    "${fmtFloat(tintB)}, ${fmtFloat(tintA)}]}"
+                if (EditorJni.nativeEditorMaterialWrite(handle, name, newJson)) {
+                    toast("Shader: $toggled")
+                    refreshAssets()
+                    editMaterialDialog(name)
+                } else toast(lastErrorText())
             }
             .setNegativeButton("Cancelar", null)
             .show()
@@ -2230,12 +2387,32 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         val category = assetCategory.selectedItem?.toString() ?: ""
         val items = if (category == "audio") {
             arrayOf("▶ Ouvir (preview)", "Renomear…", "Mover para…", "Apagar")
+        } else if (category == "materials") {
+            arrayOf("✎ Editar material…", "Renomear…", "Mover para…", "Apagar")
         } else {
             arrayOf("Renomear…", "Mover para…", "Apagar")
         }
         AlertDialog.Builder(this)
             .setTitle(asset.name)
             .setItems(items) { _, which ->
+                if (category == "materials") {
+                    when (which) {
+                        0 -> editMaterialDialog(asset.name)
+                        1 -> inputDialog("Novo nome", asset.name) { name ->
+                            if (!EditorJni.nativeEditorAssetRename(handle, category, asset.name, name)) {
+                                toast(lastErrorText())
+                            }
+                            refreshAssets()
+                        }
+                        2 -> moveAssetDialog(asset)
+                        3 -> if (EditorJni.nativeEditorMaterialDelete(handle, asset.name)) {
+                            refreshAssets()
+                        } else {
+                            toast(lastErrorText())
+                        }
+                    }
+                    return
+                }
                 when (which) {
                     0 -> inputDialog("Novo nome", asset.name) { name ->
                         if (!EditorJni.nativeEditorAssetRename(handle, assetCategory.selectedItem.toString(), asset.name, name)) {

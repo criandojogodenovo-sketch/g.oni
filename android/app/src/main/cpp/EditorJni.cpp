@@ -1848,4 +1848,148 @@ Java_com_goni_runtime_EditorJni_nativeEditorListAudio(JNIEnv* env,
     return stringToJni(env, lines);
 }
 
+// --- P3 §3: materiais (assets/materials/<nome>.mat.json) ----------------------
+
+/// TSV: name \t shader \t tintR \t tintG \t tintB \t tintA.
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorMaterialList(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto listed = host->document().materialList();
+    if (!record(handle, listed)) {
+        return nullptr;
+    }
+    std::string tsv;
+    for (const auto& summary : listed.value()) {
+        tsv += summary.name;
+        tsv += '\t';
+        tsv += summary.shader;
+        tsv += '\t';
+        tsv += std::to_string(summary.tintR);
+        tsv += '\t';
+        tsv += std::to_string(summary.tintG);
+        tsv += '\t';
+        tsv += std::to_string(summary.tintB);
+        tsv += '\t';
+        tsv += std::to_string(summary.tintA);
+        tsv += '\n';
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return stringToJni(env, tsv);
+}
+
+/// Conteúdo cru do material (JSON).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorMaterialRead(JNIEnv* env,
+                                                         jobject /*thiz*/,
+                                                         jlong handle,
+                                                         jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return nullptr;
+    }
+    auto content = host->document().materialRead(nameBuf);
+    if (!record(handle, content)) {
+        return nullptr;
+    }
+    return stringToJni(env, content.value());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorMaterialWrite(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle,
+                                                          jstring name,
+                                                          jstring json)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    // Conteúdo JSON pode ter KBs — via jniToString (sem buffer fixo).
+    const std::string jsonText = jniToString(env, json);
+    return record(handle, host->document().materialWrite(nameBuf, jsonText))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorMaterialCreate(JNIEnv* env,
+                                                           jobject /*thiz*/,
+                                                           jlong handle,
+                                                           jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().materialCreate(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorMaterialDelete(JNIEnv* env,
+                                                           jobject /*thiz*/,
+                                                           jlong handle,
+                                                           jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().materialDelete(nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+/// Nomes dos materiais (linhas \n) — picker do Inspector (kind material).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorListMaterials(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto names = host->document().materialNames();
+    if (!record(handle, names)) {
+        return nullptr;
+    }
+    std::string lines;
+    for (const auto& name : names.value()) {
+        lines += name;
+        lines += '\n';
+    }
+    if (!lines.empty()) {
+        lines.pop_back();
+    }
+    return stringToJni(env, lines);
+}
+
 }  // extern "C"

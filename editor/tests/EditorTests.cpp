@@ -1480,6 +1480,8 @@ TEST_CASE("editor: play/stop alterna conteúdo do viewport no host", "[editor]")
     if (editorGraphicsUnavailable()) {
         SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
     }
+    std::filesystem::remove_all(
+        std::filesystem::path{".editor-test-ws-auto"});  // watchdog: determinismo
     auto host = eng::editor::EditorHost::create("auto", ".editor-test-ws-auto");
     REQUIRE(host.ok());
     std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
@@ -4845,6 +4847,19 @@ TEST_CASE("p3-watchdog: Auto pula backend morto e promove o saudável",
     if (editorGraphicsUnavailable()) {
         SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
     }
+    // O watchdog EXIGE dois backends (o demovido e o alternativo).
+    // Probe device-only: sem o par, o fluxo de demotion não é verificável.
+    {
+        eng::rhi::RendererConfig probe;
+        probe.enableValidation = false;
+        probe.backend = eng::rhi::BackendType::OpenGLES;
+        const bool glesAvailable = eng::rhi::Renderer::create(probe).ok();
+        probe.backend = eng::rhi::BackendType::Vulkan;
+        const bool vulkanAvailable = eng::rhi::Renderer::create(probe).ok();
+        if (!glesAvailable || !vulkanAvailable) {
+            SKIP("watchdog exige Vulkan E GLES disponíveis (CI cobre ambos)");
+        }
+    }
     const std::string ws = ".editor-test-ws-watchdog";
     std::filesystem::remove_all(std::filesystem::path{ws});
 
@@ -5260,6 +5275,12 @@ TEST_CASE("editor: P3 — sprite com Light2D muda o pixel (A != B, readback)",
     if (editorGraphicsUnavailable()) {
         SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
     }
+    // GLES: o ÚNICO backend com readCenterPixel (P0 — validação visual);
+    // Vulkan readback entra com o render-graph futuro. Workspace LIMPO no
+    // início: o marcador do watchdog (P3 §0) persiste entre runs e
+    // demoveria o backend da run anterior — teste determinístico.
+    std::filesystem::remove_all(
+        std::filesystem::path{".editor-test-ws-p3luz"});
     auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p3luz");
     REQUIRE(host.ok());
     std::unique_ptr<eng::editor::EditorHost> owned{host.value()};

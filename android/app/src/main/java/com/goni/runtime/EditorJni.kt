@@ -188,6 +188,19 @@ object EditorJni {
     /** Nomes dos assets de áudio (linhas \n) — picker do Inspector (kind audio). */
     external fun nativeEditorListAudio(handle: Long): String?
 
+    // --- P3 §3: materiais (assets/materials/<nome>.mat.json) ---------------------
+
+    /** TSV: name \t shader \t tintR \t tintG \t tintB \t tintA. */
+    external fun nativeEditorMaterialList(handle: Long): String?
+    /** Conteúdo cru do material (JSON). */
+    external fun nativeEditorMaterialRead(handle: Long, name: String): String?
+    external fun nativeEditorMaterialWrite(handle: Long, name: String, json: String): Boolean
+    /** Cria material novo (template lit com tint neutro — força .mat.json). */
+    external fun nativeEditorMaterialCreate(handle: Long, name: String): Boolean
+    external fun nativeEditorMaterialDelete(handle: Long, name: String): Boolean
+    /** Nomes dos materiais (linhas \n) — picker do Inspector (kind material). */
+    external fun nativeEditorListMaterials(handle: Long): String?
+
     // --- erro da última operação (toasts/diálogos) ----------------------------------------
 
     external fun nativeEditorLastError(handle: Long): String?
