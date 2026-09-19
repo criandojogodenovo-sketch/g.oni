@@ -741,6 +741,10 @@ void VulkanBackend::destroyAll() noexcept {
             library_.functions().vkDestroyRenderPass(device_, renderPass_, nullptr);
             renderPass_ = VK_NULL_HANDLE;
         }
+        for (auto& [format, pass] : deviceOnlyRenderPasses_) {
+            library_.functions().vkDestroyRenderPass(device_, pass, nullptr);
+        }
+        deviceOnlyRenderPasses_.clear();
         for (auto& slot : frameSlots_) {
             if (slot.fence != VK_NULL_HANDLE) {
                 library_.functions().vkDestroyFence(device_, slot.fence, nullptr);

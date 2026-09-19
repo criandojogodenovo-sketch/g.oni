@@ -127,3 +127,30 @@ honestidade — documentado).
   blend do sprite fixo alpha (material não troca blend ainda); máx. 8
   luzes/camada; edição do material via Assets (tint/alfa/shader) —
   edição inline no Inspector fica como evolução.
+
+## Adendas pós-integração CI (correções de bugs reais)
+
+**D7 — Pipeline device-only no Vulkan (render pass de compatibilidade).**
+O teste P3 de `Frame::setUniformData` com validation ATIVA expôs uso
+INVÁLIDO da API: `vkCreateGraphicsPipelines` com `renderPass = NULL` exige
+a feature `dynamicRendering` (não habilitada — ADR-037), e a validation
+layer REJEITAVA a chamada (`VK_ERROR_VALIDATION_FAILED_EXT`). Sem layers
+(llvmpipe sem validação) a chamada "funcionava" por tolerância do driver —
+bug latente desde a FASE 5. Decisão: pipelines criados SEM surface usam
+um **render pass de compatibilidade por formato** (cache `formato → pass`
+no backend; default `B8G8R8A8_UNORM` quando o formato é herdado/Undefined
+— o formato de swapchain onipresente, Android incluído). Com surface, o
+render pass clássico compartilhado segue como antes (ADR-037). Guard
+honesto no `frameSetPipeline`: pipeline cujo formato difere da surface
+real devolve erro PRECISO no primeiro comando do frame (release mobile
+não tem validation layers — o motor detecta antes do Vulkan/UB).
+
+**D8 — Ordem push/run do batching de sprites (bug do refactor P3).**
+O `runOpen` capturava `litSpriteVertices_.size()` DEPOIS do push do quad
+do sprite — o `firstVertex` do run ficava `base + 6` e o draw renderizava
+a REGIÃO ERRADA do VBO (o sprite aparecia só por artefatos de estado
+anterior; a luz "não funcionava" porque o bloco PerFrame alimentava
+fragmentos que não eram os do sprite). Correção: o run abre ANTES do
+push, capturando a base correta. Achado pelo readback A!=B do CI
+(RenderTests ganhou um teste pixel-a-pixel do pipeline LIT — ver
+`render: pipeline LIT com textura muda o pixel`).

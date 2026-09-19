@@ -193,6 +193,13 @@ private:
     std::vector<VkFramebuffer> framebuffers_{};
     bool swapchainSuboptimal_{false};
 
+    // Render passes de COMPATIBILIDADE device-only (um por formato pedido —
+    // pipeline sem surface é legítimo; ver createGraphicsPipeline). Estes
+    // NÃO participam da renderização (sem surface não há frames) — existem
+    // para o vkCreateGraphicsPipelines ser uso VÁLIDO da API (renderPass
+    // NULL exige dynamicRendering, que o backend não habilita — ADR-037).
+    std::map<VkFormat, VkRenderPass> deviceOnlyRenderPasses_{};
+
     // --- recursos -----------------------------------------------------------------
     HandleTable<BufferEntry> buffers_{};
     HandleTable<ShaderEntry> shaders_{};

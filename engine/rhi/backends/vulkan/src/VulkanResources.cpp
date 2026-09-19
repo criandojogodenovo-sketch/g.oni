@@ -452,10 +452,62 @@ Result<GraphicsPipelineHandle> VulkanBackend::createGraphicsPipeline(
 
     const auto& fn = library_.functions();
     PipelineEntry entry{};
-    entry.colorFormat =
-        desc.renderTarget.colorFormat == eng::rhi::Format::Undefined
-            ? fromVkFormat(swapchainFormat_)
-            : desc.renderTarget.colorFormat;
+
+    // Formato RESOLVIDO do target: explícito > surface > default
+    // device-only. O default é B8G8R8A8 (o formato de swapchain
+    // onipresente — Android incluído); o pipeline registra o formato
+    // RESOLVIDO para o guard honesto do frameSetPipeline.
+    const VkFormat resolvedFormat =
+        desc.renderTarget.colorFormat != eng::rhi::Format::Undefined
+            ? targetFormat
+            : (hasSurface_ ? swapchainFormat_ : VK_FORMAT_B8G8R8A8_UNORM);
+    entry.colorFormat = fromVkFormat(resolvedFormat);
+
+    // Render pass do pipeline: com surface → o clássico compartilhado
+    // (ADR-037); DEVICE-ONLY → pass de COMPATIBILIDADE por formato (cache
+    // por backend). Pipelines sem surface são legítimos (CI/testes criam
+    // a biblioteca inteira device-only); renderPass NULL + dynamicRendering
+    // desabilitada é uso INVÁLIDO da API — a validation layer rejeitava o
+    // vkCreateGraphicsPipelines (bug achado pelo teste P3 no CI).
+    VkRenderPass pipelineRenderPass = renderPass_;
+    if (pipelineRenderPass == VK_NULL_HANDLE) {
+        auto cachedPass = deviceOnlyRenderPasses_.find(resolvedFormat);
+        if (cachedPass != deviceOnlyRenderPasses_.end()) {
+            pipelineRenderPass = cachedPass->second;
+        } else {
+            VkAttachmentDescription colorAttachment{};
+            colorAttachment.format = resolvedFormat;
+            colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            VkAttachmentReference colorReference{
+                0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            VkSubpassDescription subpass{};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &colorReference;
+            VkRenderPassCreateInfo passInfo{};
+            passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+            passInfo.attachmentCount = 1;
+            passInfo.pAttachments = &colorAttachment;
+            passInfo.subpassCount = 1;
+            passInfo.pSubpasses = &subpass;
+            VkRenderPass created{VK_NULL_HANDLE};
+            const VkResult passResult =
+                fn.vkCreateRenderPass(device_, &passInfo, nullptr, &created);
+            if (passResult != VK_SUCCESS) {
+                return eng::core::makeUnexpected(vkErr(
+                    StatusCode::Unknown,
+                    "rhi.vulkan.pipeline: vkCreateRenderPass (device-only)", passResult));
+            }
+            pipelineRenderPass = created;
+            deviceOnlyRenderPasses_.emplace(resolvedFormat, created);
+        }
+    }
 
     // Layout com set 0 (textura) + set 1 (UBO dinâmico de uniforms do
     // frame — P3 §2: luzes 2D). TODOS os pipelines compartilham o MESMO
@@ -564,7 +616,8 @@ Result<GraphicsPipelineHandle> VulkanBackend::createGraphicsPipeline(
     pipelineInfo.pColorBlendState = &blend;
     pipelineInfo.pDynamicState = &dynamic;
     pipelineInfo.layout = entry.layout;
-    pipelineInfo.renderPass = renderPass_;  // render pass clássico compartilhado
+    pipelineInfo.renderPass = pipelineRenderPass;  // surface clássico OU
+    // pass de compatibilidade device-only (formato resolvido acima)
     pipelineInfo.subpass = 0;
     result = fn.vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                           &entry.pipeline);

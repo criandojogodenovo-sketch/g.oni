@@ -11,6 +11,9 @@
 #include <cstring>
 #include <string>
 
+#include "eng/log/ConsoleSink.hpp"
+#include "eng/log/Logger.hpp"
+
 #include "eng/render/FrameParams.hpp"
 #include "eng/render/Light2D.hpp"
 #include "eng/render/RenderTypes.hpp"
@@ -21,6 +24,14 @@
 #include "eng/rhi/vulkan/VulkanBackend.hpp"
 
 namespace {
+
+/// Validação Vulkan/GES visível no terminal de teste (sem isso, as
+/// mensagens do debug messenger somem — diagnóstico cego no CI).
+struct LogSetup {
+    eng::log::ConsoleSink console{stderr};
+    LogSetup() { eng::log::Logger::get().addSink(console); }
+};
+LogSetup g_logSetup;
 
 /// Registra fábricas UMA vez (idempotente — ADR-036).
 void registerBackends()
@@ -329,4 +340,164 @@ TEST_CASE("render: Frame::setUniformData desenha com o bloco (por backend)",
         (void)frame.end();
         library.value().destroy(renderer.value());
     }
+}
+
+// --- pipeline LIT com textura + bloco + READBACK (A != B — P3 §5) ------------
+// Prova PIXEL a pixel no nivel eng::render (sem editor): a luz do bloco
+// PerFrame chega ao fragment e MUDA a cor renderizada. E o mesmo caminho
+// que o ViewportRenderer usa (mesma ShaderLibrary, mesma sequencia de
+// lotes: cor -> lit com setUniformData antes do bind de textura/draw).
+
+TEST_CASE("render: pipeline LIT com textura muda o pixel (readback A != B)",
+          "[render][rhi_hardware]")
+{
+    if (graphicsUnavailable()) {
+        SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
+    }
+    registerBackends();
+    // GLES headless tem SURFACE (pbuffer) — readCenterPixel disponível.
+    eng::rhi::RendererConfig config;
+    config.backend = eng::rhi::BackendType::OpenGLES;
+    config.enableValidation = true;
+    config.surface.window = eng::rhi::NativeWindowHandle{
+        reinterpret_cast<const void*>(0x1), eng::rhi::NativeWindowKind::Headless};
+    config.surface.width = 64;
+    config.surface.height = 64;
+    auto created = eng::rhi::Renderer::create(config);
+    if (created.isError()) {
+        SKIP("GLES indisponível: " << created.error().message);
+    }
+    eng::rhi::Renderer renderer{std::move(created.value())};
+
+    auto library = eng::render::ShaderLibrary::create(renderer);
+    REQUIRE(library.ok());
+
+    // Textura 2x2 branca opaca.
+    constexpr std::uint32_t kSize = 2;
+    std::vector<std::uint8_t> rgba(kSize * kSize * 4, 255);
+    eng::rhi::TextureDesc texDesc{};
+    texDesc.width = kSize;
+    texDesc.height = kSize;
+    texDesc.format = eng::rhi::Format::R8G8B8A8Unorm;
+    texDesc.initialData = std::span<const std::byte>{
+        reinterpret_cast<const std::byte*>(rgba.data()), rgba.size()};
+    auto texture = renderer.createTexture(texDesc);
+    REQUIRE(texture.ok());
+    eng::rhi::SamplerDesc samplerDesc{};
+    auto sampler = renderer.createSampler(samplerDesc);
+    REQUIRE(sampler.ok());
+
+    // Quad fullscreen 6 vértices no layout LIT (48B: pos+cor+uv+world).
+    struct LitVertex {
+        float x, y, z, w;
+        float r, g, b, a;
+        float u, v;
+        float worldX, worldY;
+    };
+    const std::vector<LitVertex> quad = {
+        {-1.f, -1.f, 0.f, 1.f, 0.3f, 0.3f, 0.3f, 1.f, 0.f, 0.f, 0.f, 0.f},
+        { 1.f, -1.f, 0.f, 1.f, 0.3f, 0.3f, 0.3f, 1.f, 1.f, 0.f, 0.f, 0.f},
+        { 1.f,  1.f, 0.f, 1.f, 0.3f, 0.3f, 0.3f, 1.f, 1.f, 1.f, 0.f, 0.f},
+        {-1.f, -1.f, 0.f, 1.f, 0.3f, 0.3f, 0.3f, 1.f, 0.f, 0.f, 0.f, 0.f},
+        { 1.f,  1.f, 0.f, 1.f, 0.3f, 0.3f, 0.3f, 1.f, 1.f, 1.f, 0.f, 0.f},
+        {-1.f,  1.f, 0.f, 1.f, 0.3f, 0.3f, 0.3f, 1.f, 0.f, 1.f, 0.f, 0.f},
+    };
+    eng::rhi::BufferDesc bufferDesc{};
+    bufferDesc.size = quad.size() * sizeof(LitVertex);
+    bufferDesc.usage = eng::rhi::BufferUsage::Vertex;
+    bufferDesc.initialData = std::as_bytes(std::span{quad});
+    auto vertexBuffer = renderer.createBuffer(bufferDesc);
+    REQUIRE(vertexBuffer.ok());
+
+    // Lote de cor do editor: grid/entidades (pos+cor, 32B) — desenhado
+    // ANTES do run lit, com o MESMO VBO dinâmico + updateBuffer.
+    const std::vector<float> colorBatch = {
+        -1.f, -1.f, 0.f, 1.f, 0.1f, 0.1f, 0.1f, 1.f,   // um "grid" qualquer
+         1.f, -1.f, 0.f, 1.f, 0.1f, 0.1f, 0.1f, 1.f,
+         0.f,  1.f, 0.f, 1.f, 0.1f, 0.1f, 0.1f, 1.f,
+    };
+    eng::rhi::BufferDesc colorBufferDesc{};
+    colorBufferDesc.size = colorBatch.size() * sizeof(float);
+    colorBufferDesc.usage = eng::rhi::BufferUsage::Vertex;
+    colorBufferDesc.initialData =
+        std::as_bytes(std::span{colorBatch});
+    auto colorBuffer = renderer.createBuffer(colorBufferDesc);
+    REQUIRE(colorBuffer.ok());
+
+    auto drawLit = [&](const eng::render::FrameUniforms& block) {
+        auto acquired = renderer.beginFrame();
+        REQUIRE(acquired.ok());
+        REQUIRE(acquired.value().status == eng::rhi::FrameAcquireStatus::Renderable);
+        eng::rhi::Frame& frame = acquired.value().frame;
+        eng::rhi::ClearDesc clear;
+        clear.color = {0.13f, 0.14f, 0.16f, 1.f};
+        REQUIRE(frame.clear(clear).ok());
+        REQUIRE(frame.setViewport({0.f, 0.f, 64.f, 64.f, 0.f, 1.f}).ok());
+        // Lote 1 (editor): pipeline de cor + VBO + updateBuffer + draw.
+        REQUIRE(frame.setPipeline(library.value().colorPipeline()).ok());
+        REQUIRE(frame.bindVertexBuffer(colorBuffer.value()).ok());
+        REQUIRE(renderer.updateBuffer(
+                    colorBuffer.value(), 0,
+                    std::span<const std::byte>{
+                        reinterpret_cast<const std::byte*>(colorBatch.data()),
+                        colorBatch.size() * sizeof(float)})
+                    .ok());
+        REQUIRE(frame.draw(3, 0).ok());
+        // Lote 2 (editor): upload do VBO lit ANTES do run...
+        REQUIRE(renderer.updateBuffer(
+                    vertexBuffer.value(), 0,
+                    std::span<const std::byte>{
+                        reinterpret_cast<const std::byte*>(quad.data()),
+                        quad.size() * sizeof(LitVertex)})
+                    .ok());
+        // ...run lit: setPipeline → bindVBO → setUniformData → tex → draw.
+        REQUIRE(frame.setPipeline(library.value().spriteLitPipeline()).ok());
+        REQUIRE(frame.bindVertexBuffer(vertexBuffer.value()).ok());
+        auto uniformed = library.value().bindFrameUniforms(frame, block);
+        INFO("bindFrameUniforms: "
+             << (uniformed.ok() ? std::string{"ok"} : uniformed.error().message));
+        REQUIRE(uniformed.ok());
+        REQUIRE(frame.bindTexture(texture.value(), sampler.value(), 0).ok());
+        REQUIRE(frame.draw(6, 0).ok());
+        REQUIRE(frame.end().ok());
+        REQUIRE(renderer.present().ok());
+    };
+
+    // Frame A: ambiente neutro, 0 luzes → branco.
+    eng::render::FrameUniforms blockA{};
+    blockA.ambient[0] = 1.f;
+    blockA.ambient[1] = 1.f;
+    blockA.ambient[2] = 1.f;
+    blockA.ambient[3] = 1.f;
+    drawLit(blockA);
+    std::uint8_t pixelA[4] = {0, 0, 0, 0};
+    REQUIRE(renderer.readCenterPixel(pixelA).ok());
+    INFO("readback A: " << +pixelA[0] << " " << +pixelA[1] << " "
+                       << +pixelA[2] << " " << +pixelA[3]);
+
+    // Frame B: luz vermelha (intensidade 2) no centro — quad escuro não
+    // satura: esperado ~(230, 84, 84) vs A=(77,77,77).
+    eng::render::FrameUniforms blockB{};
+    blockB.ambient[0] = 1.f;
+    blockB.ambient[1] = 1.f;
+    blockB.ambient[2] = 1.f;
+    blockB.ambient[3] = 1.f;
+    blockB.setLight(0, 0.f, 0.f, 10.f, 2.f, 1.f, 0.05f, 0.05f, 1.5f);
+    blockB.setLightCount(1);
+    drawLit(blockB);
+    std::uint8_t pixelB[4] = {0, 0, 0, 0};
+    REQUIRE(renderer.readCenterPixel(pixelB).ok());
+    INFO("readback B: " << +pixelB[0] << " " << +pixelB[1] << " "
+                       << +pixelB[2] << " " << +pixelB[3]);
+
+    // Quad cinza 0.3: A = ambiente(1)x albedo = 77. Com a luz vermelha
+    // (intensidade 2 no centro, atten=1): lighting = (1+2, 1+0.1, 1+0.1)
+    // -> B = (0.3x3, 0.3x1.1, 0.3x1.1) = (230, 84, 84).
+    CHECK(pixelA[0] > 70);
+    CHECK(pixelA[0] < 85);
+    CHECK(pixelB[0] > pixelA[0] + 60);          // R sobe forte
+    CHECK(pixelB[0] < 245);                     // ...sem saturar
+    CHECK(pixelB[1] - pixelA[1] < 20);          // G sobe pouco (0.05x2)
+
+    library.value().destroy(renderer);
 }

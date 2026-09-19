@@ -468,6 +468,20 @@ Result<void> VulkanBackend::frameSetPipeline(std::uint64_t frameId,
         return eng::core::makeUnexpected(makeError(
             StatusCode::InvalidArgument, "rhi.vulkan.frame: pipeline nulo/stale"));
     }
+    // Guard honesto (sem validation layers — release mobile não as tem):
+    // pipeline criado SEM surface usa um render pass de compatibilidade no
+    // formato RESOLVIDO; desenhar na surface REAL exige formato idêntico.
+    // Vulkan detectaria isso só no draw (ou nunca, sem layers) — o erro
+    // PRECISO aqui chega antes, no primeiro comando do frame.
+    if (hasSurface_ && entry->colorFormat != fromVkFormat(swapchainFormat_)) {
+        return eng::core::makeUnexpected(makeError(
+            StatusCode::InvalidArgument,
+            "rhi.vulkan.frame: pipeline criado para formato " +
+                std::to_string(static_cast<int>(entry->colorFormat)) +
+                " difere do formato da surface " +
+                std::to_string(static_cast<int>(fromVkFormat(swapchainFormat_))) +
+                " (pipeline device-only numa surface diferente — recrie o pipeline)"));
+    }
     library_.functions().vkCmdBindPipeline(slot->command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                             entry->pipeline);
     slot->boundPipelineLayout = entry->layout;  // p/ bind de descriptor set

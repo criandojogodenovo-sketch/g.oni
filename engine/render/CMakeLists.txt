@@ -19,7 +19,7 @@ if(ENG_BUILD_TESTS)
         tests/RenderTests.cpp
     )
     target_link_libraries(eng_render_tests PRIVATE eng::render eng::rhi
-        eng::rhi::vulkan eng::rhi::gles Catch2::Catch2WithMain)
+        eng::rhi::vulkan eng::rhi::gles eng::log Catch2::Catch2WithMain)
     eng_apply_test_policy(eng_render_tests)
     add_test(NAME render COMMAND eng_render_tests)
 endif()

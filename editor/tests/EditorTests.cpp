@@ -1933,7 +1933,10 @@ TEST_CASE("editor: host renderiza sprite TEXTURIZADO (GLES/llvmpipe real)",
     const auto* renderer = host->viewportRenderer();
     REQUIRE(renderer != nullptr);
     CHECK(renderer->lastFrameTexturedSprites() == 1);
-    const auto& spriteVerts = renderer->lastFrameSpriteVertices();
+    // P3: sprite SEM material usa o pipeline LIT (default — luz visível ao
+    // adicionar Light2D sem tocar em cada sprite). Os vértices vão para o
+    // lote lit (48B, mesmos campos u/v).
+    const auto& spriteVerts = renderer->lastFrameLitSpriteVertices();
     REQUIRE(spriteVerts.size() == 6);
     // UV completo no quad (0,0)→(1,1): a amostragem cobre a textura.
     CHECK(spriteVerts[0].u == 0.f);
@@ -2057,7 +2060,8 @@ TEST_CASE("editor: P0 — PNG no viewport: tamanho, orientação e hit CORRETOS"
     // (Antes: 0.0 — o half-extent do sprite carregava um 0.5 espúrio e a
     // imagem desenhava com METADE do tamanho mundial, menor que a própria
     // borda de seleção.)
-    const auto& verts = renderer->lastFrameSpriteVertices();
+    // P3: default LIT — vértices no lote lit (48B; mesmos pos/uv).
+    const auto& verts = renderer->lastFrameLitSpriteVertices();
     REQUIRE(verts.size() == 6);
     CHECK(verts[5].y == Catch::Approx(0.375f).margin(1e-3f));
 
@@ -5398,7 +5402,12 @@ TEST_CASE("editor: P3 — material unlit vs lit via Inspector (readback)",
     if (editorGraphicsUnavailable()) {
         SKIP("sem driver gráfico (lavapipe/EGL) — suite completo roda no CI");
     }
-    auto host = eng::editor::EditorHost::create("gles", ".editor-test-ws-p3mat");
+    // Workspace ÚNICO por execução (isola o materialCreate — o projeto é
+    // ensureProject-idempotente, mas material NÃO: "Cru" já existiria na
+    // 2ª execução da suite no mesmo build dir e o teste falharia).
+    const std::string root = "p3mat_host_test_" +
+                             std::to_string(reinterpret_cast<std::uintptr_t>(&root));
+    auto host = eng::editor::EditorHost::create("gles", root.c_str());
     REQUIRE(host.ok());
     std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
     int marker = 0;

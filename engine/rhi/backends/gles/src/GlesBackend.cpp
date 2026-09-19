@@ -5,6 +5,7 @@
 
 #include "eng/rhi/gles/GlesBackend.hpp"
 
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -174,8 +175,16 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
             eglErr("rhi.gles: eglGetDisplay(EGL_DEFAULT_DISPLAY)", fn.eglGetError()));
     }
 #else
-    display_ = fn.eglGetPlatformDisplay(kEglPlatformSurfacelessMesa, EGL_DEFAULT_DISPLAY,
-                                        nullptr);
+    // Linux usa a plataforma surfaceless da Mesa (kinds Xcb/Wayland vêm com
+    // as fases de plataforma). GONI_GLES_DEFAULT_DISPLAY=1 é facility de
+    // DEV/TESTE: usa o display padrão do EGL (X11/Xvfb) para ambientes de
+    // desenvolvimento SEM surfaceless (CI e o app não usam este caminho).
+    if (std::getenv("GONI_GLES_DEFAULT_DISPLAY") != nullptr) {
+        display_ = fn.eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    } else {
+        display_ = fn.eglGetPlatformDisplay(kEglPlatformSurfacelessMesa,
+                                            EGL_DEFAULT_DISPLAY, nullptr);
+    }
     if (display_ == EGL_NO_DISPLAY) {
         return eng::core::makeUnexpected(makeError(
             StatusCode::NotSupported,

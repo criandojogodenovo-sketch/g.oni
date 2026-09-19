@@ -787,6 +787,18 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         // total em px. O 0.5 espúrio desenhava a IMAGEM com metade do
         // tamanho da própria borda de seleção (borda correta, imagem não).
         const bool lit = quad.materialShader == "lit";
+
+        // Run: abre ANTES do push — firstVertex é o BASE do sprite neste
+        // run (abrir depois capturava size() pós-push e desenhava a
+        // região ERRADA do VBO: draw(count, base+6) lia vértices que não
+        // são do sprite — bug do refactor P3, achado no CI pelo readback).
+        const bool runMatches =
+            !runs.empty() && runs.back().lit == lit &&
+            runs.back().gpu == sprite.gpu && runs.back().layer == quad.layer;
+        if (!runMatches) {
+            runOpen(lit, sprite.gpu, quad.layer);
+        }
+
         if (lit) {
             // LIT (P3 §5): + posição MUNDO interpolada (attribute 3) para
             // a distância às luzes no fragment.
@@ -828,14 +840,6 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         item.shader = quad.materialShader;
         item.layer = quad.layer;
         drawList.sprites.push_back(std::move(item));
-
-        // Run: abre quando (shader, camada, textura) muda; acumula sempre.
-        const bool runMatches =
-            !runs.empty() && runs.back().lit == lit &&
-            runs.back().gpu == sprite.gpu && runs.back().layer == quad.layer;
-        if (!runMatches) {
-            runOpen(lit, sprite.gpu, quad.layer);
-        }
         runs.back().vertexCount += kVerticesPerQuad;
     }
 
