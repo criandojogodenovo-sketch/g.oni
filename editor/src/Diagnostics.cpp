@@ -50,6 +50,20 @@ TracerState& tracer() {
     return state;
 }
 
+/// P3.2 — estado do espelho de exportação. UI thread only (mesmo contrato
+/// de mark/init — ADR-035). NUNCA tocado pelo crash handler.
+MirrorCallback g_mirrorCallback = nullptr;
+void* g_mirrorUserdata = nullptr;
+
+/// Notifica o espelho — chamada APÓS o dado estar persistido no arquivo
+/// privado (o detentor relê o arquivo do disco) e SEM nenhum lock do tracer
+/// segurado (o caminho Kotlin→MediaStore não pode reentrar em diag).
+void notifyMirror() {
+    if (g_mirrorCallback != nullptr) {
+        g_mirrorCallback(g_mirrorUserdata);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Parte signal-safe do crash handler: SOMENTE write() em fd pré-aberto e
 // buffers estáticos. snprintf/backtrace não são async-signal-safe formais,
@@ -217,6 +231,10 @@ void init(const char* dir) {
     std::fflush(t.startupFile);
     (void)::fsync(::fileno(t.startupFile));
     ENG_INFO("diag: startup tracing em {}", t.startupPath);
+
+    // P3.2: cópia pública da sessão ANTES de qualquer estágio — se o
+    // processo morrer já no primeiro mark, o usuário tem o header visível.
+    notifyMirror();
 }
 
 void mark(const char* stage, const char* status, const char* detail) {
@@ -255,6 +273,11 @@ void mark(const char* stage, const char* status, const char* detail) {
             (void)::fsync(::fileno(t.startupFile));
         }
     }
+    // P3.2: espelho público DEPOIS de persistir (fora do lock do tracer) —
+    // a cópia acessível ao usuário reflete o estágio que ACABOU de ser
+    // gravado, antes do próximo começar. Se o processo morrer em seguida,
+    // o último estágio concluído permanece visível em Downloads/GONI.
+    notifyMirror();
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "GONI", "[STARTUP] %s %s %s",
                         stage, st, dt);
@@ -264,6 +287,15 @@ void mark(const char* stage, const char* status, const char* detail) {
 
 const char* lastStage() noexcept {
     return tracer().lastStage;
+}
+
+void setMirrorCallback(MirrorCallback callback, void* userdata) {
+    g_mirrorCallback = callback;
+    g_mirrorUserdata = callback != nullptr ? userdata : nullptr;
+}
+
+void requestMirror() {
+    notifyMirror();
 }
 
 void installCrashHandler() {
@@ -317,11 +349,26 @@ bool hasPreviousCrashReport() {
     if (!t.initialized) {
         return false;
     }
-    struct stat st{};
-    if (::stat(t.crashPath, &st) != 0 || st.st_size <= 0) {
+    // P3.2: o arquivo contém a nota benigna "[handler] crash handler
+    // instalado" desde o primeiro init (P3.1) — tamanho > 0 NÃO significa
+    // crash. Um crash real é uma linha "[crash] signal=..." escrita pelo
+    // signal handler. Sem este filtro, o export automático e o diálogo
+    // "crash anterior" disparariam em TODA execução após a primeira
+    // instalação (falso positivo — verificado no emulador).
+    std::FILE* f = std::fopen(t.crashPath, "r");
+    if (f == nullptr) {
         return false;
     }
-    return true;
+    bool found = false;
+    char line[256];
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        if (std::strncmp(line, "[crash]", 7) == 0) {
+            found = true;
+            break;
+        }
+    }
+    std::fclose(f);
+    return found;
 }
 
 }  // namespace eng::editor::diag

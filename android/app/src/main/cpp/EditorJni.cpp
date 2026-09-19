@@ -110,6 +110,86 @@ bool record(jlong handle, const ResultT& result)
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// P3.2 — espelho de diagnóstico em armazenamento acessível ao usuário.
+//
+// O Realme C33 do usuário não tem run-as/Adb/logcat disponíveis: o próprio
+// G.ONI precisa copiar goni_startup.log/goni_crash.log para Download/GONI.
+// A via pública de escrita no Android 10+ é o MediaStore (ContentResolver) —
+// só existe no lado Java. O C++ notifica o Kotlin a cada estágio persistido
+// (diag::setMirrorCallback) e o Kotlin reescreve a cópia pública.
+//
+// A cópia do goni_crash.log acontece na execução SEGUINTE (o signal
+// handler continua gravando apenas no arquivo privado — nada de operações
+// complexas em contexto de sinal).
+// ---------------------------------------------------------------------------
+
+JavaVM* g_diagVm = nullptr;             ///< VM (attach defensivo no trampoline)
+jclass g_diagMirrorClass = nullptr;      ///< global ref: com.goni.runtime.DiagnosticsMirror
+jmethodID g_diagMirrorMethod = nullptr; ///< DiagnosticsMirror.onNativeDiagnosticsChanged()V
+
+/// Trampoline C→Java do espelho. Contratos (Diagnostics.hpp):
+/// UI thread, NUNCA em signal handler, sem propagar exceções.
+void diagMirrorTrampoline(void* /*userdata*/)
+{
+    if (g_diagVm == nullptr || g_diagMirrorClass == nullptr ||
+        g_diagMirrorMethod == nullptr) {
+        return;
+    }
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    jint st = g_diagVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (st == JNI_EDETACHED) {
+        // Defensivo: marks vêm de threads que já chamaram JNI (attached).
+        if (g_diagVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+            return;
+        }
+        attached = true;
+    } else if (st != JNI_OK) {
+        return;
+    }
+    env->CallStaticVoidMethod(g_diagMirrorClass, g_diagMirrorMethod);
+    // O espelho é best-effort: uma falha de export NUNCA derruba o app.
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+    if (attached) {
+        g_diagVm->DetachCurrentThread();
+    }
+}
+
+/// Registra o trampoline de espelho no diag (uma vez por processo).
+/// Chamado ANTES de diag::init p/ que o header de sessão e os dois primeiros
+/// marks já sejam copiados publicamente.
+void installDiagMirror(JNIEnv* env)
+{
+    if (g_diagMirrorClass != nullptr) {
+        return;  // já registrado (Activity recriada etc.)
+    }
+    if (env->GetJavaVM(&g_diagVm) != JNI_OK) {
+        return;
+    }
+    const jclass local = env->FindClass("com/goni/runtime/DiagnosticsMirror");
+    if (local == nullptr) {
+        env->ExceptionClear();
+        return;  // classe ausente: sem espelho, diagnóstico privado continua
+    }
+    g_diagMirrorClass = static_cast<jclass>(env->NewGlobalRef(local));
+    env->DeleteLocalRef(local);
+    if (g_diagMirrorClass == nullptr) {
+        return;
+    }
+    g_diagMirrorMethod = env->GetStaticMethodID(
+        g_diagMirrorClass, "onNativeDiagnosticsChanged", "()V");
+    if (g_diagMirrorMethod == nullptr) {
+        env->ExceptionClear();
+        env->DeleteGlobalRef(g_diagMirrorClass);
+        g_diagMirrorClass = nullptr;
+        return;
+    }
+    eng::editor::diag::setMirrorCallback(&diagMirrorTrampoline, nullptr);
+}
+
 }  // namespace
 
 extern "C" {
@@ -123,6 +203,9 @@ Java_com_goni_runtime_EditorJni_nativeStartupInit(JNIEnv* env,
                                                   jobject /*thiz*/,
                                                   jstring dir)
 {
+    // P3.2: espelho registrado ANTES do init — o header de sessão e os
+    // dois marks abaixo já disparam a cópia pública (Download/GONI).
+    installDiagMirror(env);
     char dirBuf[512];
     if (!copyJString(env, dir, dirBuf, sizeof(dirBuf))) {
         dirBuf[0] = '\0';

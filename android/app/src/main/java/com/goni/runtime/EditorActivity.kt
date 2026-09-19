@@ -101,11 +101,36 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // P3.1 (FASE 4/5): diagnóstico persistente ANTES de qualquer
-        // subsistema — cada estágio daqui para frente é gravado na HORA em
-        // filesDir/goni_startup.log (sobrevive à morte do processo) e o
-        // crash handler nativo grava goni_crash.log antes do tombstone.
-        EditorJni.bootstrap(this)
+        // P3.2: espelho de diagnóstico ANTES de qualquer coisa — mesmo que
+        // o editor (ou a própria lib nativa) morra em seguida, a cópia
+        // pública em Download/GONI/ já existe com o que houve até aqui.
+        DiagnosticsMirror.init(this)
+        try {
+            // P3.1 (FASE 4/5): diagnóstico persistente ANTES de qualquer
+            // subsistema — cada estágio daqui para frente é gravado na HORA
+            // em filesDir/goni_startup.log (sobrevive à morte do processo) e
+            // o crash handler nativo grava goni_crash.log antes do tombstone.
+            // P3.2: cada estágio persistido também reescreve a cópia
+            // pública (Download/GONI/goni_startup.log) via MediaStore.
+            EditorJni.bootstrap(this)
+        } catch (t: Throwable) {
+            // A lib nativa pode nem carregar (dlopen/UnsatisfiedLinkError/
+            // ExceptionInInitializerError): sem este registro a morte seria
+            // indistinguível de "abre e fecha" sem evidência NENHUMA.
+            // Registramos a causa real + stack em Java puro e espelhamos
+            // publicamente; a saída continua visível (toast + finish).
+            DiagnosticsMirror.recordBootstrapFailure(t)
+            android.util.Log.e("GONI", "bootstrap nativo falhou", t)
+            toast("Falha ao iniciar o engine: ${t.message}")
+            finish()
+            return
+        }
+        // P3.2: crash de execução ANTERIOR → exporta IMEDIATAMENTE para
+        // Download/GONI/goni_crash.log (sem diálogo, sem depender de UI —
+        // o signal handler só pôde gravar no privado).
+        if (EditorJni.nativeStartupHasCrashReport()) {
+            DiagnosticsMirror.exportCrashLogIfPresent()
+        }
         EditorJni.nativeStartupMark("STARTUP_APPLICATION", "ok", "process")
         EditorJni.nativeStartupMark("STARTUP_ACTIVITY", "ok", "EditorActivity")
         maybeOfferCrashExport()

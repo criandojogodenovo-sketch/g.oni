@@ -42,6 +42,30 @@ void init(const char* dir);
 void mark(const char* stage, const char* status = "ok",
           const char* detail = nullptr);
 
+/// P3.2 — callback de espelhamento: invocada após o header de sessão (no
+/// init) e após CADA estágio persistido — o detentor deve copiar os logs
+/// para uma localização acessível ao usuário (ex.: Downloads/GONI via
+/// MediaStore). A cópia pública reflete cada estágio concluído ANTES do
+/// próximo começar: se o processo morrer, a evidência do último estágio
+/// permanece visível.
+///
+/// Contratos:
+/// - chamada na MESMA thread de mark/init (UI thread — ADR-035);
+/// - NUNCA chamada de dentro do crash handler (signal-safety: o handler
+///   continua gravando SOMENTE no arquivo privado via write(2) — o export
+///   do goni_crash.log acontece na execução SEGUINTE);
+/// - o callback NÃO pode chamar mark()/init() (recursão proibida);
+/// - exceções não atravessam (função C): o detentor engole tudo.
+using MirrorCallback = void (*)(void* userdata);
+
+/// Registra (ou limpa com nullptr) o callback de espelhamento.
+/// Sem callback: tudo continua como no P3.1 (arquivo privado + logcat).
+void setMirrorCallback(MirrorCallback callback, void* userdata);
+
+/// Dispara o callback registrado AGORA (no-op sem callback). Usado pela
+/// Activity para forçar um export e pelos testes Linux.
+void requestMirror();
+
 /// Último estágio marcado com sucesso ("-" quando nenhum).
 /// É usado pelo crash handler (goni_crash.log) e por dumpState.
 const char* lastStage() noexcept;
@@ -51,9 +75,10 @@ const char* lastStage() noexcept;
 /// (tombstone/debuggerd preservados — nada é mascarado).
 void installCrashHandler();
 
-/// true se existe relatório de crash de execução ANTERIOR (arquivo
-/// goni_crash.log não-vazio no dir do init) — p/ a UI oferecer export
-/// na próxima inicialização.
+/// true se a execução ANTERIOR deixou um crash REAL — linha "[crash]"
+/// escrita pelo signal handler em goni_crash.log. A nota benigna
+/// "[handler] instalado" NÃO conta (P3.2: falso positivo do P3.1 que
+/// faria o export automático e o diálogo dispararem em toda execução).
 bool hasPreviousCrashReport();
 
 /// Caminho EFETIVO do log de startup ("-" quando não inicializado).

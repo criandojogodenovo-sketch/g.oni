@@ -5525,8 +5525,22 @@ TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
 
     // O handler é stateful por processo: validamos num processo FILHO
     // (fork) — o pai inspeciona o arquivo e o status de morte.
+    const std::string noteOnlyResult = (std::filesystem::temp_directory_path() /
+        ("goni_diag_noteonly_" + std::to_string(::getpid()))).string();
     const pid_t pid = ::fork();
     if (pid == 0) {
+        // P3.2 (probe negativo): arquivo contendo APENAS a nota benigna
+        // "[handler] instalado" NÃO pode contar como crash — senão o export
+        // automático dispararia em toda execução pós-instalação.
+        if (std::FILE* tf = std::fopen(eng::editor::diag::crashLogPath(), "w")) {
+            std::fputs("[handler] crash handler instalado time=0\n", tf);
+            std::fclose(tf);
+        }
+        if (std::FILE* rf = std::fopen(noteOnlyResult.c_str(), "w")) {
+            std::fprintf(rf, "%d",
+                eng::editor::diag::hasPreviousCrashReport() ? 1 : 0);
+            std::fclose(rf);
+        }
         // RE-instala pós-fork: frameworks de teste (Catch2!) sobrescrevem
         // handlers entre casos — na produção o mesmo vale para libs que
         // instalam handlers (o app pode re-chamar a qualquer momento).
@@ -5560,6 +5574,20 @@ TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
         CHECK((WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGABRT));
     }
 
+    // P3.2 (probe negativo): o filho registrou 0 esperado — nota benigna
+    // sozinha NÃO conta como crash anterior.
+    if (std::FILE* rf = std::fopen(noteOnlyResult.c_str(), "r")) {
+        int v = -1;
+        const int got = std::fscanf(rf, "%d", &v);
+        std::fclose(rf);
+        std::filesystem::remove(noteOnlyResult);
+        REQUIRE(got == 1);
+        INFO("probe nota-somente: " << v << " (esperado 0)");
+        CHECK(v == 0);
+    } else {
+        FAIL("probe nota-somente não escreveu resultado");
+    }
+
     std::FILE* f = std::fopen(crashLog.c_str(), "r");
     if (f != nullptr) {
         std::string text;
@@ -5571,7 +5599,48 @@ TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
         INFO("crash log:\n" << text);
         CHECK(text.find("SIGSEGV") != std::string::npos);
         CHECK(text.find("ESTAGIO_ANTECRASH") != std::string::npos);
+        // P3.2: crash REAL registrado → hasPreviousCrashReport true (a
+        // linha "[crash]" do handler é o gatilho, não o mero tamanho).
+        CHECK(eng::editor::diag::hasPreviousCrashReport());
     } else {
         FAIL("goni_crash.log não foi criado pelo handler");
     }
+}
+
+TEST_CASE("editor: P3.2 — callback de espelho dispara após cada estágio",
+          "[editor][diagnostics][mirror]") {
+    // init() é idempotente por processo (singleton P3.1): o caso valida o
+    // MECANISMO de notificação com o tracer no estado em que estiver — o
+    // callback é registrado/limpo livremente a qualquer momento.
+    struct MirrorProbe {
+        int calls = 0;
+    } probe;
+
+    // Sem callback: registrar nullptr é válido (estado inicial do P3.1).
+    eng::editor::diag::setMirrorCallback(nullptr, nullptr);
+    eng::editor::diag::requestMirror();
+    CHECK(probe.calls == 0);
+
+    eng::editor::diag::setMirrorCallback(
+        [](void* ud) { static_cast<MirrorProbe*>(ud)->calls++; }, &probe);
+
+    // Cada mark persistido notifica o espelho exatamente uma vez —
+    // inclusive estágios "failed" (a cópia pública deve refletir a FALHA
+    // também, não só o sucesso).
+    eng::editor::diag::mark("TESTE_ESPELHO_A", "ok", "primeiro");
+    eng::editor::diag::mark("TESTE_ESPELHO_B", "failed", "segundo");
+    eng::editor::diag::mark("TESTE_ESPELHO_C");
+    CHECK(probe.calls == 3);
+
+    // requestMirror dispara manualmente (o export do crash log na
+    // execução seguinte usa este caminho a partir da Activity).
+    eng::editor::diag::requestMirror();
+    CHECK(probe.calls == 4);
+
+    // Limpeza obrigatória: o callback cruza processos-filho dos casos de
+    // crash (fork) — nunca pode vazar para outros testes.
+    eng::editor::diag::setMirrorCallback(nullptr, nullptr);
+    eng::editor::diag::mark("TESTE_ESPELHO_DEPOIS_DE_LIMPAR");
+    eng::editor::diag::requestMirror();
+    CHECK(probe.calls == 4);
 }
