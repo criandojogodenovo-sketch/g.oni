@@ -2411,20 +2411,20 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                             toast(lastErrorText())
                         }
                     }
-                    return
-                }
-                when (which) {
-                    0 -> inputDialog("Novo nome", asset.name) { name ->
-                        if (!EditorJni.nativeEditorAssetRename(handle, assetCategory.selectedItem.toString(), asset.name, name)) {
+                } else {
+                    when (which) {
+                        0 -> inputDialog("Novo nome", asset.name) { name ->
+                            if (!EditorJni.nativeEditorAssetRename(handle, assetCategory.selectedItem.toString(), asset.name, name)) {
+                                toast(lastErrorText())
+                            }
+                            refreshAssets()
+                        }
+                        1 -> moveAssetDialog(asset)
+                        2 -> if (EditorJni.nativeEditorAssetDelete(handle, assetCategory.selectedItem.toString(), asset.name)) {
+                            refreshAssets()
+                        } else {
                             toast(lastErrorText())
                         }
-                        refreshAssets()
-                    }
-                    1 -> moveAssetDialog(asset)
-                    2 -> if (EditorJni.nativeEditorAssetDelete(handle, assetCategory.selectedItem.toString(), asset.name)) {
-                        refreshAssets()
-                    } else {
-                        toast(lastErrorText())
                     }
                 }
             }
