@@ -27,6 +27,7 @@
 /// em crash).
 
 #include <cstddef>
+#include <cstdint>
 
 namespace eng::editor::diag {
 
@@ -85,6 +86,13 @@ bool hasPreviousCrashReport();
 const char* startupLogPath() noexcept;
 /// Caminho EFETIVO do log de crash ("-" quando não inicializado).
 const char* crashLogPath() noexcept;
+
+/// P3.3 — descreve um endereço do PRÓPRIO processo como
+/// "<modulo>+0x<offset>" (lê /proc/self/maps NA HORA). Uso: testes do
+/// parser de maps e diagnóstico fora de contexto de sinal. Retorna false
+/// se o endereço não está em mapeamento carregado algum. NÃO usar dentro
+/// de signal handler (o handler tem sua própria via, async-signal-safe).
+bool describeAddress(std::uintptr_t address, char* out, std::size_t cap);
 
 }  // namespace eng::editor::diag
 

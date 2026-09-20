@@ -205,6 +205,8 @@ void EditorHost::surfaceCreated(void* window,
     windowKind_ = kind;
     pendingWidth_ = width;
     pendingHeight_ = height;
+    diag::mark("STARTUP_SURFACE", "acquired",
+               "referência própria do ANativeWindow");
 
     if (width > 0 && height > 0 && createRendererForWindow(width, height)) {
         state_ = HostSurfaceState::Available;
@@ -254,28 +256,46 @@ void EditorHost::onPause()
 
 void EditorHost::onResume()
 {
+    diag::mark("STARTUP_RESUME", "begin");
     paused_ = false;
     (void)startAudio();  // P2 §12: religa o device após pausa
+    diag::mark("STARTUP_RESUME", "ok");
 }
 
 bool EditorHost::startAudio()
 {
+    // P3.3 — granular: cercar TODO o caminho de áudio com estágios
+    // persistidos (o open do AAudio envolve dlopen + binder + HAL do
+    // dispositivo — as chamadas de sistema mais opacas da janela de
+    // morte súbita do C33).
     if (document_ == nullptr) {
         return false;
     }
     if (audioBackend_ != nullptr && audioBackend_->isRunning()) {
         return true;  // idempotente
     }
+    diag::mark("STARTUP_AUDIO", "begin");
     audioBackend_ = eng::audio::createDefaultBackend();
     if (audioBackend_ == nullptr) {
+        diag::mark("STARTUP_AUDIO", "failed", "createDefaultBackend = null");
         return false;
+    }
+    {
+        const std::string backendName{audioBackend_->name()};
+        diag::mark("STARTUP_AUDIO", "backend", backendName.c_str());
     }
     auto started = audioBackend_->start(document_->audioMixer());
     if (started.isError()) {
         ENG_WARN("audio backend: {} — previews/Play continuam sem device",
                  started.error().message);
+        diag::mark("STARTUP_AUDIO", "failed",
+                   started.error().message.c_str());
         audioBackend_.reset();
         return false;
+    }
+    {
+        const std::string device = audioBackend_->describeDevice();
+        diag::mark("STARTUP_AUDIO", "started", device.c_str());
     }
     ENG_INFO("audio backend '{}' ativo", audioBackend_->name());
     return true;
@@ -351,6 +371,8 @@ bool EditorHost::createRendererForWindow(std::uint32_t width,
             backendToName(requested_), backendToName(effective),
             watchdogState_.empty() ? "-" : watchdogState_);
     }
+    diag::mark("STARTUP_SURFACE", "renderer",
+               backendToName(effective));
     auto renderer = ViewportRenderer::create(surface, effective);
     if (renderer.isError()) {
         ENG_ERROR("viewport renderer não criado: {}", renderer.error().message);

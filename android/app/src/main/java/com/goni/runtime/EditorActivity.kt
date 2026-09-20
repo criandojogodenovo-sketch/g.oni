@@ -148,7 +148,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         buildUi()
         EditorJni.nativeStartupMark("STARTUP_EDITOR_UI", "ok", "UI construída")
         ensureProjectOnFirstRun()
+        EditorJni.nativeStartupMark("STARTUP_POST_PROJECT", "ok", "ensureProject retornou")
         refreshAll()
+        EditorJni.nativeStartupMark("STARTUP_UI_SYNC", "ok", "refreshAll concluído")
         // P2 (§5): o DOCUMENTO é a fonte da verdade — a ferramenta da UI
         // sincroniza com a nativa (activity recriada não diverge).
         editorTool = EditorJni.nativeEditorGetTool(handle)

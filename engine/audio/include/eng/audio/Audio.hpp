@@ -202,6 +202,13 @@ public:
     virtual void stop() = 0;
     [[nodiscard]] virtual bool isRunning() const noexcept = 0;
     [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+    /// P3.3 — descrição estável do device/stream EFETIVAMENTE aberto para
+    /// diagnóstico persistido (marcos STARTUP_AUDIO do host). Vazio quando
+    /// não aplicável. Não usar em contexto de sinal.
+    [[nodiscard]] virtual std::string describeDevice() const
+    {
+        return {};
+    }
 };
 
 /// Backend de TESTES/CI: nenhum dispositivo — o teste puxa mix() à mão.
@@ -212,6 +219,7 @@ public:
     void stop() override;
     bool isRunning() const noexcept override { return running_; }
     std::string_view name() const noexcept override { return "null"; }
+    std::string describeDevice() const override;
 
     std::uint64_t startCount{0};
     std::uint64_t stopCount{0};

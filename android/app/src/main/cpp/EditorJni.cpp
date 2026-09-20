@@ -290,6 +290,9 @@ Java_com_goni_runtime_EditorJni_nativeEditorSurfaceCreated(JNIEnv* env,
                                                             jlong handle,
                                                             jobject surface)
 {
+    // P3.3 — granular: a fronteira exata onde o C33 morre. Cada chamada de
+    // sistema daqui em diante fica cercada por um estágio persistido.
+    eng::editor::diag::mark("STARTUP_SURFACE", "begin", "jni");
     EditorHost* host = fromHandle(handle);
     if (host == nullptr) {
         return;
@@ -300,8 +303,11 @@ Java_com_goni_runtime_EditorJni_nativeEditorSurfaceCreated(JNIEnv* env,
     // ciclo de surface vazava +1 referência até a morte do processo).
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) {
+        eng::editor::diag::mark("STARTUP_SURFACE", "failed",
+                                "ANativeWindow_fromSurface = null");
         return;
     }
+    eng::editor::diag::mark("STARTUP_SURFACE", "window", "adquirida");
     host->surfaceCreated(window, eng::rhi::NativeWindowKind::Android, 0, 0);
     ANativeWindow_release(window);  // hand-off concluído: o host tem a própria
 }

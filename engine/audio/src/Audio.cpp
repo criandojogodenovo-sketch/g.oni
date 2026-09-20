@@ -501,4 +501,9 @@ void NullAudioBackend::stop()
     running_ = false;
 }
 
+std::string NullAudioBackend::describeDevice() const
+{
+    return "null (sem device — testes/Linux)";
+}
+
 }  // namespace eng::audio

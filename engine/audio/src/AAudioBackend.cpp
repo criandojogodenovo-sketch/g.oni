@@ -37,6 +37,8 @@ using OpenStreamFn = aaudio_result_t (*)(AAudioStreamBuilder*,
 using StreamControlFn = aaudio_result_t (*)(AAudioStream*);
 using StreamCloseFn = aaudio_result_t (*)(AAudioStream*);
 using BuilderDeleteFn = void (*)(AAudioStreamBuilder*);
+using StreamGetIntFn = int32_t (*)(AAudioStream*);
+using StreamGetFormatFn = aaudio_format_t (*)(AAudioStream*);
 
 struct AAudioApi {
     void* library{nullptr};
@@ -50,6 +52,11 @@ struct AAudioApi {
     StreamControlFn requestStop{nullptr};
     StreamCloseFn closeStream{nullptr};
     BuilderDeleteFn deleteBuilder{nullptr};
+    // P3.3 — leitura dos parâmetros EFETIVOS do stream aberto (os valores do
+    // builder são SUGESTÕES: o device/HAL pode abrir com outros).
+    StreamGetIntFn getChannelCount{nullptr};
+    StreamGetIntFn getSampleRate{nullptr};
+    StreamGetFormatFn getFormat{nullptr};
 };
 
 [[nodiscard]] bool loadAAudioApi(AAudioApi& api)
@@ -78,12 +85,19 @@ struct AAudioApi {
         dlsym(api.library, "AAudioStream_close"));
     api.deleteBuilder = reinterpret_cast<BuilderDeleteFn>(
         dlsym(api.library, "AAudioStreamBuilder_delete"));
+    api.getChannelCount = reinterpret_cast<StreamGetIntFn>(
+        dlsym(api.library, "AAudioStream_getChannelCount"));
+    api.getSampleRate = reinterpret_cast<StreamGetIntFn>(
+        dlsym(api.library, "AAudioStream_getSampleRate"));
+    api.getFormat = reinterpret_cast<StreamGetFormatFn>(
+        dlsym(api.library, "AAudioStream_getFormat"));
     return api.createStreamBuilder != nullptr &&
            api.setSampleRate != nullptr && api.setChannelCount != nullptr &&
            api.setFormat != nullptr && api.setDataCallback != nullptr &&
            api.openStream != nullptr && api.requestStart != nullptr &&
            api.requestStop != nullptr && api.closeStream != nullptr &&
-           api.deleteBuilder != nullptr;
+           api.deleteBuilder != nullptr && api.getChannelCount != nullptr &&
+           api.getSampleRate != nullptr && api.getFormat != nullptr;
 }
 
 AudioMixer* gMixer = nullptr;
@@ -141,6 +155,37 @@ public:
                 "AAudio openStream falhou (código " +
                     std::to_string(opened) + ")"});
         }
+        // P3.3 — CORREÇÃO REAL: os valores do builder são SUGESTÕES; o stream
+        // ABERTO pode ter outros (docs do AAudio). O callback presume
+        // buffers de numFrames x mixer.channels() x float — se o device
+        // abriu com canais/formato diferentes, memset/mix escreveriam FORA
+        // do buffer do AAudio (corrupção de heap). Validamos e recusamos com
+        // erro preciso (o app segue sem device de áudio — honesto, sem
+        // crash e sem corromper memória):
+        const int32_t streamChannels = api_.getChannelCount(stream);
+        const int32_t streamRate = api_.getSampleRate(stream);
+        const aaudio_format_t streamFormat = api_.getFormat(stream);
+        streamInfo_ = "ch=" + std::to_string(streamChannels) + " rate=" +
+                     std::to_string(streamRate) + " fmt=" +
+                     std::to_string(static_cast<int32_t>(streamFormat));
+        if (streamChannels !=
+            static_cast<int32_t>(mixer.channels())) {
+            (void)api_.closeStream(stream);
+            return eng::core::makeUnexpected(eng::core::Error{
+                eng::core::StatusCode::NotSupported,
+                "stream abriu com " + std::to_string(streamChannels) +
+                    " canais, mixer exige " +
+                    std::to_string(mixer.channels()) +
+                    " (recusado — callback presumiria stride errado)"});
+        }
+        if (streamFormat != AAUDIO_FORMAT_PCM_FLOAT) {
+            (void)api_.closeStream(stream);
+            return eng::core::makeUnexpected(eng::core::Error{
+                eng::core::StatusCode::NotSupported,
+                "stream abriu com formato " +
+                    std::to_string(static_cast<int32_t>(streamFormat)) +
+                    ", engine só suporta PCM float (recusado)"});
+        }
         const aaudio_result_t started = api_.requestStart(stream);
         if (started != AAUDIO_OK) {
             api_.closeStream(stream);
@@ -168,11 +213,13 @@ public:
 
     bool isRunning() const noexcept override { return running_; }
     std::string_view name() const noexcept override { return "AAudio"; }
+    std::string describeDevice() const override { return streamInfo_; }
 
 private:
     AAudioApi api_{};
     AAudioStream* stream_{nullptr};
     bool running_{false};
+    std::string streamInfo_{"?"};
 };
 
 }  // namespace

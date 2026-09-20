@@ -5602,9 +5602,42 @@ TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
         // P3.2: crash REAL registrado → hasPreviousCrashReport true (a
         // linha "[crash]" do handler é o gatilho, não o mero tamanho).
         CHECK(eng::editor::diag::hasPreviousCrashReport());
+        // P3.3: o handler agora identifica o MÓDULO do pc (e do alvo do
+        // acesso, quando houver) via /proc/self/maps — a evidência que
+        // falta no Realme C33. Para um raise() dentro deste binário de
+        // teste, o pc DEVE cair no próprio executável com offset hex.
+        CHECK(text.find("[pc]") != std::string::npos);
+        CHECK(text.find("module=") != std::string::npos);
+        CHECK(text.find("+0x") != std::string::npos);
+        // O alvo do acesso de um raise() não é um endereço real (si_addr
+        // ausente/zero) — a linha fault.addr só pode existir COM módulo
+        // resolvido ou nem existir (nunca um [fault.addr] vazio).
+        const auto faultPos = text.find("[fault.addr]");
+        if (faultPos != std::string::npos) {
+            CHECK(text.find("module=", faultPos) != std::string::npos);
+        }
     } else {
         FAIL("goni_crash.log não foi criado pelo handler");
     }
+}
+
+TEST_CASE("editor: P3.3 — describeAddress resolve o módulo do processo",
+          "[editor][diagnostics]") {
+    // Endereço DENTRO deste binário de teste → módulo + offset hex;
+    // endereço de página guard (baixa memória não mapeada) → false.
+    char out[160];
+    const auto self = reinterpret_cast<std::uintptr_t>(
+        &eng::editor::diag::describeAddress);
+    REQUIRE(eng::editor::diag::describeAddress(self, out, sizeof out));
+    INFO("resolved: " << out);
+    CHECK(std::string{out}.find("+0x") != std::string::npos);
+    // Um endereço de função resolvido não pode ser o path vazio.
+    CHECK(std::string{out}.size() > 4);
+    CHECK(eng::editor::diag::describeAddress(0x10, out, sizeof out) == false);
+    // Capacidade zero/1 byte não derruba — apenas não resolve.
+    char tiny[1];
+    CHECK(eng::editor::diag::describeAddress(self, tiny, 1));
+    CHECK(tiny[0] == '\0');
 }
 
 TEST_CASE("editor: P3.2 — callback de espelho dispara após cada estágio",

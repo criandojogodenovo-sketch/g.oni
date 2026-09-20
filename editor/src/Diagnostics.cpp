@@ -18,9 +18,10 @@
 
 #include "eng/log/Macros.hpp"
 
+#include <ucontext.h>
+
 #ifdef __ANDROID__
 #include <android/log.h>
-#include <ucontext.h>
 #endif
 
 namespace eng::editor::diag {
@@ -82,6 +83,248 @@ struct CrashGlobals {
 CrashGlobals& crashGlobals() {
     static CrashGlobals g;
     return g;
+}
+
+// ---------------------------------------------------------------------------
+// P3.3 — identificação de MÓDULO + backtrace dentro do próprio handler.
+//
+// Por que /proc/self/maps e NÃO dladdr(3): dladdr usa os locks do dynamic
+// linker — um crash DURANTE dlopen (janela real de investigação: o backend
+// AAudio abre libaaudio.so sob dlopen) deadlockaria dentro do handler em
+// vez de gravar a evidência. open(2)/read(2)/close(2) são async-signal-safe;
+// o parse abaixo usa apenas buffers estáticos, sem alocação e sem locks.
+//
+// O backtrace é um frame-pointer walk (x29 no arm64, rbp no x86_64):
+// leituras cruas, validadas contra o snapshot de mapeamentos LIDO antes de
+// cada desreferência (apenas páginas mapeadas legíveis). O binário do app é
+// compilado com frame pointers (padrão do NDK para arm64; confirmado no
+// disassembly de libgoni.so do build P3.2).
+// ---------------------------------------------------------------------------
+
+/// Uma linha de /proc/self/maps (tudo que o handler precisa dela).
+struct MapEntry {
+    std::uintptr_t start{0};
+    std::uintptr_t end{0};
+    bool readable{false};
+    char path[120]{};  ///< truncado se maior (suficiente p/ identificar)
+};
+
+constexpr std::size_t kMaxMapEntries = 512;
+MapEntry g_mapEntries[kMaxMapEntries]{};
+std::size_t g_mapEntryCount = 0;
+
+/// hex sem 0x (formato de /proc/self/maps) — avança p.
+bool parseHexField(const char*& p, std::uintptr_t& value) {
+    value = 0;
+    bool any = false;
+    while (*p != '\0') {
+        const char c = *p;
+        int digit;
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            digit = c - 'a' + 10;
+        } else {
+            break;
+        }
+        value = (value << 4) | static_cast<std::uintptr_t>(digit);
+        any = true;
+        ++p;
+    }
+    return any;
+}
+
+/// Parse de UMA linha de maps (já NUL-terminada). Formato:
+/// start-end perms offset dev inode path...
+bool parseMapsLine(const char* line, MapEntry& out) {
+    const char* p = line;
+    if (!parseHexField(p, out.start) || *p != '-') {
+        return false;
+    }
+    ++p;
+    if (!parseHexField(p, out.end) || out.end <= out.start) {
+        return false;
+    }
+    while (*p == ' ') {
+        ++p;
+    }
+    // perms: rwx[spl]
+    out.readable = p[0] == 'r';
+    // pula até o 6º campo (path): perms, offset, dev, inode já contam 4.
+    int spaces = 0;
+    while (*p != '\0' && spaces < 5) {
+        if (*p == ' ') {
+            ++spaces;
+            while (*p == ' ') {
+                ++p;
+            }
+        } else {
+            ++p;
+        }
+    }
+    if (spaces < 5) {
+        out.path[0] = '\0';  // linha sem path (anon) — ainda válida
+    }
+    std::size_t i = 0;
+    while (p[i] != '\0' && p[i] != '\n' && i + 1 < sizeof out.path) {
+        out.path[i] = p[i];
+        ++i;
+    }
+    out.path[i] = '\0';
+    return true;
+}
+
+/// Carrega o snapshot de mapeamentos (chamado DENTRO do handler ou por
+/// describeAddress — em ambos os casos best-effort, sem alocação).
+void loadMapsSnapshot() {
+    g_mapEntryCount = 0;
+    const int fd = ::open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return;
+    }
+    char buf[4096];
+    char carry[256];
+    std::size_t carryLen = 0;
+    std::size_t totalRead = 0;
+    while (g_mapEntryCount < kMaxMapEntries && totalRead < (1u << 20)) {
+        const auto got = ::read(fd, buf, sizeof buf);
+        if (got <= 0) {
+            break;
+        }
+        totalRead += static_cast<std::size_t>(got);
+        std::size_t begin = 0;
+        std::size_t pos = 0;
+        while (pos < static_cast<std::size_t>(got) &&
+               g_mapEntryCount < kMaxMapEntries) {
+            if (buf[pos] == '\n') {
+                // linha = carry + buf[begin, pos)
+                if (carryLen + (pos - begin) + 1 <= sizeof carry) {
+                    std::memcpy(carry + carryLen, buf + begin, pos - begin);
+                    carry[carryLen + (pos - begin)] = '\0';
+                    if (parseMapsLine(carry,
+                                      g_mapEntries[g_mapEntryCount])) {
+                        ++g_mapEntryCount;
+                    }
+                }
+                carryLen = 0;
+                begin = pos + 1;
+            }
+            ++pos;
+        }
+        // resto parcial → carry
+        const std::size_t rest = static_cast<std::size_t>(got) - begin;
+        if (rest > 0 && carryLen + rest < sizeof carry) {
+            std::memcpy(carry + carryLen, buf + begin, rest);
+            carryLen += rest;
+        } else {
+            carryLen = 0;  // linha gigante: descarta (não mapeia libs)
+        }
+    }
+    ::close(fd);
+}
+
+const MapEntry* findMapFor(std::uintptr_t address) {
+    for (std::size_t i = 0; i < g_mapEntryCount; ++i) {
+        if (address >= g_mapEntries[i].start &&
+            address < g_mapEntries[i].end) {
+            return &g_mapEntries[i];
+        }
+    }
+    return nullptr;
+}
+
+/// Escreve uma linha "[tag] 0xADDR module=<path|?> base=0xB off=0xD" no fd.
+void writeModuleLine(int fd, const char* tag, std::uintptr_t address) {
+    const MapEntry* m = findMapFor(address);
+    char line[288];
+    int n;
+    if (m != nullptr) {
+        n = std::snprintf(line, sizeof line,
+                          "[%s] 0x%llx module=%s base=0x%llx off=0x%llx\n",
+                          tag, static_cast<unsigned long long>(address),
+                          m->path[0] != '\0' ? m->path : "anon",
+                          static_cast<unsigned long long>(m->start),
+                          static_cast<unsigned long long>(address - m->start));
+    } else {
+        n = std::snprintf(line, sizeof line,
+                          "[%s] 0x%llx module=? (fora de todo mapeamento "
+                          "carregado)\n",
+                          tag, static_cast<unsigned long long>(address));
+    }
+    if (n > 0) {
+        const auto written =
+            ::write(fd, line, static_cast<std::size_t>(n));
+        (void)written;
+    }
+}
+
+/// Frame pointer do contexto interrompido (x29/rbp) + PC.
+struct FaultFrame {
+    std::uintptr_t pc{0};
+    std::uintptr_t fp{0};
+};
+FaultFrame faultFrameOf(const void* context) {
+    FaultFrame f;
+    if (context == nullptr) {
+        return f;
+    }
+    const auto* uc = static_cast<const ucontext_t*>(context);
+#if defined(__aarch64__)
+    f.pc = static_cast<std::uintptr_t>(uc->uc_mcontext.pc);
+    f.fp = static_cast<std::uintptr_t>(uc->uc_mcontext.regs[29]);
+#elif defined(__x86_64__)
+    f.pc = static_cast<std::uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+    f.fp = static_cast<std::uintptr_t>(uc->uc_mcontext.gregs[REG_RBP]);
+#else
+    (void)uc;
+#endif
+    return f;
+}
+
+/// Backtrace por frame-pointer walk — cada frame validado contra o snapshot
+/// de maps (só desreferência FP em página mapeada legível). Escreve no máx.
+/// 24 frames; para no primeiro frame inválido.
+void writeBacktrace(int fd, std::uintptr_t pc, std::uintptr_t fp) {
+    writeModuleLine(fd, "bt.pc", pc);
+    std::uintptr_t frame = fp;
+    for (int i = 0; i < 24 && frame != 0; ++i) {
+        if ((frame & 0xf) != 0 || frame < 0x1000 ||
+            frame >= 0x800000000000ULL) {
+            break;  // não alinhado/fora de usuário: cadeia quebrada
+        }
+        const MapEntry* m = findMapFor(frame);
+        if (m == nullptr || !m->readable) {
+            break;  // FP não aponta p/ memória legível: para AQUI
+        }
+        // [frame] = próximo FP; [frame+8] = endereço de retorno.
+        const auto* slots =
+            reinterpret_cast<const std::uintptr_t*>(frame);
+        const std::uintptr_t next = slots[0];
+        const std::uintptr_t ret = slots[1];
+        char line[288];
+        const MapEntry* rm = findMapFor(ret);
+        int n;
+        if (rm != nullptr) {
+            n = std::snprintf(line, sizeof line,
+                              "[bt] %d 0x%llx %s+0x%llx\n", i,
+                              static_cast<unsigned long long>(ret),
+                              rm->path[0] != '\0' ? rm->path : "anon",
+                              static_cast<unsigned long long>(
+                                  ret - rm->start));
+        } else {
+            n = std::snprintf(line, sizeof line, "[bt] %d 0x%llx ?\n", i,
+                              static_cast<unsigned long long>(ret));
+        }
+        if (n > 0) {
+            const auto written =
+                ::write(fd, line, static_cast<std::size_t>(n));
+            (void)written;
+        }
+        if (next <= frame) {
+            break;  // cadeia deve SUBIR na pilha
+        }
+        frame = next;
+    }
 }
 
 struct sigaction_restore {
@@ -149,6 +392,24 @@ void crashHandler(int sig, siginfo_t* info, void* context) {
             const auto written =
                 ::write(g_crashFd, line, static_cast<std::size_t>(n));
             (void)written;
+        }
+        // P3.3 — evidência decisiva: MÓDULO do pc, do alvo do acesso e
+        // backtrace (frame-pointer). Tudo async-signal-safe: /proc/self/maps
+        // via open/read (sem locks do linker — dladdr deadlockaria se o
+        // crash ocorreu DURANTE dlopen), buffers estáticos, write(2).
+        loadMapsSnapshot();
+        const FaultFrame frame = faultFrameOf(context);
+        if (frame.pc != 0) {
+            writeModuleLine(g_crashFd, "pc", frame.pc);
+        }
+        if (info != nullptr &&
+            reinterpret_cast<std::uintptr_t>(info->si_addr) != 0) {
+            writeModuleLine(
+                g_crashFd, "fault.addr",
+                reinterpret_cast<std::uintptr_t>(info->si_addr));
+        }
+        if (frame.fp != 0) {
+            writeBacktrace(g_crashFd, frame.pc, frame.fp);
         }
         // Header do tombstone-own: momento do crash (relógio pode estar
         // indisponível em crash — usamos apenas como metadado).
@@ -342,6 +603,21 @@ const char* startupLogPath() noexcept {
 const char* crashLogPath() noexcept {
     const TracerState& t = tracer();
     return t.initialized ? t.crashPath : "-";
+}
+
+bool describeAddress(std::uintptr_t address, char* out, std::size_t cap) {
+    if (out == nullptr || cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    loadMapsSnapshot();
+    const MapEntry* m = findMapFor(address);
+    if (m == nullptr) {
+        return false;
+    }
+    std::snprintf(out, cap, "%s+0x%llx", m->path[0] != '\0' ? m->path : "anon",
+                  static_cast<unsigned long long>(address - m->start));
+    return true;
 }
 
 bool hasPreviousCrashReport() {
