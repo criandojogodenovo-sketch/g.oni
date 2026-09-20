@@ -109,9 +109,10 @@ struct MapEntry {
     char path[120]{};  ///< truncado se maior (suficiente p/ identificar)
 };
 
-constexpr std::size_t kMaxMapEntries = 512;
+constexpr std::size_t kMaxMapEntries = 2048;
 MapEntry g_mapEntries[kMaxMapEntries]{};
 std::size_t g_mapEntryCount = 0;
+bool g_mapEntriesTruncated = false;
 
 /// hex sem 0x (formato de /proc/self/maps) — avança p.
 bool parseHexField(const char*& p, std::uintptr_t& value) {
@@ -176,8 +177,13 @@ bool parseMapsLine(const char* line, MapEntry& out) {
 
 /// Carrega o snapshot de mapeamentos (chamado DENTRO do handler ou por
 /// describeAddress — em ambos os casos best-effort, sem alocação).
+/// NOTA: processos com ASan têm MILHARES de mapeamentos (shadow) — o
+/// limite kMaxMapEntries cobre 2048 entradas e a truncagem é REPORTADA
+/// (lição do CI: com 512, o pc do raise() caía fora do snapshot e a linha
+/// [pc] saía sem módulo).
 void loadMapsSnapshot() {
     g_mapEntryCount = 0;
+    g_mapEntriesTruncated = false;
     const int fd = ::open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         return;
@@ -186,7 +192,7 @@ void loadMapsSnapshot() {
     char carry[256];
     std::size_t carryLen = 0;
     std::size_t totalRead = 0;
-    while (g_mapEntryCount < kMaxMapEntries && totalRead < (1u << 20)) {
+    while (g_mapEntryCount < kMaxMapEntries && totalRead < (2u << 20)) {
         const auto got = ::read(fd, buf, sizeof buf);
         if (got <= 0) {
             break;
@@ -221,6 +227,9 @@ void loadMapsSnapshot() {
         }
     }
     ::close(fd);
+    if (g_mapEntryCount >= kMaxMapEntries) {
+        g_mapEntriesTruncated = true;
+    }
 }
 
 const MapEntry* findMapFor(std::uintptr_t address) {
@@ -236,7 +245,7 @@ const MapEntry* findMapFor(std::uintptr_t address) {
 /// Escreve uma linha "[tag] 0xADDR module=<path|?> base=0xB off=0xD" no fd.
 void writeModuleLine(int fd, const char* tag, std::uintptr_t address) {
     const MapEntry* m = findMapFor(address);
-    char line[288];
+    char line[320];
     int n;
     if (m != nullptr) {
         n = std::snprintf(line, sizeof line,
@@ -247,9 +256,11 @@ void writeModuleLine(int fd, const char* tag, std::uintptr_t address) {
                           static_cast<unsigned long long>(address - m->start));
     } else {
         n = std::snprintf(line, sizeof line,
-                          "[%s] 0x%llx module=? (fora de todo mapeamento "
-                          "carregado)\n",
-                          tag, static_cast<unsigned long long>(address));
+                          "[%s] 0x%llx module=? (fora do snapshot de maps%s)\n",
+                          tag, static_cast<unsigned long long>(address),
+                          g_mapEntriesTruncated
+                              ? " — snapshot TRUNCADO"
+                              : "");
     }
     if (n > 0) {
         const auto written =
