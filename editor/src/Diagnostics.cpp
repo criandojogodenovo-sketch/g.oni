@@ -673,9 +673,10 @@ struct sigaction_restore {
 sigaction_restore g_handlers[7];
 constexpr int kHandledSignals[] = {SIGSEGV, SIGABRT, SIGBUS,
                                     SIGILL, SIGFPE, SIGUSR1, SIGUSR2};
-constexpr int kHandledCount = 7;
 constexpr int kIdxSegv = 0, kIdxAbrt = 1, kIdxBus = 2, kIdxIll = 3,
               kIdxFpe = 4, kIdxUsr1 = 5, kIdxUsr2 = 6;
+static_assert(sizeof g_handlers / sizeof g_handlers[0] ==
+              sizeof kHandledSignals / sizeof kHandledSignals[0]);
 
 const char* signalName(int sig) {
     switch (sig) {
