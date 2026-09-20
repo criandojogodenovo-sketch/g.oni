@@ -61,6 +61,31 @@ BackendRegistry& backendRegistry() {
     return it == registry.factories.end() ? nullptr : it->second;
 }
 
+// =============================================================================
+// P3.5 — hook de progresso (micro-marks RHI_*). Escrita na thread do host
+// (antes de Renderer::create), leitura na MESMA thread durante a criação
+// (contrato: sem concorrência — o hook é install/remove apenas ali).
+// =============================================================================
+ProgressHook g_progressHook = nullptr;
+void* g_progressUserdata = nullptr;
+
+} // namespace
+
+void setProgressHook(ProgressHook hook, void* userdata) {
+    g_progressHook = hook;
+    g_progressUserdata = hook != nullptr ? userdata : nullptr;
+}
+
+void reportProgress(const char* stage, const char* status,
+                     const char* detail) noexcept {
+    if (g_progressHook != nullptr && stage != nullptr) {
+        g_progressHook(g_progressUserdata, stage,
+                       status != nullptr ? status : "ok", detail);
+    }
+}
+
+namespace {
+
 /// Inicializa a instância de backend JÁ CRIADA (o probe e a inicialização
 /// compartilham a MESMA instância — o probe é sem efeitos colaterais).
 /// Erro preenchido com motivo preciso (para o agregado do Auto — missão §10).
@@ -73,13 +98,21 @@ BackendRegistry& backendRegistry() {
             makeError(eng::core::StatusCode::Unknown, outReason));
     }
 
+    // P3.5 (T2): o sub-passo mais opaco da janela resume→surface fica
+    // cercado — o log exportado nomeia EXATAMENTE o backend/estágio que
+    // nunca completa no Realme C33.
+    reportProgress(rhi_stage::BackendSelect, "begin",
+                   std::string{backendTypeName(type)}.c_str());
     RendererCapabilities capabilities{};
     const auto initialized = backend->initialize(config, capabilities);
     if (!initialized) {
         outReason = std::string{backendTypeName(type)} + ": " +
                     initialized.error().message;
+        reportProgress(rhi_stage::BackendSelect, "failed", outReason.c_str());
         return eng::core::makeUnexpected(initialized.error());
     }
+    reportProgress(rhi_stage::BackendSelect, "ok",
+                   std::string{backendTypeName(type)}.c_str());
     return backend;
 }
 

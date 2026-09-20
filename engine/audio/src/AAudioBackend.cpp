@@ -50,6 +50,7 @@
 
 #include <aaudio/AAudio.h>
 #include <dlfcn.h>
+#include <errno.h>
 
 #include <chrono>
 #include <cstdio>
@@ -85,6 +86,8 @@ using WaitForStateChangeFn = aaudio_result_t (*)(AAudioStream*,
                                                  aaudio_stream_state_t*,
                                                  int64_t);
 using ResultTextFn = const char* (*)(aaudio_result_t);
+using BuilderSetPerformanceModeFn = void (*)(AAudioStreamBuilder*,
+                                              aaudio_performance_mode_t);
 
 struct AAudioApi {
     void* library{nullptr};
@@ -109,6 +112,11 @@ struct AAudioApi {
     StreamGetIntFn getBufferCapacityInFrames{nullptr};
     // P3.4 — texto legível do código de erro nos marcos "failed".
     ResultTextFn resultText{nullptr};
+    // P3.5 (T4) — SEM MMAP: PERFORMANCE_MODE_NONE força o caminho Legacy
+    // (AudioTrack do framework) — o MMAP do AAudio só é suportado em
+    // devices selecionados (Pixel, S10, Mate20…); em HALs budget como o
+    // Unisoc T612 o path MMAP falha ou crasha. Padrão da indústria (Oboe).
+    BuilderSetPerformanceModeFn setPerformanceMode{nullptr};
 };
 
 /// Resolve a tabela por dlsym. `missing` recebe o nome do símbolo
@@ -158,6 +166,8 @@ struct AAudioApi {
          reinterpret_cast<void**>(&api.getBufferCapacityInFrames)},
         {"AAudio_convertResultToText",
          reinterpret_cast<void**>(&api.resultText)},
+        {"AAudioStreamBuilder_setPerformanceMode",
+         reinterpret_cast<void**>(&api.setPerformanceMode)},
     };
     for (const SymbolSlot& s : slots) {
         *s.slot = dlsym(api.library, s.name);
@@ -254,23 +264,49 @@ public:
         }
         reportStage(backend_stage::Dlopen, "ok", "libaaudio.so carregada");
         reportStage(backend_stage::Symbols, "ok",
-                    "17 símbolos resolvidos (dlsym)");
+                    "18 símbolos resolvidos (dlsym)");
 
         // ---- AUDIO_BUILDER_CREATE ---------------------------------------
         reportStage(backend_stage::BuilderCreate, "begin", "");
+        // P3.5: AAudio_createStreamBuilder NÃO devolve aaudio_result_t —
+        // um null aqui é falha de alocação/estado interno da libaaudio.
+        // O errno no momento da chamada é a ÚNICA evidência disponível;
+        // em device REAL isto é ERRO grave (não "esperado" — mensagem
+        // P3.4 corrigida). Emulador -no-audio: documentado esperado.
+        errno = 0;
         AAudioStreamBuilder* builder = api_.createStreamBuilder();
         if (builder == nullptr) {
-            reportStage(backend_stage::BuilderCreate, "failed",
-                        "AAudio_createStreamBuilder devolveu null (sem HAL "
-                        "de áudio — emuladores: esperado)");
-            return refuseStart(eng::core::StatusCode::Unknown,
-                              "AAudio_createStreamBuilder devolveu null");
+            const int savedErrno = errno;
+            char errbuf[128];
+            errbuf[0] = '\0';
+            if (savedErrno != 0) {
+                // Portátil entre bionic (POSIX, devolve int) e glibc
+                // (GNU, devolve char*): o (void) aceita ambos; o texto
+                // fica em errbuf.
+                (void)strerror_r(savedErrno, errbuf, sizeof errbuf);
+            }
+            char detail[256];
+            std::snprintf(detail, sizeof detail,
+                          "builder=null ERRO: errno=%d (%s)"
+                          " [emulador -no-audio: esperado]",
+                          savedErrno,
+                          errbuf[0] != '\0' ? errbuf : "sem detalhe");
+            reportStage(backend_stage::BuilderCreate, "failed", detail);
+            return refuseStart(
+                eng::core::StatusCode::Unknown,
+                std::string("AAudio_createStreamBuilder devolveu null (") +
+                    detail + ")");
         }
         reportStage(backend_stage::BuilderCreate, "ok", "builder criado");
 
         // ---- AUDIO_BUILDER_CONFIG ---------------------------------------
         // Pedimos os parâmetros do MIXER — mas são SUGESTÕES: o que
         // vale é o que o HAL abriu (verificado/adaptado adiante).
+        // P3.5 (T4):
+        //  - PERFORMANCE_MODE_NONE explícito — SEM MMAP no Unisoc (o
+        //    caminho Legacy do framework é o comprovadamente seguro);
+        //  - taxa 48000 (default do mixer) + canais/formato EXPLÍCITOS.
+        api_.setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_NONE);
         api_.setSampleRate(
             builder, static_cast<std::int32_t>(mixer.sampleRate()));
         api_.setChannelCount(
@@ -278,8 +314,9 @@ public:
         api_.setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
         api_.setDataCallback(builder, &AAudioBackend::callbackEntry, this);
         {
-            char detail[128];
-            std::snprintf(detail, sizeof detail, "req %uHz %uch float",
+            char detail[160];
+            std::snprintf(detail, sizeof detail,
+                          "req %uHz %uch float perf=NONE(sem mmap)",
                           static_cast<unsigned>(mixer.sampleRate()),
                           static_cast<unsigned>(mixer.channels()));
             reportStage(backend_stage::BuilderConfig, "ok", detail);

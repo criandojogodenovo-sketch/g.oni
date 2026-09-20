@@ -6,41 +6,47 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * P3.2 — Espelho AUTOMÁTICO dos diagnósticos para armazenamento acessível.
+ * P3.5 — Espelho de diagnósticos FORA DA MAIN THREAD (T1).
  *
- * O PROBLEMA REAL (Realme C33): o app fecha sozinho após o splash e o
- * dispositivo NÃO expõe run-as / logcat / ADB — os arquivos privados
- * (filesDir/goni_startup.log, filesDir/goni_crash.log) ficam presos em
- * /data/data sem como o usuário lê-los. Este objeto copia os diagnósticos
- * para Download/GONI/, acessível pelo gerenciador de arquivos do sistema
- * e via cabo USB (MTP).
+ * O PROBLEMA REAL (Realme C33, APK P3.4): o trampoline JNI chamava
+ * mirrorFile() NA MAIN THREAD a cada estágio — query + openOutputStream +
+ * write no MediaStore (binder + camada Java sobre eMMC lento) são I/O
+ * caros e DOCUMENTADOS como causa de UI freezes no Android 11–13. Com
+ * ~20 marks no startup, a main thread passava a janela resume→surface
+ * inteira dentro do MediaProvider — e um binder travado ali congela o
+ * app (hang) até o ART abortar o processo (SIGABRT por timeout interno).
  *
- * ESTRATÉGIA (sem operações complexas em signal handler):
- * 1. `onNativeDiagnosticsChanged()` é chamado pelo C++ (via trampoline
- *    JNI) DEPOIS de cada estágio persistido — a cópia pública em
- *    Download/GONI/goni_startup.log é reescrita com o conteúdo completo do
- *    arquivo privado. Resultado: o último estágio concluído ANTES de uma
- *    morte súbita permanece visível publicamente.
- * 2. O crash handler nativo (P3.1) continua gravando goni_crash.log
- *    apenas no armazenamento privado (write(2) — signal-safe). A cópia
- *    pública do crash log acontece NO PRÓXIMO INÍCIO, imediatamente no
- *    onCreate, antes de qualquer carga pesada (exportCrashLogIfPresent).
- *    Em um crash-loop, a execução N sempre exporta o crash da execução
- *    N-1 ANTES de voltar a morrer.
- * 3. Se nem a biblioteca nativa carregar (dlopen/UnsatisfiedLinkError),
- *    `recordBootstrapFailure` registra a causa em Java puro e espelha.
+ * CORREÇÃO P3.5:
+ *  1. onNativeDiagnosticsChanged() APENAS ENFILEIRA (post no executor
+ *     single-background) e retorna em microssegundos — a main thread
+ *     nunca mais toca MediaStore no caminho de mark;
+ *  2. COALESCE: enquanto um export está em andamento, pedidos novos
+ *     colapsam em UM (nunca fila infinita — cada export reescreve o
+ *     arquivo COMPLETO, então o último pedido vence);
+ *  3. TIMEOUT de 2 s por exportação: um export que não termina em 2 s
+ *     é declarado WEDGED — a worker é abandonada (o binder travado fica
+ *     preso lá, sem segurar ninguém) e uma nova worker nasce para os
+ *     próximos pedidos. Recursos borned: no máx. 1 worker ativa + as
+ *     wedged que o kernel eventualmente libera;
+ *  4. O ficheiro PRIVADO em filesDir continua síncrono (I/O local
+ *     barato — feito pelo C++ com flush+fsync antes do enqueue).
  *
- * PERMISSÕES: Android 10+ (API 29+) usa MediaStore.Downloads — o app
- * contribui com os PRÓPRIOS arquivos sem NENHUMA permissão de
- * armazenamento (scoped storage compatível com Android 12/13).
- * Android 9- (legado): escrita direta em Environment.DIRECTORY_DOWNLOADS
- * (requer WRITE_EXTERNAL_STORAGE, declarada com maxSdkVersion=28); sem a
- * permissão, cai no app-external (Android/data/... ainda navegável).
+ * Regressões P3.2 preservadas: zero duplicatas (Owner+prefixo + limpeza
+ * de sobras), ordem (FIFO do post + coalesce só de pedidos PENDENTES,
+ * nunca do que já está a correr), re-publicação de IS_PENDING, cache de
+ * Uri com re-resolve.
  *
  * CONTRATO: tudo aqui é best-effort — falha de espelho NUNCA derruba o
  * app (o trampoline JNI já engole exceções; aqui engolimos de novo).
@@ -53,6 +59,9 @@ object DiagnosticsMirror {
     private const val STARTUP_LOG = "goni_startup.log"
     private const val CRASH_LOG = "goni_crash.log"
 
+    /** P3.5: teto de tempo de UM export antes de declarar wedge. */
+    private const val EXPORT_TIMEOUT_MS = 2000L
+
     private var appContext: Context? = null
 
     /** Registra o contexto da aplicação (onCreate, antes de tudo). */
@@ -60,21 +69,133 @@ object DiagnosticsMirror {
         appContext = context.applicationContext
     }
 
+    // --- fila do executor (T1) ------------------------------------------------
+
+    /** Um export lógico por vez; pedidos durante um export colapsam nele
+     *  (o export reescreve o arquivo COMPLETO — o último pedido vence). */
+    private val pending = AtomicBoolean(false)
+    /** Identifica o export atual: tarefas de workers ABANDONADAS (wedged)
+     *  viram no-op — nunca tocam as flags do ciclo vivo. */
+    private val generation = AtomicLong(0)
+    /** Início da parte pesada do export CORRENTE (0 = nenhuma). */
+    private val exportStartedAt = AtomicLong(0)
+    private val workerLock = Any()
+
+    /** Worker corrente (nasce de novo após um wedge — ver doc da classe). */
+    private var worker: HandlerThread? = null
+    private var workerHandler: Handler? = null
+
+    private fun uptime(): Long = android.os.SystemClock.uptimeMillis()
+
+    /** Worker viva para novos posts (cria se não existe). */
+    private fun ensureWorker(): Handler {
+        synchronized(workerLock) {
+            if (workerHandler == null) {
+                val fresh = HandlerThread("goni-mirror").apply { start() }
+                worker = fresh
+                workerHandler = Handler(fresh.looper)
+            }
+            return workerHandler!!
+        }
+    }
+
+    /** Delega o post à worker; recupera de WEDGE (export > 2 s) criando
+     *  uma worker nova e abandonando a antiga (a tarefa dela vira no-op
+     *  pela geração — se um dia o binder soltar, ela não interfere). */
+    private fun postExport(name: String, awaitMs: Long): Boolean {
+        val gen = generation.incrementAndGet()
+        val latch = if (awaitMs > 0) CountDownLatch(1) else null
+        var posted = false
+        try {
+            ensureWorker().post {
+                // Geração velha (worker abandonada): no-op — os flags do
+                // ciclo VIVO pertencem a outra geração.
+                if (generation.get() != gen || !pending.get()) {
+                    latch?.countDown()
+                    return@post
+                }
+                exportStartedAt.set(uptime())
+                try {
+                    mirrorFile(name)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "mirror: export de $name falhou: ${t.message}")
+                } finally {
+                    if (generation.get() == gen) {
+                        exportStartedAt.set(0)
+                        pending.set(false)
+                    }
+                    latch?.countDown()
+                }
+            }
+            posted = true
+        } catch (t: Throwable) {
+            Log.e(TAG, "mirror: post de $name falhou: ${t.message}")
+            if (generation.get() == gen) {
+                exportStartedAt.set(0)
+                pending.set(false)
+            }
+            latch?.countDown()
+        }
+        if (latch != null) {
+            try {
+                latch.await(awaitMs, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        return posted
+    }
+
     /**
-     * Chamado do C++ (EditorJni.cpp → trampoline) a cada estágio persistido.
-     * Reescreve a cópia pública completa do log de startup.
-     * NÃO pode chamar nenhuma função diag/mark (recursão proibida — o
-     * trampoline dispararia de novo).
+     * Chamado do C++ (thread de despacho do diag → trampoline JNI).
+     * APENAS ENFILEIRA e retorna — o export pesado roda na worker
+     * background (ver doc da classe). NÃO pode chamar nenhuma função
+     * diag/mark (recursão proibida).
      */
     @JvmStatic
     fun onNativeDiagnosticsChanged() {
-        mirrorFile(STARTUP_LOG)
+        enqueue(STARTUP_LOG, awaitMs = 0)
+    }
+
+    /** Enfileira um export completo do [name]. [awaitMs] > 0 espera o
+     *  resultado com prazo (usado pelo export do crash log da execução
+     *  anterior — garantia crash-loop: borned, nunca hang). */
+    private fun enqueue(name: String, awaitMs: Long): Boolean {
+        var attempts = 0
+        while (true) {
+            if (pending.compareAndSet(false, true)) {
+                return postExport(name, awaitMs)
+            }
+            // Alguém está exportando: coalesce normal — OU recuperação
+            // de wedge (export pesado há MAIS de 2 s sem terminar).
+            val started = exportStartedAt.get()
+            val wedged = started != 0L && uptime() - started > EXPORT_TIMEOUT_MS
+            if (!wedged || ++attempts > 2) {
+                return true  // pedido colapsa no export em voo
+            }
+            // WEDGED: a worker é abandonada (posts dela vêm como no-op —
+            // geração), o ciclo lógico é liberado e tentamos uma worker
+            // NOVA. A thread antiga segue presa no binder: ninguém a
+            // espera (documentado — não há como abortar um binder call).
+            Log.w(TAG, "mirror: worker wedged há ${uptime() - started} ms " +
+                "— abandonando e criando outra")
+            synchronized(workerLock) {
+                worker = null
+                workerHandler = null
+            }
+            generation.incrementAndGet()  // desativa as tarefas da worker velha
+            pending.set(false)
+            // loop: o CAS agora deve ganhar
+        }
     }
 
     /**
      * Exporta o goni_crash.log de execução ANTERIOR para Download/GONI.
      * Chamado no onCreate ANTES de qualquer carga (funciona mesmo que o
-     * editor não abra). Retorna se havia crash p/ exportar.
+     * editor não abra). Enfileira e espera no máx. 2 s — a garantia
+     * crash-loop (execução N exporta o crash de N-1 antes de voltar a
+     * morrer) é preservada SEM bloqueio indefinido da main. Retorna se
+     * havia crash p/ exportar.
      */
     fun exportCrashLogIfPresent(): Boolean {
         val ctx = appContext ?: return false
@@ -84,13 +205,14 @@ object DiagnosticsMirror {
         if (File(ctx.filesDir, CRASH_LOG).length() == 0L) {
             return false
         }
-        return mirrorFile(CRASH_LOG)
+        return enqueue(CRASH_LOG, awaitMs = EXPORT_TIMEOUT_MS)
     }
 
     /**
      * Falha ANTES do native (System.loadLibrary/dlopen): registra a causa
      * com stack completa em Java puro (não depende de libgoni.so) e
-     * espelha imediatamente. Cobertura da janela pré-diagnóstico.
+     * espelha com espera borned (2 s) — o app está morrendo de qualquer
+     * forma; a cópia pública precisa aterrissar ANTES do finish().
      */
     fun recordBootstrapFailure(t: Throwable) {
         val ctx = appContext ?: return
@@ -104,10 +226,11 @@ object DiagnosticsMirror {
         } catch (e: Exception) {
             Log.e(TAG, "mirror: registro de bootstrap falhou: ${e.message}")
         }
-        mirrorFile(STARTUP_LOG)
+        enqueue(STARTUP_LOG, awaitMs = EXPORT_TIMEOUT_MS)
     }
 
-    /** Copia um arquivo do filesDir para Download/GONI (best-effort). */
+    /** Copia um arquivo do filesDir para Download/GONI (best-effort).
+     *  P3.5: chamado SÓ da worker background. */
     fun mirrorFile(name: String): Boolean {
         val ctx = appContext ?: return false
         val bytes = try {
@@ -175,10 +298,8 @@ object DiagnosticsMirror {
         //    arquivo (o MediaStore pode acrescentar sufixo na renomeação —
         //    ver lição 1). NÃO filtra por RELATIVE_PATH: o MediaStore norma-
         //    liza o valor gravado com barra final ("Download/GONI/") e um
-        //    filtro exato nunca casava entre execuções — a prova: a linha
-        //    criada pelo processo anterior não era achada no relaunch e um
-        //    "(1).log" duplicado nascia. Owner + prefixo é imune a
-        //    normalização de caminho; sobras duplicadas são APAGADAS.
+        //    filtro exato nunca casava entre execuções. Owner + prefixo é
+        //    imune a normalização de caminho; sobras duplicadas são APAGADAS.
         val staleUris = ArrayList<Uri>()
         val existingUri = resolver.query(
             collection,
@@ -199,8 +320,7 @@ object DiagnosticsMirror {
             }
             first
         }
-        // Limpeza: linhas próprias duplicadas (de execuções anteriores ao
-        // fix ou renomeações do MediaStore) são removidas — o usuário vê
+        // Limpeza: linhas próprias duplicadas são removidas — o usuário vê
         // exatamente UM goni_startup.log/goni_crash.log em Download/GONI.
         for (stale in staleUris) {
             try {
@@ -243,8 +363,7 @@ object DiagnosticsMirror {
         }
     }
 
-    /** Escreve o conteúdo completo e garante publicação (linha pendente
-     *  herdada de uma execução morta no meio do insert fica visível). */
+    /** Escreve o conteúdo completo e garante publicação. */
     private fun writeAndPublish(
         resolver: android.content.ContentResolver,
         uri: Uri,
@@ -293,9 +412,6 @@ object DiagnosticsMirror {
             File(dir, name).writeBytes(bytes)
             true
         } catch (e: Exception) {
-            // Sem WRITE_EXTERNAL_STORAGE concedida: o melhor destino
-            // acessível restante é o app-external (gerenciador de arquivos
-            // navega em Android/data sem permissão).
             fallbackAppExternal(ctx, name, bytes)
         }
     }

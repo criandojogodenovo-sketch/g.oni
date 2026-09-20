@@ -6,11 +6,17 @@
 /// (FASE 7) com o MESMO contrato de surface/lifecycle (ADR-039/040), mas
 /// renderiza o viewport do EditorDocument.
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include "eng/audio/Audio.hpp"
 #include "eng/log/Macros.hpp"
@@ -79,11 +85,21 @@ constexpr std::string_view kWatchdogFile{".goni_backend_watchdog"};
 
 /// P3.4 — trampoline do hook de progresso do backend de áudio: os
 /// estágios granulares (backend_stage::*) viram marcos do diagnóstico
-/// persistido 1:1 (mesma UI thread de start(); o mirror P3.2 copia
+/// persistido 1:1 (mesma thread de start(); o mirror P3.2 copia
 /// para Download/GONI a cada estágio — a janela de morte do C33 fica
 /// cercada estágio a estágio). Sem userdata: diag é global do processo.
 void audioBackendProgress(void* /*userdata*/, const char* stage,
                            const char* status, const char* detail)
+{
+    eng::editor::diag::mark(stage, status, detail);
+}
+
+/// P3.5 — trampoline do hook de progresso do RHI (micro-marks
+/// RHI_BACKEND_SELECT/INSTANCE/DEVICE/SURFACE/SWAPCHAIN da janela
+/// resume→surface): o eng::rhi não conhece o diagnóstico (grafo
+/// acíclico) — quem sabe persistir é quem instalou o hook.
+void rhiBackendProgress(void* /*userdata*/, const char* stage,
+                        const char* status, const char* detail)
 {
     eng::editor::diag::mark(stage, status, detail);
 }
@@ -112,6 +128,10 @@ eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
 
     EditorHost* host = new EditorHost{};
     diag::mark("STARTUP_EDITOR_HOST", "begin");
+    // P3.5 (T2): micro-marks do RHI — instalados ANTES de qualquer
+    // Renderer::create (a criação de surface é o próximo sub-passo
+    // invisível após STARTUP_RESUME no device).
+    eng::rhi::setProgressHook(&rhiBackendProgress, nullptr);
     // FRONTEIRA DO WORKSPACE (RECOVERY P0 — bug do APK: "destino absoluto
     // é proibido" / "caminho absoluto proibido"): o root físico (absoluto
     // no Android) é absorvido AQUI, no RootedFileSystem. O documento vê
@@ -262,6 +282,12 @@ void EditorHost::surfaceDestroyed()
 void EditorHost::onPause()
 {
     paused_ = true; // flag apenas — robusto a qualquer ordem (§VI FASE 7)
+    // P3.5 (T4): a época invalida ciclos de retry em voo (o worker
+    // abandona no próximo checkpoint). A MAIN THREAD nunca mais para o
+    // device aqui — o stream segue puxando silêncio (vozes pausadas
+    // abaixo); o teardown definitivo é do destrutor, no worker, sob
+    // audioOpMutex_. Um pause NUNCA pode bloquear em binder do AAudio.
+    audioEpoch_.fetch_add(1);
     audioMixerLifecycle("onPause");  // P2 §12: vozes pausam com o app
 }
 
@@ -269,11 +295,170 @@ void EditorHost::onResume()
 {
     diag::mark("STARTUP_RESUME", "begin");
     paused_ = false;
-    (void)startAudio();  // P2 §12: religa o device após pausa
-    diag::mark("STARTUP_RESUME", "ok");
+    audioMixerLifecycle("onResume"); // P2 §12: vozes retomam com o app
+    // P3.5 (T4): o áudio NUNCA mais é síncrono no onResume — o AAudio do
+    // Unisoc já provou hostil (builder null em janela opaca). O worker
+    // dedicado tenta (backoff 1/2/4 s) e o resume RETORNA IMEDIATAMENTE.
+    scheduleAudioRetry();
+    diag::mark("STARTUP_RESUME", "ok", "audio agendado async");
+}
+
+// =============================================================================
+// Áudio P3.5 (T0/T4) — worker dedicado + posse serializada
+// =============================================================================
+
+std::shared_ptr<eng::audio::IAudioBackend>
+EditorHost::audioBackendSnapshot() const
+{
+    const std::lock_guard<std::mutex> ptrLock{audioPtrMutex_};
+    return audioBackend_;
+}
+
+void EditorHost::setAudioBackend(
+    std::shared_ptr<eng::audio::IAudioBackend> backend)
+{
+    const std::lock_guard<std::mutex> ptrLock{audioPtrMutex_};
+    audioBackend_ = std::move(backend);
+}
+
+void EditorHost::scheduleAudioRetry()
+{
+    {
+        std::lock_guard<std::mutex> lock{audioRetryMutex_};
+        audioResumeRequested_ = true;
+        if (audioRetryActive_) {
+            audioRetryCv_.notify_one();
+            return;  // worker vivo: o pedido será consumido no próximo ciclo
+        }
+        audioRetryActive_ = true;
+        audioRetryCancelled_ = false;
+    }
+    audioRetryCv_.notify_one();
+    // worker anterior já terminou (active=false é o ÚLTIMO ato dele):
+    // join imediato e spawna outro. Nunca há mais de UMA worker viva.
+    if (audioRetryThread_.joinable()) {
+        audioRetryThread_.join();
+    }
+    audioRetryThread_ = std::thread{[this] { audioRetryWorker(); }};
+}
+
+void EditorHost::audioRetryWorker()
+{
+    for (;;) {
+        std::unique_lock<std::mutex> lock{audioRetryMutex_};
+        audioRetryCv_.wait(lock, [this] {
+            return audioRetryCancelled_ || audioResumeRequested_;
+        });
+        if (audioRetryCancelled_) {
+            break;
+        }
+        audioResumeRequested_ = false;  // pedido consumido — novo ciclo
+        lock.unlock();
+        audioRetryRunCycle();
+    }
+    std::lock_guard<std::mutex> lock{audioRetryMutex_};
+    audioRetryActive_ = false;
+}
+
+void EditorHost::audioRetryRunCycle()
+{
+    // Backoff P3.5: tentativa imediata + retries a +1 s/+2 s/+4 s
+    // (4 tentativas totais; interpretação do "backoff 1/2/4, máx 3
+    // tentativas de retry" — documentada em docs/p35-hang-audio.md).
+    constexpr int kBackoffMs[] = {0, 1000, 2000, 4000};
+    constexpr int kTotalAttempts = 4;
+    const std::uint32_t epoch = audioEpoch_.load();
+    bool started = false;
+    for (int attempt = 1; attempt <= kTotalAttempts; ++attempt) {
+        if (kBackoffMs[attempt - 1] > 0) {
+            std::unique_lock<std::mutex> lock{audioRetryMutex_};
+            audioRetryCv_.wait_for(
+                lock, std::chrono::milliseconds{kBackoffMs[attempt - 1]},
+                [this] { return audioRetryCancelled_; });
+        }
+        if (audioEpoch_.load() != epoch) {
+            return;  // pausa/destruição mudou a geração — ciclo abortado
+        }
+        {
+            const std::lock_guard<std::mutex> opLock{audioOpMutex_};
+            const std::shared_ptr<eng::audio::IAudioBackend> current =
+                audioBackendSnapshot();
+            if (current != nullptr && current->isRunning() &&
+                !audioNullFallback_) {
+                started = true;  // já ativo (resume duplo etc.)
+                break;
+            }
+            {
+                char detail[96];
+                std::snprintf(detail, sizeof detail, "tentativa %d/%d",
+                              attempt, kTotalAttempts);
+                diag::mark("STARTUP_AUDIO_RETRY", "begin", detail);
+            }
+            started = startAudioLocked();
+        }
+        if (started && audioEpoch_.load() == epoch) {
+            break;
+        }
+        if (audioEpoch_.load() != epoch) {
+            return;
+        }
+        if (!started && attempt < kTotalAttempts) {
+            char detail[96];
+            std::snprintf(detail, sizeof detail,
+                          "falhou — proxima em %d ms",
+                          kBackoffMs[attempt]);
+            diag::mark("STARTUP_AUDIO_RETRY", "failed", detail);
+        }
+    }
+    // Falha DEFINITIVA (época intacta durante todo o ciclo): NullBackend
+    // gracioso — o app segue VIVO, previews/Play seguem funcionando SEM
+    // som; o próximo resume descarta o null e tenta o device de novo.
+    if (!started && audioEpoch_.load() == epoch) {
+        const std::lock_guard<std::mutex> opLock{audioOpMutex_};
+        const std::shared_ptr<eng::audio::IAudioBackend> current =
+            audioBackendSnapshot();
+        if ((current == nullptr || !current->isRunning() ||
+             audioNullFallback_) &&
+            document_ != nullptr) {
+            auto nullBackend =
+                std::make_shared<eng::audio::NullAudioBackend>();
+            if (!nullBackend->start(document_->audioMixer()).isError()) {
+                setAudioBackend(std::move(nullBackend));
+                audioNullFallback_ = true;
+                diag::mark("STARTUP_AUDIO", "null-fallback",
+                           "NullBackend gracioso — app vivo, sem som "
+                           "(nova tentativa no proximo resume)");
+            }
+        }
+    }
+}
+
+void EditorHost::cancelAudioRetry() noexcept
+{
+    // Sem try/catch: a engine compila -fno-exceptions (ADR-004). As
+    // operações (lock/notify/join) em falha catastrófica de std::level
+    // terminariam o processo de qualquer forma — o contrato noexcept é
+    // honrado pelo caminho normal; worker presa em AAudio é a limitação
+    // documentada do HAL (ver docs/p35-hang-audio.md).
+    {
+        std::lock_guard<std::mutex> lock{audioRetryMutex_};
+        audioRetryCancelled_ = true;
+    }
+    audioRetryCv_.notify_all();
+    if (audioRetryThread_.joinable()) {
+        audioRetryThread_.join();
+    }
 }
 
 bool EditorHost::startAudio()
+{
+    // P3.5: caminho de manutenção SÍNCRONO (testes/legacy). O app usa o
+    // worker (scheduleAudioRetry). Serializado pela posse do AAudio.
+    const std::lock_guard<std::mutex> opLock{audioOpMutex_};
+    return startAudioLocked();
+}
+
+bool EditorHost::startAudioLocked()
 {
     // P3.4 — granular: cercar TODO o caminho de áudio com estágios
     // persistidos (o open do AAudio envolve dlopen + binder + HAL do
@@ -283,35 +468,46 @@ bool EditorHost::startAudio()
     if (document_ == nullptr) {
         return false;
     }
-    if (audioBackend_ != nullptr && audioBackend_->isRunning()) {
-        return true;  // idempotente
+    // Resume após null-fallback: descarta o nulo e tenta o device REAL
+    // de novo ("nova tentativa no próximo resume" — missão P3.5 T4).
+    if (audioNullFallback_) {
+        stopAudioLocked();
+    }
+    {
+        const std::shared_ptr<eng::audio::IAudioBackend> current =
+            audioBackendSnapshot();
+        if (current != nullptr && current->isRunning()) {
+            return true;  // idempotente
+        }
     }
     diag::mark("STARTUP_AUDIO", "begin");
     eng::audio::setBackendProgressHook(&audioBackendProgress, nullptr);
-    audioBackend_ = eng::audio::createDefaultBackend();
-    if (audioBackend_ == nullptr) {
+    auto backend = eng::audio::createDefaultBackend();
+    if (backend == nullptr) {
         diag::mark("STARTUP_AUDIO", "failed", "createDefaultBackend = null");
         return false;
     }
     {
-        const std::string backendName{audioBackend_->name()};
+        const std::string backendName{backend->name()};
         diag::mark("STARTUP_AUDIO", "backend", backendName.c_str());
     }
     audioFirstFrameMarked_ = false;
-    auto started = audioBackend_->start(document_->audioMixer());
+    auto started = backend->start(document_->audioMixer());
     if (started.isError()) {
         ENG_WARN("audio backend: {} — previews/Play continuam sem device",
                  started.error().message);
         diag::mark("STARTUP_AUDIO", "failed",
                    started.error().message.c_str());
-        audioBackend_.reset();
-        return false;
+        return false;  // objeto local morre aqui (nada publicado)
     }
+    setAudioBackend(std::move(backend));
     {
-        const std::string device = audioBackend_->describeDevice();
+        const std::shared_ptr<eng::audio::IAudioBackend> published =
+            audioBackendSnapshot();
+        const std::string device = published->describeDevice();
         diag::mark("STARTUP_AUDIO", "started", device.c_str());
     }
-    ENG_INFO("audio backend '{}' ativo", audioBackend_->name());
+    ENG_INFO("audio backend ativo");
     // P3.4: o primeiro callback pode disparar já DENTRO do requestStart
     // (o AAudio começa a puxar antes de retornar) — observa agora.
     checkAudioFirstCallbackFrame();
@@ -320,14 +516,37 @@ bool EditorHost::startAudio()
 
 void EditorHost::stopAudio() noexcept
 {
-    if (audioBackend_ != nullptr) {
-        audioBackend_->stop();
-        audioBackend_.reset();
+    // P3.5 (T4): teardown completo — aborta retries, espera a worker
+    // (join) e só então para o backend sob a posse serializada. É o
+    // ÚNICO caminho que bloqueia em AAudio — destrutor apenas (risco
+    // residual documentado: um binder do HAL preso seguraria o join —
+    // exatamente o cenário que o watchdog T3 captura com evidência).
+    audioEpoch_.fetch_add(1);
+    cancelAudioRetry();
+    const std::lock_guard<std::mutex> opLock{audioOpMutex_};
+    stopAudioLocked();
+}
+
+void EditorHost::stopAudioLocked() noexcept
+{
+    const std::shared_ptr<eng::audio::IAudioBackend> backend =
+        audioBackendSnapshot();
+    if (backend != nullptr) {
+        backend->stop();
     }
+    setAudioBackend(nullptr);
     audioFirstFrameMarked_ = false;
+    audioNullFallback_ = false;
     if (document_ != nullptr) {
         document_->audioMixer().stopAll();
     }
+}
+
+bool EditorHost::audioRunning() const noexcept
+{
+    const std::shared_ptr<eng::audio::IAudioBackend> backend =
+        audioBackendSnapshot();
+    return backend != nullptr && backend->isRunning();
 }
 
 void EditorHost::checkAudioFirstCallbackFrame()
@@ -335,14 +554,19 @@ void EditorHost::checkAudioFirstCallbackFrame()
     // P3.4 — evidência de vida do pull: o callback do AAudio marca um
     // átomo na própria thread de áudio; persistimos o marco UMA vez,
     // da UI thread (o hook/mirror do diagnóstico nunca roda na thread
-    // de áudio — reentrância proibida por contrato).
-    if (audioFirstFrameMarked_ || audioBackend_ == nullptr ||
-        !audioBackend_->isRunning() ||
-        !audioBackend_->hasFirstCallbackFired()) {
+    // de áudio — reentrância proibida por contrato). P3.5: lê um
+    // SNAPSHOT do backend (o worker pode trocê-lo enquanto isto roda).
+    if (audioFirstFrameMarked_) {
+        return;
+    }
+    const std::shared_ptr<eng::audio::IAudioBackend> backend =
+        audioBackendSnapshot();
+    if (backend == nullptr || !backend->isRunning() ||
+        !backend->hasFirstCallbackFired()) {
         return;
     }
     audioFirstFrameMarked_ = true;
-    const std::string device = audioBackend_->describeDevice();
+    const std::string device = backend->describeDevice();
     diag::mark(eng::audio::backend_stage::CallbackFirstFrame, "ok",
                device.c_str());
 }
@@ -352,11 +576,12 @@ void EditorHost::audioMixerLifecycle(const char* reason) noexcept
     if (document_ == nullptr) {
         return;
     }
+    // P3.5: o lifecycle do MIXER apenas (vozes). O backend NÃO é mais
+    // parado no pause: a main thread nunca toca AAudio em lifecycle —
+    // um binder do HAL preso não pode congelar o pause do app (o stream
+    // segue puxando silêncio; teardown é do destrutor, no worker).
     if (std::string_view(reason) == "onPause") {
         document_->audioMixer().pauseAll();
-        if (audioBackend_ != nullptr) {
-            audioBackend_->stop();
-        }
     } else {
         document_->audioMixer().resumeAll();
     }
@@ -488,6 +713,9 @@ bool EditorHost::renderFrame(float deltaSeconds)
     if (drew) {
         if (!stats_.startupComplete) {
             stats_.startupComplete = true;
+            // P3.5 (T2): micro-mark de primeiro frame SUBMETIDO (o
+            // STARTUP_COMPLETE abaixo confirma a APRESENTAÇÃO).
+            diag::mark("FIRST_FRAME", "ok", "frame submetido ao viewport");
             diag::mark("STARTUP_COMPLETE", "ok", "first frame presented");
         }
         ++stats_.framesSubmitted;

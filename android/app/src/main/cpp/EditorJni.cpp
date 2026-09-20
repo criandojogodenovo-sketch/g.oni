@@ -125,36 +125,52 @@ bool record(jlong handle, const ResultT& result)
 // ---------------------------------------------------------------------------
 
 JavaVM* g_diagVm = nullptr;             ///< VM (attach defensivo no trampoline)
-jclass g_diagMirrorClass = nullptr;      ///< global ref: com.goni.runtime.DiagnosticsMirror
+jclass g_diagMirrorClass = nullptr;     ///< global ref: com.goni.runtime.DiagnosticsMirror
 jmethodID g_diagMirrorMethod = nullptr; ///< DiagnosticsMirror.onNativeDiagnosticsChanged()V
 
-/// Trampoline C→Java do espelho. Contratos (Diagnostics.hpp):
-/// UI thread, NUNCA em signal handler, sem propagar exceções.
+/// Trampoline C→Java do espelho (P3.5: chamado pela THREAD DE DESPACHO do
+/// diag — marks de threads nativas nunca tocam a VM). Contratos
+/// (Diagnostics.hpp): SEMPRE na thread de despacho, NUNCA em signal
+/// handler, sem propagar exceções.
+///
+/// Attach: P3.2 fazia attach/detach POR CHAMADA; P3.5 usa um RAII
+/// thread_local — a thread de despacho (única chamadora) paga o attach
+/// UMA vez e o detach acontece no fim da vida da thread (contrato T0:
+/// AttachCurrentThread/DetachCurrentThread por thread).
 void diagMirrorTrampoline(void* /*userdata*/)
 {
     if (g_diagVm == nullptr || g_diagMirrorClass == nullptr ||
         g_diagMirrorMethod == nullptr) {
         return;
     }
-    JNIEnv* env = nullptr;
-    bool attached = false;
-    jint st = g_diagVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
-    if (st == JNI_EDETACHED) {
-        // Defensivo: marks vêm de threads que já chamaram JNI (attached).
-        if (g_diagVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
-            return;
+    struct ScopedAttach {
+        JNIEnv* env{nullptr};
+        bool attached{false};
+        explicit ScopedAttach(JavaVM* vm)
+        {
+            const jint st =
+                vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+            if (st == JNI_EDETACHED) {
+                attached = vm->AttachCurrentThread(&env, nullptr) == JNI_OK;
+            } else if (st != JNI_OK) {
+                env = nullptr;
+            }
         }
-        attached = true;
-    } else if (st != JNI_OK) {
+        ~ScopedAttach()
+        {
+            if (attached) {
+                g_diagVm->DetachCurrentThread();
+            }
+        }
+    };
+    static thread_local ScopedAttach attach{g_diagVm};
+    if (attach.env == nullptr) {
         return;
     }
-    env->CallStaticVoidMethod(g_diagMirrorClass, g_diagMirrorMethod);
+    attach.env->CallStaticVoidMethod(g_diagMirrorClass, g_diagMirrorMethod);
     // O espelho é best-effort: uma falha de export NUNCA derruba o app.
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-    }
-    if (attached) {
-        g_diagVm->DetachCurrentThread();
+    if (attach.env->ExceptionCheck()) {
+        attach.env->ExceptionClear();
     }
 }
 
@@ -246,6 +262,34 @@ Java_com_goni_runtime_EditorJni_nativeStartupHasCrashReport(JNIEnv* /*env*/,
                                                             jobject /*thiz*/)
 {
     return eng::editor::diag::hasPreviousCrashReport() ? JNI_TRUE : JNI_FALSE;
+}
+
+// --- P3.5 (T3): watchdog de hang da main thread -----------------------------
+//
+// arm() DEVE ser chamado NA main thread (captura pthread_self). O pinger
+// (Kotlin, 1 s) faz Handler.post → heartbeat() e depois evaluate(); sem
+// resposta no limiar → pthread_kill(main, SIGUSR1) → dump forense
+// completo no goni_crash.log (o processo CONTINUA vivo).
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeWatchdogArm(JNIEnv* /*env*/,
+                                                  jobject /*thiz*/)
+{
+    eng::editor::diag::watchdog::arm();
+}
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeWatchdogHeartbeat(JNIEnv* /*env*/,
+                                                        jobject /*thiz*/)
+{
+    eng::editor::diag::watchdog::heartbeat();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeWatchdogEvaluate(JNIEnv* /*env*/,
+                                                       jobject /*thiz*/)
+{
+    return eng::editor::diag::watchdog::evaluate() ? JNI_TRUE : JNI_FALSE;
 }
 
 // =============================================================================

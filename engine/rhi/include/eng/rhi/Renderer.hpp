@@ -33,6 +33,7 @@
 
 #include "eng/core/Error.hpp"
 #include "eng/core/Result.hpp"
+#include "eng/rhi/Progress.hpp"
 #include "eng/rhi/RhiBackend.hpp"
 #include "eng/rhi/Types.hpp"
 

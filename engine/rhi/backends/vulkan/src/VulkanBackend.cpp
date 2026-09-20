@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "eng/log/Macros.hpp"
+#include "eng/rhi/Progress.hpp"
 
 // FASE 7: surface Android (NDK API — NÃO é JNI; missão §II.4/§IX).
 #ifdef __ANDROID__
@@ -238,10 +239,14 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
 
     VkResult result = library_.functions().vkCreateInstance(&instanceInfo, nullptr, &instance_);
     if (result != VK_SUCCESS) {
+        eng::rhi::reportProgress(eng::rhi::rhi_stage::Instance, "failed",
+                                 std::string{vkResultName(result)}.c_str());
         return eng::core::makeUnexpected(
             vkErr(StatusCode::NotSupported, "rhi.vulkan: vkCreateInstance", result));
     }
     library_.loadInstanceFunctions(instance_);
+    // P3.5 (T2): micro-mark — VkInstance criada.
+    eng::rhi::reportProgress(eng::rhi::rhi_stage::Instance, "ok", "VkInstance");
     ENG_INFO("rhi.vulkan: VkInstance criada (loader {})", versionString(instanceVersion));
 
     // --- debug messenger (quando habilitado) -----------------------------------------------
@@ -309,6 +314,9 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
                 "(Xcb/Wayland/Win32 vêm com as fases de desktop)"));
         }
         hasSurface_ = true;
+        // P3.5 (T2): micro-mark — VkSurfaceKHR pronta.
+        eng::rhi::reportProgress(eng::rhi::rhi_stage::Surface, "ok",
+                                 "VkSurfaceKHR");
     }
 
     // --- seleção de GPU (missão §19: TODAS enumeradas, motivo por rejeição) --------------------
@@ -442,6 +450,9 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
         library_.loadDeviceFunctions(device_);
         library_.functions().vkGetDeviceQueue(device_, graphicsFamily_, 0, &graphicsQueue_);
         presentQueue_ = graphicsQueue_;
+        // P3.5 (T2): micro-mark — device lógico + queues prontos.
+        eng::rhi::reportProgress(eng::rhi::rhi_stage::Device, "ok",
+                                 properties2.properties.deviceName);
         if (wantSurface && presentFamily != graphicsFamily) {
             library_.functions().vkGetDeviceQueue(device_, presentFamily_, 0, &presentQueue_);
         }
@@ -563,6 +574,10 @@ Result<void> VulkanBackend::initialize(const RendererConfig& config,
         if (!created) {
             return eng::core::makeUnexpected(created.error());
         }
+        // P3.5 (T2): micro-mark — swapchain pronta (último sub-passo da
+        // janela resume→surface antes do primeiro frame).
+        eng::rhi::reportProgress(eng::rhi::rhi_stage::Swapchain, "ok",
+                                 "createSwapchain");
     }
 
     // --- texturas (evolução): layout de descriptor set + pool compartilhados ---------

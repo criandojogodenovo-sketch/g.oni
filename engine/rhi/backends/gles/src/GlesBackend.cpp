@@ -5,11 +5,13 @@
 
 #include "eng/rhi/gles/GlesBackend.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <utility>
 
 #include "eng/log/Macros.hpp"
+#include "eng/rhi/Progress.hpp"
 
 // FASE 7: surface Android (NDK API — NÃO é JNI; missão §II.4/§XII).
 #ifdef __ANDROID__
@@ -195,6 +197,8 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
     if (!fn.eglInitialize(display_, nullptr, nullptr)) {
         return eng::core::makeUnexpected(eglErr("rhi.gles: eglInitialize", fn.eglGetError()));
     }
+    // P3.5 (T2): micro-mark — o display EGL vive (o "instance" do GLES).
+    eng::rhi::reportProgress(eng::rhi::rhi_stage::Instance, "ok", "EGL display");
 
     // --- config ES3 (surface type por plataforma — missão §XII) -----------------
     // Android com janela: EGL_WINDOW_BIT; Linux headless: pbuffer.
@@ -233,6 +237,8 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
         return eng::core::makeUnexpected(
             eglErr("rhi.gles: eglCreateContext (ES 3.2/3.1/3.0 — mínimo 3.0)", errorContext));
     }
+    // P3.5 (T2): micro-mark — contexto ES3 criado (o "device" do GLES).
+    eng::rhi::reportProgress(eng::rhi::rhi_stage::Device, "ok", "EGL context ES3");
 
     // --- surface (pbuffer) quando pedida (missão §38) --------------------------------
     if (config.surface.isValid()) {
@@ -264,6 +270,14 @@ Result<void> GlesBackend::initialize(const RendererConfig& config,
             fn.eglTerminate(display_);
             display_ = EGL_NO_DISPLAY;
             return eng::core::makeUnexpected(created.error());
+        }
+        // P3.5 (T2): micro-mark — EGLSurface da janela nativa pronta.
+        {
+            char detail[64];
+            std::snprintf(detail, sizeof detail, "EGLSurface %ux%u",
+                         config.surface.width, config.surface.height);
+            eng::rhi::reportProgress(eng::rhi::rhi_stage::Surface, "ok",
+                                     detail);
         }
     }
 

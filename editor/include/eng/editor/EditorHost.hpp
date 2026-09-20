@@ -19,10 +19,15 @@
 /// jni.h NÃO aparece aqui — a fronteira vive em android/app (EditorJni.cpp);
 /// este módulo é C++ puro, testável no Linux com backends reais.
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string_view>
+#include <thread>
 
 #include "eng/audio/Audio.hpp"
 #include "eng/core/Result.hpp"
@@ -93,13 +98,13 @@ public:
 
     /// ÁUDIO do editor (P2 §12): liga o mixer do documento ao backend
     /// da plataforma (AAudio no Android — real device output; null no
-    /// Linux/testes). Idempotente; onResume religa se necessário.
+    /// Linux/testes). P3.5: chamada SÍNCRONA de manutenção — o caminho
+    /// do app é o RETRY ASSÍNCRONO (scheduleAudioRetry, T4: nunca mais
+    /// síncrono em onResume; o AAudio do Unisoc já provou ser hostil).
+    /// Acessa o AAudio sob audioOpMutex_ (serialização — T0).
     [[nodiscard]] bool startAudio();
     void stopAudio() noexcept;
-    [[nodiscard]] bool audioRunning() const noexcept
-    {
-        return audioBackend_ != nullptr && audioBackend_->isRunning();
-    }
+    [[nodiscard]] bool audioRunning() const noexcept;
 
     /// P3.4 — observa o primeiro callback real do device (backend
     /// AAudio marca um átomo na thread de áudio; o host persiste o
@@ -172,8 +177,41 @@ private:
     [[nodiscard]] bool createRendererForWindow(std::uint32_t width,
                                                std::uint32_t height);
     void logSelection() const noexcept;
-    /// pauseAll/stop vs resumeAll do mixer (onPause/onResume — P2 §12).
+    /// pauseAll/resumeAll do mixer (onPause/onResume — P2 §12). P3.5: a
+    /// MAIN thread nunca mais para o device aqui (o stream segue puxando
+    /// silêncio — barato e seguro; o teardown é do destrutor, na thread
+    /// do worker de áudio sob audioOpMutex_).
     void audioMixerLifecycle(const char* reason) noexcept;
+
+    // --- áudio P3.5 (T4): retry assíncrono + posse serializada ---------------
+    //
+    // AAudio NÃO é thread-safe (docs NDK) e o HAL do Unisoc já provou
+    // hostil (builder null / janelas opacas). Regras:
+    //  - audioOpMutex_    : posse do backend — held durante SEQUÊNCIAS
+    //    inteiras de start/stop (chamadas AAudio longas). Só a thread do
+    //    worker de áudio (e o destrutor) a toma — NUNCA a main;
+    //  - audioPtrMutex_   : µs — apenas copiar/trocar o shared_ptr (a
+    //    renderFrame lê da main sem tocar o mutex pesado);
+    //  - worker de áudio  : thread dedicada criada no primeiro onResume;
+    //    ciclos de tentativa com backoff 1/2/4 s (inicial + 3 retries);
+    //    falha definitiva → NullBackend gracioso com mark explícito;
+    //    nova tentativa no próximo resume (null-fallback é descartado).
+    void scheduleAudioRetry();
+    void audioRetryWorker();
+    void audioRetryRunCycle();
+    void cancelAudioRetry() noexcept;
+    /// REQUER audioOpMutex_ segurado.
+    [[nodiscard]] bool startAudioLocked();
+    /// REQUER audioOpMutex_ segurado.
+    void stopAudioLocked() noexcept;
+    /// Cópia segura do backend p/ leitores de qualquer thread.
+    [[nodiscard]] std::shared_ptr<eng::audio::IAudioBackend>
+    audioBackendSnapshot() const;
+
+    /// Copia/troca o backend sob audioPtrMutex_ (µs — nunca junto de
+    /// chamadas AAudio: a troca acontece DEPOIS do stop/start).
+    void setAudioBackend(
+        std::shared_ptr<eng::audio::IAudioBackend> backend);
 
     // --- watchdog de backend (P3 §0 — "fecha rapidamente" no Android) -------
     //
@@ -222,10 +260,30 @@ private:
     GizmoDrawData gizmoDraw_{};   ///< geometria do gizmo do frame (P1)
     /// Backend de áudio (P2 §12): AAudio no Android, null no Linux. O
     /// mixer vive no DOCUMENTO (vozes do Play + previews) — o backend
-    /// apenas PUXA o mix na thread própria do device.
-    std::unique_ptr<eng::audio::IAudioBackend> audioBackend_{};
+    /// apenas PUXA o mix na thread própria do device. P3.5:
+    /// shared_ptr + mutex de ponteiro — a renderFrame (main) lê um
+    /// snapshot enquanto o worker troca; o objeto antigo só morre
+    /// quando o último leitor solta.
+    std::shared_ptr<eng::audio::IAudioBackend> audioBackend_{};
     /// P3.4 — o marco AUDIO_CALLBACK_FIRST_FRAME foi persistido?
-    bool audioFirstFrameMarked_{false};
+    /// P3.5: atômico — escrito pelo worker de áudio, lido na main.
+    std::atomic<bool> audioFirstFrameMarked_{false};
+    /// P3.5 (T0/T4): posse serializada do AAudio + worker de retry.
+    mutable std::mutex audioPtrMutex_{};
+    std::mutex audioOpMutex_{};
+    std::mutex audioRetryMutex_{};
+    std::condition_variable audioRetryCv_{};
+    std::thread audioRetryThread_{};
+    bool audioRetryActive_{false};      ///< audioRetryMutex_
+    bool audioRetryCancelled_{false};   ///< audioRetryMutex_
+    bool audioResumeRequested_{false};  ///< audioRetryMutex_
+    /// Incrementa em cada pausa/stop: ciclos de retry de época velha são
+    /// abandonados no próximo checkpoint (a época é a "geração" do
+    /// ciclo de vida de áudio corrente).
+    std::atomic<std::uint32_t> audioEpoch_{0};
+    /// Falha definitiva instalou o NullBackend gracioso (novo resume
+    /// descarta e tenta device real de novo). audioOpMutex_.
+    bool audioNullFallback_{false};
     HostStats stats_{};
     /// Watchdog (P3 §0): frames já apresentados desde a (re)criação do
     /// renderer — usado p/ promover "trying:X" → "good:X".

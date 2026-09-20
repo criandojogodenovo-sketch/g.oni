@@ -71,6 +71,17 @@ object EditorJni {
     /** true se há relatório de crash de execução anterior. */
     external fun nativeStartupHasCrashReport(): Boolean
 
+    // --- P3.5 (T3): watchdog de hang da main thread ------------------------------
+
+    /** Captura ESTA thread (main) como alvo do watchdog e instala os
+     *  handlers de SIGUSR1/SIGUSR2. Chamar UMA vez no onCreate. */
+    external fun nativeWatchdogArm()
+    /** Prova de vida da main (chamado pela runnable postada pelo pinger). */
+    external fun nativeWatchdogHeartbeat()
+    /** Verifica expiração; dispara pthread_kill(main, SIGUSR1)+dump quando
+     *  vencido. Retorna true quando disparou (pinger loga). */
+    external fun nativeWatchdogEvaluate(): Boolean
+
     // --- cena (§8.2) ------------------------------------------------------------
 
     external fun nativeEditorNewScene(handle: Long): Boolean

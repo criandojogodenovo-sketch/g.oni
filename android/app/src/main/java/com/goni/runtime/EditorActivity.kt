@@ -15,6 +15,8 @@ import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.Choreographer
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -60,6 +62,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private var choreographer: Choreographer? = null
     private var surfaceReady = false
     private var lastFrameNanos = 0L
+    // P3.5 (T2): o FIRST_TRAVERSAL é emitido UMA vez (primeiro doFrame).
+    private var firstTraversalMarked = false
 
     // UI
     private lateinit var surfaceView: SurfaceView
@@ -112,6 +116,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             // o crash handler nativo grava goni_crash.log antes do tombstone.
             // P3.2: cada estágio persistido também reescreve a cópia
             // pública (Download/GONI/goni_startup.log) via MediaStore.
+            // P3.5: o espelho é ASSÍNCRONO (fila + worker background) — a
+            // main thread nunca mais espera MediaStore no caminho de mark.
             EditorJni.bootstrap(this)
         } catch (t: Throwable) {
             // A lib nativa pode nem carregar (dlopen/UnsatisfiedLinkError/
@@ -125,6 +131,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             finish()
             return
         }
+        // P3.5 (T3): watchdog de hang da main thread. arm() captura ESTA
+        // thread; o pinger (1 s) faz Handler.post → heartbeat; sem resposta
+        // em 8 s → pthread_kill(main, SIGUSR1) → dump forense completo em
+        // goni_crash.log (o processo continua VIVO — hang diagnosticado).
+        // A graça inicial (15 s) cobre o onCreate pesado do editor.
+        Watchdog.start()
         // P3.2: crash de execução ANTERIOR → exporta IMEDIATAMENTE para
         // Download/GONI/goni_crash.log (sem diálogo, sem depender de UI —
         // o signal handler só pôde gravar no privado).
@@ -162,8 +174,23 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         if (handle != 0L) {
             EditorJni.nativeEditorOnResume(handle)
         }
+        // P3.5 (T2) — micro-marks da janela resume→surface: cada sub-passo
+        // invisível entre o retorno do onResume e o surfaceCreated agora
+        // deixa rastro com timestamp duplo no log privado. Se o app travar,
+        // o ÚLTIMO mark nomeia exatamente o sub-passo que nunca completa.
+        EditorJni.nativeStartupMark("MIRROR_ENQUEUE", "ok",
+            "espelho assíncrono (pós-resume)")
         lastFrameNanos = 0L
         choreographer = Choreographer.getInstance().also { it.postFrameCallback(this) }
+        EditorJni.nativeStartupMark("RESUME_RETURN", "ok", "choreographer armado")
+        // LOOPER_IDLE só aparece quando a main thread processa a PRÓXIMA
+        // mensagem — se a main travar dentro do resume/traversal, este
+        // mark é o primeiro que NÃO aparece (evidence por ausência).
+        Handler(Looper.getMainLooper()).post {
+            EditorJni.nativeStartupMark("LOOPER_IDLE", "ok",
+                "main thread processa mensagens")
+        }
+        EditorJni.nativeWatchdogHeartbeat()
     }
 
     override fun onPause() {
@@ -2782,6 +2809,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     // --- surface + loop (padrão FASE 7 — ADR-039/040) --------------------------------------
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        // P3.5 (T2): o DISPATCH em si é um sub-passo — prova que o
+        // framework entregou a surface à Activity (antes do JNI).
+        EditorJni.nativeStartupMark("SURFACE_DISPATCH", "begin",
+            "framework entregou a surface")
+        EditorJni.nativeWatchdogHeartbeat()
         // P3 §0: a última operação viva antes de qualquer crash de
         // surface/render fica no logcat (dump ANTES de criar o renderer).
         EditorJni.nativeEditorDumpState(handle, "surfaceCreated")
@@ -2820,6 +2852,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     override fun doFrame(nanos: Long) {
+        // P3.5 (T2): primeiro doFrame = o Choreographer voltou a entregar
+        // frames — o traversal do Android começou (a surface vem em
+        // seguida). Também é o heartbeat natural do watchdog (60 Hz).
+        if (!firstTraversalMarked) {
+            firstTraversalMarked = true
+            EditorJni.nativeStartupMark("FIRST_TRAVERSAL", "begin",
+                "primeiro doFrame do choreographer")
+        }
+        EditorJni.nativeWatchdogHeartbeat()
         if (handle != 0L && surfaceReady) {
             val delta = if (lastFrameNanos == 0L) 0f
                         else (nanos - lastFrameNanos) / 1e9f

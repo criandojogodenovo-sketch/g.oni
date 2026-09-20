@@ -14,12 +14,17 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "eng/animation/Animation.hpp"
 #include "eng/editor/Diagnostics.hpp"
@@ -5608,7 +5613,11 @@ TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
         // teste, o pc DEVE cair no próprio executável com offset hex.
         CHECK(text.find("[pc]") != std::string::npos);
         CHECK(text.find("module=") != std::string::npos);
-        CHECK(text.find("+0x") != std::string::npos);
+        // P3.5: formato do [pc]/[fp] ganhou base= explícito p/
+        // symbolização offline (era "modulo+0xoff", agora
+        // "module=M base=B off=O" — mais informação, mesmo contrato).
+        CHECK(text.find("off=0x") != std::string::npos);
+        CHECK(text.find("base=0x") != std::string::npos);
         // O alvo do acesso de um raise() não é um endereço real (si_addr
         // ausente/zero) — a linha fault.addr só pode existir COM módulo
         // resolvido ou nem existir (nunca um [fault.addr] vazio).
@@ -5640,40 +5649,319 @@ TEST_CASE("editor: P3.3 — describeAddress resolve o módulo do processo",
     CHECK(tiny[0] == '\0');
 }
 
-TEST_CASE("editor: P3.2 — callback de espelho dispara após cada estágio",
+TEST_CASE("editor: P3.2/P3.5 — espelho assíncrono notifica fora da thread que marcou",
           "[editor][diagnostics][mirror]") {
     // init() é idempotente por processo (singleton P3.1): o caso valida o
-    // MECANISMO de notificação com o tracer no estado em que estiver — o
-    // callback é registrado/limpo livremente a qualquer momento.
+    // MECANISMO de notificação com o tracer no estado em que estiver.
+    //
+    // P3.5 MUDOU O CONTRATO (T0/T1): o callback NÃO roda mais na thread
+    // que marcou (MediaStore/binder nunca mais na main) — roda na THREAD
+    // DE DESPACHO dedicada, com coalescing de lote (o espelho reescreve o
+    // arquivo COMPLETO; a cópia pública final reflete o último estágio).
     struct MirrorProbe {
-        int calls = 0;
+        std::atomic<int> calls{0};
+        std::atomic<std::uint64_t> lastCaller{0};  // id da thread do callback
     } probe;
 
     // Sem callback: registrar nullptr é válido (estado inicial do P3.1).
     eng::editor::diag::setMirrorCallback(nullptr, nullptr);
     eng::editor::diag::requestMirror();
-    CHECK(probe.calls == 0);
+    CHECK(probe.calls.load() == 0);
+
+    const std::uint64_t selfId = [] {
+        std::ostringstream os;
+        os << std::this_thread::get_id();
+        return std::stoull(os.str());
+    }();
 
     eng::editor::diag::setMirrorCallback(
-        [](void* ud) { static_cast<MirrorProbe*>(ud)->calls++; }, &probe);
+        [](void* ud) {
+            auto* p = static_cast<MirrorProbe*>(ud);
+            p->calls.fetch_add(1);
+            std::ostringstream os;
+            os << std::this_thread::get_id();
+            p->lastCaller.store(std::stoull(os.str()));
+        },
+        &probe);
 
-    // Cada mark persistido notifica o espelho exatamente uma vez —
-    // inclusive estágios "failed" (a cópia pública deve refletir a FALHA
-    // também, não só o sucesso).
+    // Marks da PRÓPRIA thread e de uma thread NATIVA separada (T0: o
+    // retry de áudio do P3.5 marca de uma std::thread — nenhum caminho
+    // pode tocar JNI na thread que marcou).
     eng::editor::diag::mark("TESTE_ESPELHO_A", "ok", "primeiro");
     eng::editor::diag::mark("TESTE_ESPELHO_B", "failed", "segundo");
-    eng::editor::diag::mark("TESTE_ESPELHO_C");
-    CHECK(probe.calls == 3);
+    {
+        std::thread marker{[] {
+            eng::editor::diag::mark("TESTE_ESPELHO_THREAD", "ok",
+                                    "thread nao-attachada");
+            eng::editor::diag::mark("TESTE_ESPELHO_THREAD2", "failed", "x");
+        }};
+        marker.join();
+    }
+    // Drena com prazo (contrato novo: assíncrono, ordenado, coalescido).
+    REQUIRE(eng::editor::diag::waitMirrorIdle(2000));
+    CHECK(probe.calls.load() >= 1);  // ao menos UM lote atendido
+    // T0 — o callback JAMAIS rodou na thread que marcou:
+    CHECK(probe.lastCaller.load() != 0);
+    CHECK(probe.lastCaller.load() != selfId);
 
     // requestMirror dispara manualmente (o export do crash log na
     // execução seguinte usa este caminho a partir da Activity).
+    const int before = probe.calls.load();
     eng::editor::diag::requestMirror();
-    CHECK(probe.calls == 4);
+    REQUIRE(eng::editor::diag::waitMirrorIdle(2000));
+    const int afterManual = probe.calls.load();
+    CHECK(afterManual >= before + 1);
 
     // Limpeza obrigatória: o callback cruza processos-filho dos casos de
     // crash (fork) — nunca pode vazar para outros testes.
     eng::editor::diag::setMirrorCallback(nullptr, nullptr);
     eng::editor::diag::mark("TESTE_ESPELHO_DEPOIS_DE_LIMPAR");
     eng::editor::diag::requestMirror();
-    CHECK(probe.calls == 4);
+    CHECK(eng::editor::diag::waitMirrorIdle(2000));
+    CHECK(probe.calls.load() == afterManual);  // congelado: nada após limpar
+}
+
+TEST_CASE("editor: P3.5 — marks concorrentes não perdem nem duplicam lotes",
+          "[editor][diagnostics][mirror]") {
+    // T0: marks de MÚLTIPLAS threads simultâneas — a fila é mutex+cv
+    // (sem perda), o lote coalesce SEMPRE (nenhum mark fica eternamente
+    // pendente) e o estágio final está no arquivo privado.
+    struct Probe {
+        std::atomic<int> calls{0};
+    } probe;
+    eng::editor::diag::setMirrorCallback(
+        [](void* ud) { static_cast<Probe*>(ud)->calls.fetch_add(1); }, &probe);
+
+    constexpr int kThreads = 4;
+    constexpr int kMarksPerThread = 64;
+    std::vector<std::thread> markers;
+    for (int t = 0; t < kThreads; ++t) {
+        markers.emplace_back([] {
+            for (int i = 0; i < kMarksPerThread; ++i) {
+                eng::editor::diag::mark("TESTE_ESPELHO_STRESS", "ok", "x");
+            }
+        });
+    }
+    for (std::thread& m : markers) {
+        m.join();
+    }
+    REQUIRE(eng::editor::diag::waitMirrorIdle(5000));
+    // 256 marks coalescem em no máx. alguns lotes — nunca 256 callbacks
+    // (fila infinita proibida pela T1) nem zero (perda proibida).
+    CHECK(probe.calls.load() >= 1);
+    CHECK(probe.calls.load() <= kThreads * kMarksPerThread);
+
+    // O ÚLTIMO mark persistiu (arquivo privado tem o estágio).
+    CHECK(std::string{eng::editor::diag::lastStage()} ==
+          "TESTE_ESPELHO_STRESS");
+    eng::editor::diag::setMirrorCallback(nullptr, nullptr);
+}
+
+TEST_CASE("editor: P3.5 — micro-marks carregam timestamps duplos (wt=/mo=)",
+          "[editor][diagnostics]") {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("goni_diag_p35_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    eng::editor::diag::init(dir.c_str());
+
+    eng::editor::diag::mark("TESTE_P35_TS_A", "ok", "antes");
+    eng::editor::diag::mark("TESTE_P35_TS_B", "ok", "depois");
+
+    std::FILE* f = std::fopen(eng::editor::diag::startupLogPath(), "r");
+    REQUIRE(f != nullptr);
+    std::string text;
+    char buf[512];
+    while (std::fgets(buf, sizeof buf, f) != nullptr) {
+        text += buf;
+    }
+    std::fclose(f);
+    // Formato novo: [wt=<wallclock ms> mo=<monotônico ms>] STAGE STATUS.
+    const auto posA = text.find("TESTE_P35_TS_A ok antes");
+    const auto posB = text.find("TESTE_P35_TS_B ok depois");
+    REQUIRE(posA != std::string::npos);
+    REQUIRE(posB != std::string::npos);
+    // Ambos com prefixo de timestamp duplo na MESMA linha.
+    auto lineStart = text.rfind('\n', posA);
+    auto lineEnd = text.find('\n', posA);
+    auto lineStartB = text.rfind('\n', posB);
+    auto lineEndB = text.find('\n', posB);
+    std::string lineA = text.substr(
+        lineStart == std::string::npos ? 0 : lineStart + 1,
+        (lineEnd == std::string::npos ? text.size() : lineEnd) -
+            (lineStart == std::string::npos ? 0 : lineStart + 1));
+    std::string lineB = text.substr(
+        lineStartB == std::string::npos ? 0 : lineStartB + 1,
+        (lineEndB == std::string::npos ? text.size() : lineEndB) -
+            (lineStartB == std::string::npos ? 0 : lineStartB + 1));
+    CHECK(lineA.find("wt=") != std::string::npos);
+    CHECK(lineA.find("mo=") != std::string::npos);
+    CHECK(lineB.find("wt=") != std::string::npos);
+    CHECK(lineB.find("mo=") != std::string::npos);
+    // wt é wallclock (epoch ms, ~1,7e12 em 2024+); mo é pequeno (uptime).
+    unsigned long long wt = 0, mo = 0;
+    CHECK(std::sscanf(lineB.c_str(), "[wt=%llu mo=%llu]", &wt, &mo) == 2);
+    CHECK(wt > 1'000'000'000'000ULL);  // epoch ms
+    CHECK(mo > 0);                      // uptime ms
+    CHECK(mo < wt);                      // ordens de grandeza distintas
+}
+
+TEST_CASE("editor: P3.5 — watchdog pega hang da main e o processo SEGUE VIVO",
+          "[editor][diagnostics][watchdog]") {
+    // O watchdog substitui o ANR que o dispositivo não entrega: main sem
+    // heartbeat → SIGUSR1 → dump forense em goni_crash.log SEM matar o
+    // processo. Validado num processo FILHO (fork) para não envenenar o
+    // estado do runner.
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("goni_diag_wd_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const std::string resultPath =
+        (dir / "wd_result").string();
+    std::filesystem::remove(resultPath);
+
+    // init no PAI antes do fork: o caminho do crash log é herdado e o
+    // waitMirrorIdle garante que a thread de despacho está quieta no
+    // momento do fork (marks do filho nunca disputam um lock herdado).
+    eng::editor::diag::init(dir.c_str());
+    REQUIRE(eng::editor::diag::waitMirrorIdle(2000));
+
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        // FILHO: arma o watchdog com limiar curto (teste), NUNCA dá
+        // heartbeat e roda o evaluate como o pinger faria.
+        eng::editor::diag::init(dir.c_str());
+        eng::editor::diag::watchdog::arm(/*thresholdMs=*/200,
+                                          /*graceMs=*/0);
+        int fired = 0;
+        for (int i = 0; i < 10 && fired == 0; ++i) {
+            struct timespec ts{0, 100 * 1000 * 1000};  // 100 ms
+            ::nanosleep(&ts, nullptr);
+            if (eng::editor::diag::watchdog::evaluate()) {
+                fired = 1;
+            }
+        }
+        // Dá tempo do dump do SIGUSR1 aterrissar no arquivo.
+        struct timespec ts{0, 200 * 1000 * 1000};
+        ::nanosleep(&ts, nullptr);
+        if (std::FILE* rf = std::fopen(resultPath.c_str(), "w")) {
+            std::fprintf(rf, "%d", fired);
+            std::fclose(rf);
+        }
+        _exit(0);  // saída LIMPA: o SIGUSR1 é diagnóstico, não fatal
+    }
+    REQUIRE(pid > 0);
+    int status = 0;
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    INFO("child status=" << status);
+    // O processo filho precisa ter saído LIMPO (não morto por sinal):
+    // um SIGUSR1 diagnosticado NUNCA derruba o processo.
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+
+    int fired = -1;
+    if (std::FILE* rf = std::fopen(resultPath.c_str(), "r")) {
+        const int got = std::fscanf(rf, "%d", &fired);
+        std::fclose(rf);
+        REQUIRE(got == 1);
+    }
+    INFO("fired=" << fired);
+    CHECK(fired == 1);  // evaluate() disparou o poke
+
+    // O dump forense aterrissou no goni_crash.log com o contexto da main.
+    if (std::FILE* cf = std::fopen(eng::editor::diag::crashLogPath(), "r")) {
+        std::string text;
+        char buf[512];
+        while (std::fgets(buf, sizeof buf, cf) != nullptr) {
+            text += buf;
+        }
+        std::fclose(cf);
+        INFO("crash log:\n" << text);
+        CHECK(text.find("[watchdog]") != std::string::npos);
+        CHECK(text.find("[dump] tag=watchdog") != std::string::npos);
+        CHECK(text.find("si_pid=") != std::string::npos);
+        CHECK(text.find("tid=") != std::string::npos);
+        CHECK(text.find("[pc]") != std::string::npos);
+        CHECK(text.find("module=") != std::string::npos);
+    } else {
+        FAIL("goni_crash.log não foi criado pelo watchdog");
+    }
+    std::filesystem::remove(resultPath);
+}
+
+TEST_CASE("editor: P3.5 — crash fatal despeja TODAS as threads + maps cru",
+          "[editor][diagnostics][crash]") {
+    // T3b: num crash fatal, o handler despeja TODAS as threads (a thread
+    // culpada de um abort por JNI/suspend NÃO é a sinalizada) e o maps
+    // CRU verbatim. Validado em processo FILHO com threads parqueadas.
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("goni_diag_forensic_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+
+    // init+idle no PAI antes do fork (mesma disciplina do caso do
+    // watchdog): caminhos consistentes e despacho quiescente.
+    eng::editor::diag::init(dir.c_str());
+    REQUIRE(eng::editor::diag::waitMirrorIdle(2000));
+    const std::string crashLog = eng::editor::diag::crashLogPath();
+
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        // FILHO: duas threads parqueadas (alvo do ping SIGUSR2) + crash.
+        std::atomic<bool> stop{false};
+        std::vector<std::thread> parked;
+        for (int t = 0; t < 2; ++t) {
+            parked.emplace_back([&stop] {
+                while (!stop.load()) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(10));
+                }
+            });
+        }
+        eng::editor::diag::init(dir.c_str());
+        // RE-instala pós-fork (mesma disciplina do caso P3.1): frameworks
+        // de teste (Catch2!) sobrescrevem os handlers DENTRO do runner —
+        // o filho precisa dos NOSSSOS handlers ativos no momento do raise.
+        eng::editor::diag::installCrashHandler();
+        eng::editor::diag::mark("ESTAGIO_ANTECRASH_P35", "ok", "vivos");
+        ::raise(SIGABRT);
+        stop = true;
+        for (std::thread& t : parked) {
+            t.join();
+        }
+        _exit(0);  // inalcançável
+    }
+    REQUIRE(pid > 0);
+    int status = 0;
+    REQUIRE(::waitpid(pid, &status, 0) == pid);
+    const bool diedBySignal = WIFSIGNALED(status);
+    const bool diedUnclean = WIFEXITED(status) && WEXITSTATUS(status) != 0;
+    CHECK((diedBySignal || diedUnclean));
+
+    std::FILE* f = std::fopen(crashLog.c_str(), "r");
+    if (f == nullptr) {
+        FAIL("goni_crash.log não foi criado pelo handler");
+        return;
+    }
+    std::string text;
+    char buf[1024];
+    while (std::fgets(buf, sizeof buf, f) != nullptr) {
+        text += buf;
+    }
+    std::fclose(f);
+    INFO("crash log (len=" << text.size() << "):\n" << text.substr(0, 4000));
+    CHECK(text.find("[crash]") != std::string::npos);
+    CHECK(text.find("SIGABRT") != std::string::npos);
+    CHECK(text.find("si_pid=") != std::string::npos);
+    CHECK(text.find("[dump] tag=fatal") != std::string::npos);
+    // Threads: enumeradas com tid+comm e pingueadas (as duas parqueadas
+    // do filho devem ter despejado suas seções [dump] tag=other).
+    CHECK(text.find("[thread]") != std::string::npos);
+    CHECK(text.find("comm=") != std::string::npos);
+    CHECK(text.find("[dump] tag=other") != std::string::npos);
+    // Maps cru verbatim.
+    CHECK(text.find("[maps.raw begin]") != std::string::npos);
+    CHECK(text.find("[maps.raw end]") != std::string::npos);
+    // Pilhas em registo duplo.
+    CHECK(text.find("[fp]") != std::string::npos);
 }
