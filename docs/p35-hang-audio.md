@@ -1,7 +1,21 @@
 # P3.5 — Hang de inicialização + SIGABRT no Realme C33
 
 Base: `f274ac8` (P3.4 — adaptação total ao HAL + drenagem de callback).
-Commit: `64aa34f` (implementação + testes).
+Commits: `64aa34f` (implementação + testes) + `dc89731` (relatório) +
+`40e3456` (fix de compile do clang NDK — `kHandledCount` sem uso; o GCC
+do CI Linux não pune, o clang do Android sim).
+
+**APK final**: `goni-p3.5-final.apk` (CI Android de `40e3456`,
+assembleDebug, NDK 27.0.12077973, arm64-v8a + x86_64)
+
+```
+sha256 e2efbd7e1fa67f910a9d0080d96944dcd3364e147c4a8864b0ea984d41f43337
+7.112.572 bytes (libgoni.so arm64 1.736.952 B + x86_64 1.917.256 B)
+```
+
+CI Linux: **success** (64aa34f, 40e3456) · CI Android: **success**
+(40e3456 — após o fix; o primeiro push `dc89731` falhou no compile do
+clang, corrigido em `40e3456`).
 
 ---
 
@@ -186,9 +200,9 @@ são alinhados e o linux-debug compila este TU com UBSan).
 | Casos novos | espelho assíncrono T0 (callback fora da thread que marcou), stress 4×64 marks concorrentes, timestamps wt/mo, watchdog fork-vivo (SIGUSR1 diagnosticado, processo segue vivo), forense completa (threads+maps cru) |
 | TSan dedicado (`scripts/tsan_p35_harness.cpp`) | **ZERO data races** — mirror×6 threads com callback lento, watchdog arm/heartbeat/evaluate concorrentes, CallbackGate (regressão P3.4), 5 ciclos resume/pause/destroy do host com worker de áudio |
 | Bug real encontrado pelo TSan | corrida no `crashGlobals()` (escritas concorrentes de `mark()` sem lock) — corrigida com serialização; o handler de sinal continua lendo best-effort (documentado desde P3.1) |
-| CI Linux | VERDE (commit `64aa34f`) |
-| CI Android (assembleDebug) | VERDE |
-| APK final + SHA256 | ver §9 |
+| CI Linux | VERDE (`64aa34f`, `40e3456`) |
+| CI Android (assembleDebug) | VERDE (`40e3456`) |
+| APK final + SHA256 | §9 (CI de `40e3456`) |
 
 Regressões P3.2/P3.4 preservadas: zero duplicatas no MediaStore
 (Owner+prefixo+limpeza), ordem FIFO, re-publicação de IS_PENDING,
@@ -225,12 +239,12 @@ sobrevivência à morte) é verificada pelos casos novos.
 
 ## 9. APK final
 
-`goni-p3.5-final.apk` (CI Android do commit de fechamento,
-assembleDebug, NDK 27.0.12077973, arm64-v8a + x86_64):
+`goni-p3.5-final.apk` (CI Android do commit `40e3456`, assembleDebug,
+NDK 27.0.12077973, arm64-v8a + x86_64):
 
 ```
-sha256 <preenchido no fechamento>
-< tamanho > bytes
+sha256 e2efbd7e1fa67f910a9d0080d96944dcd3364e147c4a8864b0ea984d41f43337
+7.112.572 bytes
 ```
 
 ## 10. Limitações honestas
