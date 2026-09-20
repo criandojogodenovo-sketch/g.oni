@@ -1,11 +1,17 @@
 # P3.4 — Resolução definitiva do crash AAudio no Realme C33
 
 Base: `5743466` (P3.3 — instrumentação de crash com `/proc/self/maps` +
-backtrace). Este documento descreve a correção, os testes de regressão,
-a validação e as limitações.
+backtrace). Commits: `d4bc2db` (correção + testes) + `645d95b` (link
+eng::log — o TU Android inclui `eng/log/Macros.hpp`; no Linux o TU é
+vazio e o CI Android foi quem apanhou) + fechamento (sha256 abaixo).
 
-**APK final**: `goni-p3.4-final.apk` — ver §7 (SHA256 no commit
-seguinte ao build do CI, padrão do P3.3).
+**APK final**: `goni-p3.4-final.apk` (CI Android de `645d95b`,
+assembleDebug, NDK 27.0.12077973, arm64-v8a + x86_64)
+
+```
+sha256 a00c64d2cbb41a439f90f72785a033dbea1ee13effede5af9a17b1da58621790
+7.059.372 bytes
+```
 
 ---
 
@@ -155,17 +161,21 @@ zero data races.
 | Linux Debug (ASan/UBSan/-Werror) | 31/31 — 4.891 asserções no módulo de áudio (5 execuções consecutivas) |
 | Linux Release (LTO) | 31/31 |
 | TSan (gate+resampler) | OK — ver §5 |
-| CI Linux (push) | ✓ (ver run do commit) |
-| CI Android assembleDebug (arm64-v8a) | ✓ (ver run do commit) |
+| CI Linux (`d4bc2db` e `645d95b`) | ✓ success |
+| CI Android assembleDebug (arm64-v8a) | ✓ success (`645d95b`; o `d4bc2db` pegou o link faltante de eng::log — corrigido no `645d95b`) |
 | Emulador ATD (P3.3) | Comportamento inalterado esperado: `AUDIO_BUILDER_CREATE failed null` → app VIVO sem áudio |
 | **Realme C33** | **PENDENTE — critério decisivo, requer o usuário (ver §8)** |
 
 ## 7. APK
 
-Construído pelo CI Android (assembleDebug, NDK 27.0.12077973,
-arm64-v8a + x86_64), artefato `goni-debug-apk` do run deste push,
-copiado para `goni-p3.4-final.apk`. SHA256 registrado no commit de
-fechamento (padrão P3.3 — o hash só existe depois do build).
+`goni-p3.4-final.apk` — artefato `goni-debug-apk` do run CI Android de
+`645d95b` (assembleDebug, NDK 27.0.12077973, arm64-v8a + x86_64;
+libgoni.so arm64 = 1.716.896 B; assinado debug):
+
+```
+sha256 a00c64d2cbb41a439f90f72785a033dbea1ee13effede5af9a17b1da58621790
+7.059.372 bytes
+```
 
 ## 8. Instruções para o Realme C33
 
