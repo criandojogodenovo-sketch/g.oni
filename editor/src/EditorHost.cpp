@@ -77,6 +77,17 @@ constexpr std::uint64_t kWatchdogHealthyFrames = 30;
 /// Arquivo do watchdog na RAIZ do workspace (oculto, fora dos projetos).
 constexpr std::string_view kWatchdogFile{".goni_backend_watchdog"};
 
+/// P3.4 — trampoline do hook de progresso do backend de áudio: os
+/// estágios granulares (backend_stage::*) viram marcos do diagnóstico
+/// persistido 1:1 (mesma UI thread de start(); o mirror P3.2 copia
+/// para Download/GONI a cada estágio — a janela de morte do C33 fica
+/// cercada estágio a estágio). Sem userdata: diag é global do processo.
+void audioBackendProgress(void* /*userdata*/, const char* stage,
+                           const char* status, const char* detail)
+{
+    eng::editor::diag::mark(stage, status, detail);
+}
+
 }  // namespace
 
 // =============================================================================
@@ -264,10 +275,11 @@ void EditorHost::onResume()
 
 bool EditorHost::startAudio()
 {
-    // P3.3 — granular: cercar TODO o caminho de áudio com estágios
+    // P3.4 — granular: cercar TODO o caminho de áudio com estágios
     // persistidos (o open do AAudio envolve dlopen + binder + HAL do
     // dispositivo — as chamadas de sistema mais opacas da janela de
-    // morte súbita do C33).
+    // morte súbita do C33). O backend emite os seus próprios marcos
+    // (AUDIO_*) via hook — instalado ANTES de criar o backend.
     if (document_ == nullptr) {
         return false;
     }
@@ -275,6 +287,7 @@ bool EditorHost::startAudio()
         return true;  // idempotente
     }
     diag::mark("STARTUP_AUDIO", "begin");
+    eng::audio::setBackendProgressHook(&audioBackendProgress, nullptr);
     audioBackend_ = eng::audio::createDefaultBackend();
     if (audioBackend_ == nullptr) {
         diag::mark("STARTUP_AUDIO", "failed", "createDefaultBackend = null");
@@ -284,6 +297,7 @@ bool EditorHost::startAudio()
         const std::string backendName{audioBackend_->name()};
         diag::mark("STARTUP_AUDIO", "backend", backendName.c_str());
     }
+    audioFirstFrameMarked_ = false;
     auto started = audioBackend_->start(document_->audioMixer());
     if (started.isError()) {
         ENG_WARN("audio backend: {} — previews/Play continuam sem device",
@@ -298,6 +312,9 @@ bool EditorHost::startAudio()
         diag::mark("STARTUP_AUDIO", "started", device.c_str());
     }
     ENG_INFO("audio backend '{}' ativo", audioBackend_->name());
+    // P3.4: o primeiro callback pode disparar já DENTRO do requestStart
+    // (o AAudio começa a puxar antes de retornar) — observa agora.
+    checkAudioFirstCallbackFrame();
     return true;
 }
 
@@ -307,9 +324,27 @@ void EditorHost::stopAudio() noexcept
         audioBackend_->stop();
         audioBackend_.reset();
     }
+    audioFirstFrameMarked_ = false;
     if (document_ != nullptr) {
         document_->audioMixer().stopAll();
     }
+}
+
+void EditorHost::checkAudioFirstCallbackFrame()
+{
+    // P3.4 — evidência de vida do pull: o callback do AAudio marca um
+    // átomo na própria thread de áudio; persistimos o marco UMA vez,
+    // da UI thread (o hook/mirror do diagnóstico nunca roda na thread
+    // de áudio — reentrância proibida por contrato).
+    if (audioFirstFrameMarked_ || audioBackend_ == nullptr ||
+        !audioBackend_->isRunning() ||
+        !audioBackend_->hasFirstCallbackFired()) {
+        return;
+    }
+    audioFirstFrameMarked_ = true;
+    const std::string device = audioBackend_->describeDevice();
+    diag::mark(eng::audio::backend_stage::CallbackFirstFrame, "ok",
+               device.c_str());
 }
 
 void EditorHost::audioMixerLifecycle(const char* reason) noexcept
@@ -404,6 +439,12 @@ void EditorHost::logSelection() const noexcept
 
 bool EditorHost::renderFrame(float deltaSeconds)
 {
+    // P3.4 — observa o primeiro callback de áudio mesmo em frames
+    // pulados (sem surface/paused): a evidência não depende do render.
+    if (!audioFirstFrameMarked_) {
+        checkAudioFirstCallbackFrame();
+    }
+
     if (paused_ || state_ == HostSurfaceState::NoSurface ||
         state_ == HostSurfaceState::Destroyed ||
         !viewportRenderer_.has_value()) {

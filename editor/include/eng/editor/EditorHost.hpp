@@ -101,6 +101,11 @@ public:
         return audioBackend_ != nullptr && audioBackend_->isRunning();
     }
 
+    /// P3.4 — observa o primeiro callback real do device (backend
+    /// AAudio marca um átomo na thread de áudio; o host persiste o
+    /// marco backend_stage::CallbackFirstFrame aqui, na UI thread).
+    void checkAudioFirstCallbackFrame();
+
     // --- frame (Choreographer) -----------------------------------------------
 
     /// tick do runtime (Play) + render do viewport (foco do modo).
@@ -219,6 +224,8 @@ private:
     /// mixer vive no DOCUMENTO (vozes do Play + previews) — o backend
     /// apenas PUXA o mix na thread própria do device.
     std::unique_ptr<eng::audio::IAudioBackend> audioBackend_{};
+    /// P3.4 — o marco AUDIO_CALLBACK_FIRST_FRAME foi persistido?
+    bool audioFirstFrameMarked_{false};
     HostStats stats_{};
     /// Watchdog (P3 §0): frames já apresentados desde a (re)criação do
     /// renderer — usado p/ promover "trying:X" → "good:X".

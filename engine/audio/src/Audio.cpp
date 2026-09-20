@@ -506,4 +506,28 @@ std::string NullAudioBackend::describeDevice() const
     return "null (sem device — testes/Linux)";
 }
 
+// =============================================================================
+// Hook de progresso (P3.4) — armazenamento global do processo
+// =============================================================================
+
+namespace {
+BackendProgressHook g_progressHook = nullptr;
+void* g_progressUserdata = nullptr;
+}  // namespace
+
+void setBackendProgressHook(BackendProgressHook hook, void* userdata)
+{
+    g_progressHook = hook;
+    g_progressUserdata = hook != nullptr ? userdata : nullptr;
+}
+
+void reportBackendStage(const char* stage, const char* status,
+                        const char* detail) noexcept
+{
+    if (g_progressHook != nullptr && stage != nullptr) {
+        g_progressHook(g_progressUserdata, stage,
+                       status != nullptr ? status : "ok", detail);
+    }
+}
+
 }  // namespace eng::audio

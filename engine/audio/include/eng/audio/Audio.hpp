@@ -194,6 +194,22 @@ private:
 // Backend (§6.9) — pull
 // =============================================================================
 
+/// P3.4 — nomes dos estágios granulares da inicialização do backend de
+/// áudio. Contrato com o host: o hook de progresso recebe EXATAMENTE
+/// estas strings e o diagnóstico as persiste 1:1 (ver
+/// docs/p34-aaudio-fix.md). A sequência canônica da inicialização AAudio
+/// está documentada em AAudioBackend.cpp.
+namespace backend_stage {
+inline constexpr char Dlopen[] = "AUDIO_DLOPEN";
+inline constexpr char Symbols[] = "AUDIO_SYMBOLS";
+inline constexpr char BuilderCreate[] = "AUDIO_BUILDER_CREATE";
+inline constexpr char BuilderConfig[] = "AUDIO_BUILDER_CONFIG";
+inline constexpr char StreamOpen[] = "AUDIO_STREAM_OPEN";
+inline constexpr char StreamParamsVerify[] = "AUDIO_STREAM_PARAMS_VERIFY";
+inline constexpr char StreamStart[] = "AUDIO_STREAM_START";
+inline constexpr char CallbackFirstFrame[] = "AUDIO_CALLBACK_FIRST_FRAME";
+}  // namespace backend_stage
+
 class IAudioBackend {
 public:
     virtual ~IAudioBackend() = default;
@@ -208,6 +224,14 @@ public:
     [[nodiscard]] virtual std::string describeDevice() const
     {
         return {};
+    }
+    /// P3.4 — true quando o callback do backend entregou ao menos um
+    /// bloco ao device (o AAudio marca isso na própria thread de áudio;
+    /// o host observa da thread dele e persiste o marco
+    /// backend_stage::CallbackFirstFrame). Default: false.
+    [[nodiscard]] virtual bool hasFirstCallbackFired() const noexcept
+    {
+        return false;
     }
 };
 
@@ -231,5 +255,35 @@ private:
 /// Fábrica do backend padrão da plataforma (AAUDIO no Android via dlopen —
 /// AAudioBackend.cpp; null no Linux/testes). Dono é o chamador (host).
 [[nodiscard]] std::unique_ptr<IAudioBackend> createDefaultBackend();
+
+// =============================================================================
+// Hook de progresso da inicialização do backend (P3.4)
+// =============================================================================
+
+/// Callback de progresso instalado pelo HOST antes de
+/// createDefaultBackend(): os backends emitem os estágios granulares
+/// (backend_stage::*) DURANTE start() — é o que cercar a janela de morte
+/// súbita do Realme C33 (as chamadas AAudio são as mais opacas do
+/// startup). A engine de áudio NÃO depende do módulo editor (grafo
+/// acíclico): quem sabe persistir é quem instalou o hook.
+///
+/// Contratos:
+/// - chamado na MESMA thread de start() (nunca da thread de áudio,
+///   nunca de signal handler);
+/// - `stage` é um backend_stage::*; `status` "begin"/"ok"/"failed";
+///   `detail` é texto curto ou nullptr;
+/// - o hook NÃO pode chamar a API de áudio (reentrância proibida) e
+/// - não pode lançar (função C).
+using BackendProgressHook = void (*)(void* userdata, const char* stage,
+                                     const char* status,
+                                     const char* detail);
+
+/// Registra (ou limpa com nullptr) o hook de progresso.
+void setBackendProgressHook(BackendProgressHook hook, void* userdata);
+
+/// (uso interno dos backends) Emite um estágio pelo hook instalado
+/// (no-op sem hook). `detail` pode ser nullptr.
+void reportBackendStage(const char* stage, const char* status,
+                        const char* detail) noexcept;
 
 }  // namespace eng::audio

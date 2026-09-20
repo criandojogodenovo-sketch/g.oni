@@ -1,6 +1,7 @@
 add_library(eng_audio STATIC
     src/Audio.cpp
     src/Wav.cpp
+    src/AudioAdapt.cpp      # P3.4: conversão canais/formato + resampler + gate
     src/AAudioBackend.cpp   # Linux: TU vazia (guard __ANDROID__); APK: real
 )
 add_library(eng::audio ALIAS eng_audio)
