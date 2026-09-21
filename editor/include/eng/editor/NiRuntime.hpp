@@ -15,6 +15,7 @@
 /// mecanismo do Inspector, auditoria D2).
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "eng/niscript/NiScript.hpp"
@@ -22,6 +23,31 @@
 #include "eng/scene/Scene.hpp"
 
 namespace eng::editor {
+
+/// P4.1 (T2/D5) — diagnóstico do runtime de scripts, VISÍVEL ao autor.
+/// O D5 device-verificado: script com erro compilava "em silêncio" (só
+/// log) e o autor via "nada acontece" no Play. Estes contadores são a
+/// fonte da UI (toast/painel do editor) e do diagnóstico persistido.
+struct NiScriptStats {
+    std::uint32_t scriptsFound{0};      ///< componentes com source não-vazio
+    std::uint32_t scriptsCompiled{0};   ///< compilação OK
+    std::uint32_t scriptsFailed{0};     ///< compilação FALHOU (desabilitado)
+    std::uint32_t instances{0};         ///< instâncias vivas (== compiled)
+    std::uint64_t ticks{0};             ///< eventos `up update` executados
+    std::uint64_t firstUpdateTick{0};   ///< nº do tick da 1ª update (0=nenhum)
+    std::uint32_t faults{0};            ///< faults de runtime registrados
+    /// Primeiro erro de compilação ("linha:col: mensagem") — vazio se OK.
+    std::string firstCompileError;
+    /// Entidade (index) da 1ª falha de compilação — para a UI apontar o nó.
+    std::uint32_t firstFailedEntity{0xFFFFFFFFu};
+    /// Último fault de runtime ("mensagem @ entidade") — vazio se nenhum.
+    std::string lastFaultMessage;
+
+    [[nodiscard]] bool healthy() const noexcept
+    {
+        return scriptsFailed == 0;
+    }
+};
 
 class NiRuntime final {
 public:
@@ -31,8 +57,9 @@ public:
     NiRuntime& operator=(const NiRuntime&) = delete;
 
     /// Prepara o runtime sobre o CLONE (chamado no play(), depois do
-    /// clone existir). Compila todos os scripts (erros: log + script
-    /// desabilitado), cria instâncias e roda @init na ordem de criação.
+    /// clone existir). Compila todos os scripts (erros: log + STATS +
+    /// diagnóstico persistido — P4.1: nunca mais silêncio), cria
+    /// instâncias e roda @init na ordem de criação.
     void start(eng::scene::Scene& runtimeScene);
 
     /// `up start` em todas as instâncias (após todos @init — ordem
@@ -54,6 +81,13 @@ public:
     [[nodiscard]] std::vector<const eng::ni::NiScriptState*> instances()
         const;
 
+    /// P4.1 (T2/D5): estatística VISÍVEL do runtime (compilação, ticks,
+    /// faults) — o editor exibe ao autor (toast/painel), não só no log.
+    [[nodiscard]] const NiScriptStats& stats() const noexcept
+    {
+        return stats_;
+    }
+
     /// Liga a fonte de AÇÕES (o EditorDocument conecta o runtimeInput_
     /// do clone). `phase`: 0=down, 1=pressed, 2=released.
     void setActionQuery(bool (*query)(std::string_view, int, void*),
@@ -74,6 +108,7 @@ private:
     float delta_ = 0.f;
     bool (*actionQuery_)(std::string_view, int, void*) = nullptr;
     void* actionQueryUser_ = nullptr;
+    NiScriptStats stats_{};
 };
 
 } // namespace eng::editor

@@ -176,6 +176,13 @@ public:
     [[nodiscard]] const Camera2D& camera() const noexcept { return camera_; }
     [[nodiscard]] Camera2D& camera() noexcept { return camera_; }
 
+    /// P4.1 (T1/D3/D4) — densidade do device (dp → px da surface). 1.0 no
+    /// Linux/testes; a Activity instala `resources.displayMetrics.density`.
+    /// Alvos de toque e handles do gizmo ESCALAM por isto (48 dp = 48×s px
+    /// de alvo) — os 13 px do P1 eram intocáveis no dedo (defeito D3/D4).
+    void setUiScale(float scale) noexcept;
+    [[nodiscard]] float uiScale() const noexcept { return uiScale_; }
+
     // --- câmera de jogo (evolução P0-5, ADR-051) ------------------------------
 
     /// Define a câmera de JOGO usada nas conversões (nullptr = desliga).
@@ -233,6 +240,7 @@ private:
     const Camera2D* gameCamera_ = nullptr;  ///< câmera de jogo (P0-5)
     float screenW_{1.f};
     float screenH_{1.f};
+    float uiScale_{1.f};  ///< densidade do device (P4.1 — dp → px)
 };
 
 } // namespace eng::editor

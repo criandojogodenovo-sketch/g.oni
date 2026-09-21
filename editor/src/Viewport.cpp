@@ -90,6 +90,15 @@ void Viewport::setScreenSize(float width, float height) noexcept
     screenH_ = height > 0.f && std::isfinite(height) ? height : 1.f;
 }
 
+void Viewport::setUiScale(float scale) noexcept
+{
+    // Faixa honesta: densidades de device (mdpi 1.0 … xxhdpi 3.0+). Valor
+    // lixo → mantém 1.0 (nunca degenera os alvos de toque).
+    uiScale_ = std::isfinite(scale) && scale >= 0.5f && scale <= 4.f
+                   ? scale
+                   : 1.f;
+}
+
 // =============================================================================
 // Quads e hit-test
 // =============================================================================

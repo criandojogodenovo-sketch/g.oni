@@ -389,17 +389,39 @@ private:
         if (e == nullptr) {
             return false;
         }
-        if (check(TokKind::Assign)) {
+        // P4.1 (D5): `=` e os compostos += -= *= /= (desugar no parse).
+        const bool isAssign = check(TokKind::Assign) ||
+                              check(TokKind::PlusAssign) ||
+                              check(TokKind::MinusAssign) ||
+                              check(TokKind::StarAssign) ||
+                              check(TokKind::SlashAssign);
+        if (isAssign) {
             if (e->kind != Expr::Kind::Ident
                 && e->kind != Expr::Kind::Member) {
                 error("alvo de atribuição inválido (esperado variável ou "
                       "campo)");
                 return false;
             }
+            const TokKind op = peek().kind;
             advance();
             Stmt* s = newStmt(Stmt::Kind::Assign, t);
             s->lvalue = e;
-            s->value = parseExpr();
+            if (op == TokKind::Assign) {
+                s->value = parseExpr();
+            } else {
+                // Desugar `x op= v` → `x = x op v`. O nó do alvo é REUSADO
+                // como operando esquerdo (arena do parser — endereços
+                // estáveis, sem dupla posse); o Compiler lê o lvalue duas
+                // vezes (load + store), exatamente a semântica esperada.
+                Expr* bin = newExpr(Expr::Kind::Binary, t);
+                bin->binOp = op == TokKind::PlusAssign ? BinOp::Add
+                           : op == TokKind::MinusAssign ? BinOp::Sub
+                           : op == TokKind::StarAssign ? BinOp::Mul
+                                                       : BinOp::Div;
+                bin->left = e;
+                bin->right = parseExpr();
+                s->value = bin;
+            }
             if (s->value == nullptr) {
                 return false;
             }

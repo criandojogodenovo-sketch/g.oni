@@ -2,7 +2,9 @@ add_library(eng_audio STATIC
     src/Audio.cpp
     src/Wav.cpp
     src/AudioAdapt.cpp      # P3.4: conversão canais/formato + resampler + gate
-    src/AAudioBackend.cpp   # Linux: TU vazia (guard __ANDROID__); APK: real
+    src/AAudioBackend.cpp   # Linux: TU vazio (guard __ANDROID__); APK: real
+    src/OpenSlEsBackend.cpp # P4.1/D6: fallback Legacy (Android; vazio Linux)
+    src/AutoBackend.cpp     # P4.1/D6: cadeia de seleção (AAudio→OpenSL|null)
 )
 add_library(eng::audio ALIAS eng_audio)
 target_include_directories(eng_audio PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

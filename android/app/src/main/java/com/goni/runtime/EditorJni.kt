@@ -117,8 +117,11 @@ object EditorJni {
     /** tool: 0=Select, 1=Move, 2=Rotate, 3=Scale. */
     external fun nativeEditorSetTool(handle: Long, tool: Int)
     external fun nativeEditorGetTool(handle: Long): Int
+    /** P4.1 (T1/D3/D4): densidade do device (dp→px) — alvos de toque do
+     * gizmo escalam por isto (≥48 dp). Instalar no startup + config change. */
+    external fun nativeEditorSetUiScale(handle: Long, scale: Float)
     /** Handle do gizmo sob o toque (0=nenhum, 1=centro, 2=eixoX, 3=eixoY,
-     * 4=rotação, 5-8=cantos) — e INICIA o drag quando acerta. */
+     * 4=rotação, 5-8=cantos, 9-12=arestas) — e INICIA o drag quando acerta. */
     external fun nativeEditorGizmoDragBegin(handle: Long, x: Float, y: Float): Int
     /** Arraste do gizmo até a posição ABSOLUTA do pointer (aplica ao ECS). */
     external fun nativeEditorGizmoDragTo(handle: Long, x: Float, y: Float): Boolean
@@ -160,6 +163,14 @@ object EditorJni {
     external fun nativeEditorAssetRename(handle: Long, category: String, name: String, newName: String): Boolean
     external fun nativeEditorAssetDelete(handle: Long, category: String, name: String): Boolean
     external fun nativeEditorAssetMove(handle: Long, fromCategory: String, name: String, toCategory: String): Boolean
+
+    /** P4.1 (T2/D5): estatística do runtime de scripts — TSV
+     * "found\tcompiled\tfailed\tinstances\tticks\tfaults\terro\tfault".
+     * Fonte do toast/painel VISÍVEL no Play (o silêncio era o D5). */
+    external fun nativeEditorScriptStats(handle: Long): String?
+    /** P4.1 (T3/D6): estado do áudio para o HUD — "off" |
+     * "running:<backend> <device>" | "null:<motivo>". */
+    external fun nativeEditorAudioStatus(handle: Long): String?
 
     // --- imagens/texturas (evolução P0) -----------------------------------------------------
 

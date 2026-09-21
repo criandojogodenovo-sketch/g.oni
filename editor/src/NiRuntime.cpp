@@ -12,11 +12,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "eng/editor/Diagnostics.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
 #include "eng/log/Macros.hpp"
 #include "eng/math/Quat.hpp"
@@ -302,15 +304,22 @@ void NiRuntime::start(eng::scene::Scene& runtimeScene)
     }
 
     // Compila + instancia scripts do CLONE (ordem determinística do each).
+    // P4.1 (T2/D5): TODOS os resultados vão para stats_ (fonte da UI —
+    // toast/painel do editor) E para o diagnóstico persistido (marcos
+    // SCRIPT_* — a forense do device passa a mostrar porquê um script
+    // "não faz nada"). O silêncio do P3.5 era o defeito D5.
+    stats_ = NiScriptStats{};
     const eng::ni::CompileOptions options{&natives_};
     scene_->world().each<eng::editor::NiScriptComponent>(
         [&](eng::ecs::Entity e, const eng::editor::NiScriptComponent& c) {
             if (c.source.empty()) {
                 return;
             }
+            ++stats_.scriptsFound;
             std::vector<eng::ni::NiDiag> diags;
             auto program = eng::ni::compile(c.source, options, &diags);
             if (!program.ok()) {
+                ++stats_.scriptsFailed;
                 ENG_ERROR(
                     "ni-script: compilacao falhou na entidade {} ({} "
                     "erro(s))",
@@ -318,10 +327,31 @@ void NiRuntime::start(eng::scene::Scene& runtimeScene)
                 for (const eng::ni::NiDiag& d : diags) {
                     ENG_ERROR("  {}:{} {}", d.line, d.col, d.message);
                 }
+                if (stats_.firstCompileError.empty() && !diags.empty()) {
+                    const eng::ni::NiDiag& d = diags.front();
+                    char buf[192];
+                    std::snprintf(buf, sizeof buf, "%u:%u %s",
+                                  static_cast<unsigned>(d.line),
+                                  static_cast<unsigned>(d.col),
+                                  d.message.c_str());
+                    stats_.firstCompileError = buf;
+                    stats_.firstFailedEntity = e.index;
+                    diag::mark("SCRIPT_COMPILE", "failed", buf);
+                }
                 return;
             }
+            ++stats_.scriptsCompiled;
             set_.create(std::move(program).value(), e);
         });
+    stats_.instances =
+        static_cast<std::uint32_t>(set_.size());
+    if (stats_.scriptsFound > 0 && stats_.scriptsFailed == 0) {
+        diag::mark("SCRIPT_COMPILE", "ok",
+                   "todos os scripts compilaram");
+    }
+    if (stats_.scriptsFound == 0) {
+        diag::mark("SCRIPT_COMPILE", "skipped", "nenhum script na cena");
+    }
 
     // @init de TODAS as instâncias (ordem de criação — docs/ni-script/07)
     const eng::ni::NiExecContext::Params p = params();
@@ -344,6 +374,25 @@ void NiRuntime::tick(float deltaSeconds)
     const eng::ni::NiExecContext::Params p = params();
     for (const auto& instance : set_.asVector()) {
         (void)vm_.run(*instance, "update", p);
+        // P4.1 (T2/D5): contagem VISÍVEL de ticks + faults — o editor
+        // mostra "N scripts, T ticks" e o ÚLTIMO fault do runtime; com
+        // isto o autor distingue "script compila mas não roda" de
+        // "roda e falha no binding".
+        ++stats_.ticks;
+        if (stats_.firstUpdateTick == 0) {
+            stats_.firstUpdateTick = stats_.ticks;
+        }
+        if (const std::optional<eng::ni::NiFault>& fault =
+                instance->lastFault();
+            fault.has_value()) {
+            ++stats_.faults;
+            char buf[192];
+            std::snprintf(buf, sizeof buf, "%s @ entidade %u",
+                          fault->message.c_str(),
+                          static_cast<unsigned>(instance->self().index));
+            stats_.lastFaultMessage = buf;
+            diag::mark("SCRIPT_FAULT", "runtime", buf);
+        }
     }
 }
 

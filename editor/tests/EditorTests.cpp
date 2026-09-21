@@ -31,6 +31,7 @@
 #include "eng/editor/EditorDocument.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/editor/EditorHost.hpp"
+#include "eng/editor/Gizmo.hpp"
 #include "eng/editor/Inspector.hpp"
 #include "eng/editor/SpriteData.hpp"
 #include "eng/editor/TextureCache.hpp"
@@ -56,6 +57,7 @@ struct LogSetup {
 const LogSetup kLogSetup{};
 
 using eng::editor::EditorDocument;
+using eng::editor::TransformGizmo;
 
 struct DocFixture {
     eng::fs::MemoryFileSystem fsStorage;  // dono real (documento empresta)
@@ -1014,6 +1016,123 @@ TEST_CASE("editor: script com erro de compilação é desabilitado, cena segue",
     REQUIRE(f.doc->play().ok());
     CHECK(f.doc->runtimeScripts().empty()); // nada compilou
     f.doc->tick(1.f / 60.f);                 // tick sem scripts: ok
+    f.doc->stop();
+}
+
+// =============================================================================
+// P4.1 — T2/D5: linguagem (atribuição composta) + diagnóstico VISÍVEL
+// =============================================================================
+
+TEST_CASE("editor: P4.1 — D5: atribuição composta (-= += *= /=) compila e roda",
+          "[editor][ni][p41]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Movido", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+
+    // O SCRIPT EXATO do repro D5 no device (`position.x -= dt`): sem os
+    // operadores compostos ele NÃO compilava — e o erro era silencioso
+    // para o autor (só logcat). CRLF incluído (script editado no device
+    // sai do EditText com \r\n).
+    const char* source =
+        "add &BL\r\n"
+        "var speed: float = 2.0\r\n"
+        "up update:\r\n"
+        "    var me = self()\r\n"
+        "    me.position.x -= delta()\r\n"
+        "    speed *= 1.0\r\n"
+        "    speed += 0.0\r\n"
+        "    speed -= 0.0\r\n"
+        "    speed /= 1.0\r\n"
+        "stop\r\n";
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(entity.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    REQUIRE(f.doc->play().ok());
+    CHECK(f.doc->runtimeScripts().size() == 1);
+    f.doc->tick(1.f / 60.f);
+    f.doc->tick(1.f / 60.f);
+    auto posX = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), entity.value(), "eng::math::Transform",
+        "position.x");
+    REQUIRE(posX.ok());
+    // O repro D5: `me.position.x -= delta()` → 2 ticks × -(1/60) = -1/30.
+    CHECK(std::abs(std::stof(posX.value()) + 1.f / 30.f) < 1e-3f);
+    const auto& stats = f.doc->runtimeScripts().stats();
+    CHECK(stats.scriptsFailed == 0);
+    CHECK(stats.ticks == 2);
+    CHECK(stats.healthy());
+    f.doc->stop();
+}
+
+TEST_CASE("editor: P4.1 — D5: estatística de script VISÍVEL (erro/ticks)",
+          "[editor][ni][p41]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("ComErro", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    // Erro de sintaxe REAL do D5: `-=` antes do P4.1 lexava como tokens
+    // Minus+Assign e explodia na compilação em silêncio.
+    REQUIRE(f.doc
+                ->setInspectorField(entity.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source",
+                                    "up update:\n    position.x -= dt\nstop\n")
+                .ok());
+
+    // ANTES do play: stats zerados.
+    CHECK(f.doc->runtimeScripts().stats().scriptsFound == 0);
+
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+    const auto& stats = f.doc->runtimeScripts().stats();
+    CHECK(stats.scriptsFound == 1);
+    CHECK(stats.scriptsFailed == 1);
+    CHECK(stats.scriptsCompiled == 0);
+    CHECK(stats.instances == 0);
+    CHECK_FALSE(stats.firstCompileError.empty());  // a UI mosta ISTO
+    CHECK(stats.firstFailedEntity != 0xFFFFFFFFu);
+    f.doc->stop();
+}
+
+TEST_CASE("editor: P4.1 — D5: script que RODA tem ticks contados no stats",
+          "[editor][ni][p41]")
+{
+    DocFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Saudavel", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->addComponent(entity.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(entity.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source",
+                                    "up update:\n    var me = self()\n"
+                                    "    me.position.x = 1.0\nstop\n")
+                .ok());
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+    f.doc->tick(1.f / 60.f);
+    f.doc->tick(1.f / 60.f);
+    const auto& stats = f.doc->runtimeScripts().stats();
+    CHECK(stats.scriptsCompiled == 1);
+    CHECK(stats.instances == 1);
+    CHECK(stats.ticks == 3);
+    CHECK(stats.firstUpdateTick == 1);
+    CHECK(stats.faults == 0);
     f.doc->stop();
 }
 
@@ -2964,9 +3083,13 @@ TEST_CASE("editor: P1 — tool modes: abstração única, Select sem gizmo, Play
         if (tool == EditorTool::Rotate) {
             CHECK_FALSE(draw.segments.empty());  // anel
         } else if (tool == EditorTool::Move) {
-            CHECK(draw.segments.size() == 2);    // eixos X e Y
+            // P4.1 (D1/D2): 4 HASTES — setas nos DOIS lados de cada eixo
+            // (±X, ±Y) com pontas visíveis; era 2 (só +X/+Y).
+            CHECK(draw.segments.size() == 4);
         } else {
-            CHECK(draw.segments.size() == 4);    // diagonais dos cantos
+            // P4.1 (D4): 4 diagonais (guia) + 8 meias-arestas do quad
+            // (as arestas ganharam handles de escala de um eixo).
+            CHECK(draw.segments.size() == 12);
         }
     }
 
@@ -2983,6 +3106,212 @@ TEST_CASE("editor: P1 — tool modes: abstração única, Select sem gizmo, Play
     CHECK(doc.gizmoDraw(nullptr).quads.empty());
     REQUIRE(doc.select(g.entity).ok());
     CHECK_FALSE(doc.gizmoDraw(nullptr).quads.empty());
+}
+
+// =============================================================================
+// P4.1 — T1: re-armo determinístico + métricas de toque (D1–D4)
+// =============================================================================
+
+TEST_CASE("editor: P4.1 — D1: seleção A → drag → seleção B → drag FUNCIONA",
+          "[editor][p41]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    auto b = doc.createEntity("B", eng::scene::kNoEntity);
+    REQUIRE(b.ok());
+    eng::editor::TransformDesc bPos;
+    bPos.position = eng::math::Vec3{0.f, 2.f, 0.f};  // B acima de A
+    REQUIRE(doc.setTransform(b.value(), bPos).ok());
+
+    doc.setTool(eng::editor::EditorTool::Move);
+
+    // 1) A selecionada → drag REAL pela seta X (handle em 100+96px);
+    // arrasta +48px PARA A DIREITA = +1 unidade de mundo.
+    REQUIRE(doc.select(g.entity).ok());
+    const float axisPx1 = TransformGizmo::axisPx(1.f);
+    CHECK(doc.gizmoDragBegin(100.f + axisPx1, 75.f,
+                             nullptr) == GizmoHandle::MoveAxisX);
+    REQUIRE(doc.gizmoDragTo(100.f + axisPx1 + 48.f, 75.f).ok());
+    doc.gizmoDragEnd();
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-3f));
+
+    // 2) Seleção TROCA para B → drag DE B funciona (re-armo). O defeito
+    // D1: o estado de drag do A sobrevivia e a UI ficava presa nele.
+    REQUIRE(doc.select(b.value()).ok());
+    CHECK(doc.gizmoDragBegin(100.f + axisPx1, 75.f - 96.f,
+                             nullptr) == GizmoHandle::MoveAxisX);
+    REQUIRE(doc.gizmoDragTo(100.f + axisPx1 + 48.f, 75.f - 96.f).ok());
+    doc.gizmoDragEnd();
+    tr = doc.transform(b.value());
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-3f));
+    // E A não se mexeu.
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().position.x == Catch::Approx(1.f).margin(1e-3f));
+}
+
+TEST_CASE("editor: P4.1 — D1: troca de ferramenta/play/stop matam drag vivo",
+          "[editor][p41]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    doc.setTool(eng::editor::EditorTool::Move);
+    REQUIRE(doc.select(g.entity).ok());
+    // Drag começa e NÃO termina (UP nunca chega — gesto interrompido).
+    REQUIRE(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
+            GizmoHandle::MoveCenter);
+
+    // Troca de ferramenta → drag morto: hit-test volta a funcionar
+    // (sem re-armo, dragging() travaria TODO toque até um UP fantasma).
+    doc.setTool(eng::editor::EditorTool::Rotate);
+    CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) !=
+          GizmoHandle::MoveCenter);
+    doc.gizmoDragEnd();
+
+    // Play → drag morto (o clone é outra cena).
+    doc.setTool(eng::editor::EditorTool::Move);
+    REQUIRE(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
+            GizmoHandle::MoveCenter);
+    REQUIRE(doc.play().ok());
+    doc.stop();
+    CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
+          GizmoHandle::None);  // stop resetou a seleção (contrato)
+}
+
+TEST_CASE("editor: P4.1 — D2: raio de acerto CONSTANTE EM PX no zoom",
+          "[editor][p41]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    doc.setTool(eng::editor::EditorTool::Move);
+    REQUIRE(doc.select(g.entity).ok());
+
+    // O bug D2: o raio de acerto era convertido px→mundo e comparado com
+    // px — em zoom 8 o alvo tinha ~4px, em 512 ~256px. P4.1: o alvo é
+    // 48px de DIÂMETRO em qualquer zoom (raio 24px na densidade 1).
+    // Toca a 20px do centro da seta X (dentro do alvo): hit em ZOOM ALTO.
+    const float axis = TransformGizmo::axisPx(1.f);  // 96px de comprimento
+    CHECK(doc.gizmoDragBegin(100.f + axis - 20.f, 75.f, nullptr) ==
+          GizmoHandle::MoveAxisX);
+    doc.gizmoDragEnd();
+
+    // MESMO toque relativo (20px da seta) em ZOOM BAIXO: hit igual —
+    // constante em espaço de ecrã (a seta fica LONGE em mundo; o alvo
+    // continua 24px).
+    doc.viewport().camera().zoom = 8.f;
+    const float axisWorld8 = axis / 8.f;  // seta em 12 unidades
+    const float screenAtZoom8 = 100.f + axisWorld8 * 8.f;
+    CHECK(doc.gizmoDragBegin(screenAtZoom8 - 20.f, 75.f, nullptr) ==
+          GizmoHandle::MoveAxisX);
+    doc.gizmoDragEnd();
+    doc.viewport().camera().zoom = 48.f;
+}
+
+TEST_CASE("editor: P4.1 — D3: anel de rotação ≥ 64px em zoom baixo",
+          "[editor][p41]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Rotate);
+
+    // Zoom mínimo (8): bounds half 0.5 → 4px na tela; SEM o mínimo o
+    // anel teria 4+26=30px (impossível — repro D3). Com o mínimo: 64px.
+    doc.viewport().camera().zoom = 8.f;
+    // Entidade FORA do centro (senão o anel sai da tela): move p/ canto.
+    eng::editor::TransformDesc pos;
+    pos.position = eng::math::Vec3{30.f, 0.f, 0.f};
+    REQUIRE(doc.setTransform(g.entity, pos).ok());
+    REQUIRE(doc.select(g.entity).ok());
+    // Centro da entidade em tela: 100 + 30*8 = 340. Handle do anel:
+    // 340 + 64 = 404 (> 200 — fora da tela 200px). Pan a câmera p/ ver:
+    doc.viewport().camera().posX = 30.f;  // entidade no centro da tela
+    const float handleX =
+        doc.viewport().worldToScreenX(30.f + TransformGizmo::kRingMinDp *
+                                                doc.viewport().uiScale() / 8.f);
+    CHECK(doc.gizmoDragBegin(handleX, 75.f, nullptr) ==
+          GizmoHandle::RotateRing);
+    doc.viewport().camera().posX = 0.f;
+    doc.viewport().camera().zoom = 48.f;
+}
+
+TEST_CASE("editor: P4.1 — D4: arestas de escala movem UM eixo",
+          "[editor][p41]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Scale);
+
+    // Aresta LESTE: centro da aresta X+ em (0.5, 0) → tela (124, 75).
+    // Toca a 6px da aresta (os cantos ficam a >24px — prioridade certa).
+    CHECK(doc.gizmoDragBegin(130.f, 75.f, nullptr) == GizmoHandle::ScaleEdgeE);
+    // Ratio local: grab 0.625 → 1.25 (tela 160) = 2x em X; Y INTACTO
+    // (o defeito D4: só os cantos existiam e eram minúsculos).
+    REQUIRE(doc.gizmoDragTo(160.f, 75.f).ok());
+    doc.gizmoDragEnd();
+    auto tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().scale.x == Catch::Approx(2.f).margin(1e-3f));
+    CHECK(tr.value().scale.y == Catch::Approx(1.f).margin(1e-3f));
+
+    // Aresta NORTE: após o X=2, half é (1, 0.5) → N em (100, 75-24=51).
+    // Toca a 1px dela (cantos agora a 48px — sem disputa).
+    REQUIRE(doc.select(g.entity).ok());
+    CHECK(doc.gizmoDragBegin(100.f, 52.f, nullptr) == GizmoHandle::ScaleEdgeN);
+    // Ratio local: grab 0.4792 → 0.9583 (tela 29) = 2x em Y.
+    REQUIRE(doc.gizmoDragTo(100.f, 29.f).ok());
+    doc.gizmoDragEnd();
+    tr = doc.transform(g.entity);
+    REQUIRE(tr.ok());
+    CHECK(tr.value().scale.x == Catch::Approx(2.f).margin(1e-3f));
+    CHECK(tr.value().scale.y == Catch::Approx(2.f).margin(1e-3f));
+
+    // Cantos continuam escalando os DOIS eixos (com scale (2,2) o NE
+    // fica em (100+48, 75-48) = (148, 27)).
+    REQUIRE(doc.select(g.entity).ok());
+    CHECK(doc.gizmoDragBegin(148.f, 27.f, nullptr) == GizmoHandle::ScaleNE);
+}
+
+TEST_CASE("editor: P4.1 — D3/D4: densidade (uiScale) amplia os alvos",
+          "[editor][p41]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    // Device real (C33): densidade 2 → alvo de toque 48dp = 96px de raio
+    // em px de surface (48px na densidade 1).
+    doc.viewport().setUiScale(2.f);
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Move);
+
+    // Toca a 40px do centro da seta X (96px de comprimento): com raio
+    // 48px (24dp × densidade 2) É hit; com o antigo (raio fixo 24px) não
+    // seria — é a diferença entre "parece morto" e funciona (D4).
+    const float axis = TransformGizmo::axisPx(2.f);  // 96dp × 2 = 192px
+    CHECK(doc.gizmoDragBegin(100.f + axis - 40.f, 75.f, nullptr) ==
+          GizmoHandle::MoveAxisX);
+    doc.gizmoDragEnd();
+
+    // Handle VISUAL permanece na faixa 28–40 px (regra da missão):
+    CHECK(TransformGizmo::handlePx(2.f) <= 40.f);
+    CHECK(TransformGizmo::handlePx(2.f) >= 28.f);
+    CHECK(TransformGizmo::handlePx(1.f) <= 40.f);
+    CHECK(TransformGizmo::handlePx(1.f) >= 28.f);
 }
 
 // --- P1.9 INSPECTOR SYNC ------------------------------------------------------
@@ -3855,7 +4184,13 @@ TEST_CASE("editor: P2 — gizmo NÃO quebra após mudanças (matrix §5)",
         REQUIRE(doc.select(sprite.value()).ok());
         doc.setTool(eng::editor::EditorTool::Rotate);
         const auto b = doc.selectionBounds(&cache);
-        const float ringR = b.halfW + 26.f / 48.f;
+        // P4.1 (D3): o teste usa a MESMA métrica do gizmo — raio com
+        // mínimo de 64 px em tela (anel agarrável em qualquer zoom).
+        const float ringR =
+            eng::editor::TransformGizmo::ringRadiusPx(
+                b.halfW * doc.viewport().camera().zoom,
+                doc.viewport().uiScale()) /
+            doc.viewport().camera().zoom;
         const float cx = doc.viewport().worldToScreenX(b.worldX);
         const float cy = doc.viewport().worldToScreenY(b.worldY);
         REQUIRE(doc.gizmoDragBegin(cx + ringR * 48.f, cy, &cache) ==

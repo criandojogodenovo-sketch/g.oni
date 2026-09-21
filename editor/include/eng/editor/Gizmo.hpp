@@ -20,6 +20,7 @@
 ///   - arraste devolve o TRANSFORM ALVO (estado absoluto), não delta —
 ///     o chamador aplica. Uma fonte de verdade: o ECS.
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -37,7 +38,7 @@ enum class EditorTool : std::uint8_t {
     Scale        ///< gizmo de escala (4 cantos)
 };
 
-/// Handle do gizmo — alvo do toque/drag (P1.3–P1.5).
+/// Handle do gizmo — alvo do toque/drag (P1.3–P1.5; arestas P4.1/D4).
 enum class GizmoHandle : std::uint8_t {
     None = 0,
     MoveCenter,  ///< move livre (X+Y)
@@ -47,7 +48,11 @@ enum class GizmoHandle : std::uint8_t {
     ScaleNE,     ///< canto nordeste do bounds
     ScaleNW,
     ScaleSE,
-    ScaleSW
+    ScaleSW,
+    ScaleEdgeE,  ///< P4.1 (D4): aresta LESTE — escala só no eixo X
+    ScaleEdgeW,  ///< aresta OESTE — escala só no eixo X
+    ScaleEdgeN,  ///< aresta NORTE — escala só no eixo Y
+    ScaleEdgeS   ///< aresta SUL — escala só no eixo Y
 };
 
 /// Bounds da entidade selecionada no plano do MUNDO — layout do gizmo
@@ -115,17 +120,60 @@ struct GizmoDrawData {
 
 class TransformGizmo final {
 public:
-    /// Dimensões de tela (px) — constantes em zoom (alvo de dedo §8.8).
-    static constexpr float kHandlePx = 13.f;   ///< lado do handle
-    static constexpr float kAxisPx = 84.f;     ///< comprimento do eixo
-    static constexpr float kRingPadPx = 26.f;  ///< folga do anel p/ fora
-    static constexpr float kHitPx = 24.f;      ///< raio de acerto (dedo)
+    /// Dimensões de UI em DP (P4.1 — alvo de dedo §8.8; defeitos D3/D4):
+    /// constantes em ZOOM e convertidas a px da surface pela densidade do
+    /// viewport (uiScale). Regras da missão P4.1:
+    ///   - handle visual 28–40 px independentes de zoom;
+    ///   - alvo de toque ≥ 48 dp (raio 24 dp → diâmetro 48 dp);
+    ///   - anel de rotação ≥ 64 px de raio (era minúsculo — D3).
+    static constexpr float kHandleDp = 32.f;   ///< lado do handle visual
+    static constexpr float kArrowHeadDp = 40.f; ///< ponta de seta (MOVE)
+    static constexpr float kEdgeDp = 24.f;     ///< marca de aresta (SCALE)
+    static constexpr float kAxisDp = 96.f;     ///< comprimento do eixo
+    static constexpr float kRingPadDp = 26.f;  ///< folga do anel p/ fora
+    static constexpr float kRingMinDp = 64.f;  ///< raio mínimo do anel
+    static constexpr float kHitDp = 24.f;      ///< raio de acerto (48dp ⌀)
     /// Snap de rotação: 15° com ímã de 4° (opcional, previsível).
     static constexpr float kRotateSnapStepDeg = 15.f;
     static constexpr float kRotateSnapPullDeg = 4.f;
     /// Escala — impedir valores inválidos (P1.5).
     static constexpr float kScaleMin = 0.01f;
     static constexpr float kScaleMax = 100.f;
+
+    // --- métricas em px da SURFACE (dp × densidade — constantes em zoom) ----
+
+    /// Lado visual do handle em px (clamp 28–40 px pela regra da missão).
+    [[nodiscard]] static float handlePx(float uiScale) noexcept
+    {
+        return std::clamp(kHandleDp * uiScale, 28.f, 40.f);
+    }
+    /// Lado visual da ponta de seta (MOVE) em px.
+    [[nodiscard]] static float arrowHeadPx(float uiScale) noexcept
+    {
+        return std::clamp(kArrowHeadDp * uiScale, 34.f, 48.f);
+    }
+    /// Lado visual da marca de aresta (SCALE) em px.
+    [[nodiscard]] static float edgePx(float uiScale) noexcept
+    {
+        return std::clamp(kEdgeDp * uiScale, 20.f, 30.f);
+    }
+    /// Comprimento do eixo (MOVE) em px.
+    [[nodiscard]] static float axisPx(float uiScale) noexcept
+    {
+        return kAxisDp * uiScale;
+    }
+    /// Raio de acerto em px (diâmetro = 48 dp — alvo de dedo).
+    [[nodiscard]] static float hitPx(float uiScale) noexcept
+    {
+        return kHitDp * uiScale;
+    }
+    /// Raio do anel de rotação em px: max(borda dos bounds, 64 px).
+    [[nodiscard]] static float ringRadiusPx(float boundsRadiusPx,
+                                             float uiScale) noexcept
+    {
+        return std::max(boundsRadiusPx + kRingPadDp * uiScale,
+                        kRingMinDp * uiScale);
+    }
 
     // --- hit-test -------------------------------------------------------------
 

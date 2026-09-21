@@ -783,6 +783,11 @@ Result<void> EditorDocument::select(eng::ecs::Entity entity)
         ++selectionRevision_;
         return {};
     }
+    // P4.1 (T1/D1 — re-armo determinístico): mudança de seleção MATA o
+    // drag em voo. Nenhum estado de drag sobrevive — o gizmo é
+    // reconstruído do (seleção, ferramenta, câmera) a cada frame e o
+    // beginDrag é a ÚNICA forma de armá-lo.
+    gizmoDragEnd();
     selection_ = entity;
     ++selectionRevision_;  // hierarquia selecionou → UI sincroniza (P1.9)
     return {};
@@ -790,6 +795,7 @@ Result<void> EditorDocument::select(eng::ecs::Entity entity)
 
 void EditorDocument::deselect() noexcept
 {
+    gizmoDragEnd();  // P4.1 (T1/D1): re-armo — drag não sobrevive
     selection_.reset();
     ++selectionRevision_;
 }
@@ -1391,6 +1397,9 @@ Result<void> EditorDocument::play()
         return makeUnexpected(
             documentError(StatusCode::InvalidState, "já em Play"));
     }
+    // P4.1 (T1/D1 — re-armo): entrar em Play mata o drag do gizmo (o
+    // clone é outra cena — nenhum estado de edição vaza para o runtime).
+    gizmoDragEnd();
     // Clone por serialização: o round-trip é teste da FASE 3; a edição
     // permanece intocada por construção (nenhum ponteiro compartilhado).
     auto snapshot = eng::scene::SceneSerializer::save(*scene_);
@@ -1492,6 +1501,7 @@ void EditorDocument::stop() noexcept
 {
     if (mode_ == Mode::Play) {
         mode_ = Mode::Edit;
+        gizmoDragEnd();  // P4.1 (T1/D1): re-armo no retorno à edição
         scheduler_.reset();  // ticks morrem com o clone (ADR-051)
         gameCameraActive_ = false;
         viewport_.setGameCamera(nullptr);  // câmera do editor volta
@@ -1593,6 +1603,9 @@ std::optional<eng::ecs::Entity> EditorDocument::viewportTap(
     if (scene == nullptr) {
         return std::nullopt;
     }
+    // P4.1 (T1/D1 — re-armo): um novo toque de seleção mata QUALQUER
+    // drag residual — o estado do gizmo nunca atravessa gestos.
+    gizmoDragEnd();
     auto quads = viewport_.buildQuads(*scene, selection_);
     // RECOVERY P0: resolve as dimensões em PIXELS das texturas dos sprites
     // (decode sem GPU, cacheado pelo TextureCache do host) — o hit-test

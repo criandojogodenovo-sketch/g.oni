@@ -698,7 +698,11 @@ private:
 
 }  // namespace
 
-std::unique_ptr<IAudioBackend> createDefaultBackend()
+/// P4.1 (T3/D6): fábrica EXPOSTA do AAudio — o Auto backend (cadeia de
+/// seleção automática, AutoBackend.cpp) tenta esta PRIMEIRO e cai para o
+/// OpenSL ES quando o HAL recusa. O createDefaultBackend mudou de dono:
+/// vive no AutoBackend.cpp nos dois builds.
+std::unique_ptr<IAudioBackend> createAAudioBackend()
 {
     return std::make_unique<AAudioBackend>();
 }
@@ -711,10 +715,8 @@ std::unique_ptr<IAudioBackend> createDefaultBackend()
 
 namespace eng::audio {
 
-std::unique_ptr<IAudioBackend> createDefaultBackend()
-{
-    return std::make_unique<NullAudioBackend>();
-}
+// P4.1 (T3/D6): no Linux a cadeia Auto NÃO existe (não há device) — a
+// fábrica do AAudio também não; AutoBackend.cpp dá o createDefaultBackend.
 
 }  // namespace eng::audio
 

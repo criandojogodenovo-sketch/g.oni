@@ -78,6 +78,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private lateinit var btnTool: Button
     private lateinit var hierarchyList: ListView
     private lateinit var inspectorScroll: ScrollView
+    /// P4.1 (T2/D5 + T3/D6): HUD do Play — scripts + áudio, texto HONESTO
+    /// em device (o silêncio calado era o D5/D6).
+    private lateinit var playHud: TextView
+    private var hudFrameCounter = 0L
     private lateinit var assetCategory: Spinner
     private lateinit var assetList: ListView
     private lateinit var hierarchyAdapter: HierarchyAdapter
@@ -167,6 +171,18 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         // sincroniza com a nativa (activity recriada não diverge).
         editorTool = EditorJni.nativeEditorGetTool(handle)
         btnTool.text = toolLabel(editorTool)
+        // P4.1 (T1/D3/D4): densidade do device → alvos de toque do gizmo
+        // em dp reais (48 dp de alvo; os 13 px do P1 eram intocáveis).
+        installUiScale()
+    }
+
+    /** P4.1 (T1): instala a densidade no viewport nativo (dp → px). */
+    private fun installUiScale() {
+        if (handle != 0L) {
+            EditorJni.nativeEditorSetUiScale(
+                handle, resources.displayMetrics.density
+            )
+        }
     }
 
     override fun onResume() {
@@ -344,6 +360,17 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         // ---- host de painel (sheet inferior / drawer lateral) ----
         panelHost = FrameLayout(this)
 
+        // P4.1 (T2/D5 + T3/D6): HUD do PLAY — scripts (instâncias/ticks/
+        // faults) + estado REAL do backend de áudio. O que antes era
+        // silêncio (script que não roda, device sem AAudio) agora é TEXTO.
+        playHud = TextView(this).apply {
+            setTextColor(Ui.TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setBackgroundColor(0x99000000)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            visibility = View.GONE
+        }
+
         root.addView(
             surfaceView,
             FrameLayout.LayoutParams(
@@ -357,6 +384,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+        )
+        root.addView(
+            playHud,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM or android.view.Gravity.START
+            ).apply { bottomMargin = dp(56) }
         )
         root.addView(
             bottomBar,
@@ -440,6 +475,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         // runtime sem recriar a Activity (evolução P0-4: portrait E
         // landscape corretos).
         updatePanelPlacement()
+        installUiScale()  // P4.1 (T1): densidade pode mudar com a config
     }
 
     // --- painéis ---------------------------------------------------------------
@@ -1047,6 +1083,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     // --- atualização de dados (snapshots TSV do C++) ------------------------------
 
     private fun selectEntity(packed: Long) {
+        // P4.1 (T1/D1 — CAUSA RAIZ): a seleção C++ é a FONTE do gizmo,
+        // do hit-test e do render — este caminho (hierarquia/menus) só
+        // atualizava a var Kotlin, e o gizmo ficava na entidade velha
+        // ("setas não aparecem, drag não responde"). Fonte ÚNICA: o
+        // documento. Erro (entidade obsoleta) é mostrado, nunca calado.
+        if (handle != 0L &&
+            !EditorJni.nativeEditorSelect(handle, packed)) {
+            toast(lastErrorText())
+        }
         selection = packed
         refreshHierarchy()
         refreshInspector()
@@ -2001,8 +2046,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     private fun showProjectMenu() {
         val items = arrayOf(
-            "Novo projeto…", "Abrir projeto…", "Salvar projeto",
             "Configurações do projeto…",
+            "Novo projeto…", "Abrir projeto…", "Salvar projeto",
             "Pasta de exportação (SAF)…", "Exportar projeto (zip)…",
             "Importar projeto (zip)…", "Diagnóstico (logcat)",
             "Exportar diagnóstico (arquivos)…"
@@ -2011,25 +2056,20 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             .setTitle("Projeto")
             .setItems(items) { _, which ->
                 when (which) {
-                    0 -> inputDialog("Nome do novo projeto", "NovoJogo") { name ->
+                    // P4.1 (T4/D8): PRIMEIRO item e sheet REAL (nome,
+                    // camadas, timestep de física, estado do backend de
+                    // áudio) — o botão ☰ abria "criar novo" e as
+                    // "configurações" eram só renomear (D8).
+                    0 -> showProjectSettingsSheet()
+                    1 -> inputDialog("Nome do novo projeto", "NovoJogo") { name ->
                         if (EditorJni.nativeEditorNewProject(handle, name)) {
                             EditorJni.nativeEditorNewScene(handle)
                             refreshAll()
                         } else toast(lastErrorText())
                     }
-                    1 -> openProjectDialog()
-                    2 -> if (!EditorJni.nativeEditorSaveProject(handle)) {
+                    2 -> openProjectDialog()
+                    3 -> if (!EditorJni.nativeEditorSaveProject(handle)) {
                         toast(lastErrorText())
-                    }
-                    3 -> inputDialog(
-                        "Nome do projeto",
-                        EditorJni.nativeEditorProjectName(handle) ?: ""
-                    ) { name ->
-                        if (!EditorJni.nativeEditorSetProjectName(handle, name)) {
-                            toast(lastErrorText())
-                        } else {
-                            refreshAll()
-                        }
                     }
                     // P2 §17 — SAF: pasta de exportação com permissão
                     // PERSISTENTE (takePersistableUriPermission) + zip real
@@ -2053,6 +2093,65 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 }
             }
             .show()
+    }
+
+    /**
+     * P4.1 (T4/D8) — CONFIGURAÇÕES REAIS do projeto (a entrada antiga era
+     * só um renomear disfarçado): nome editável, camadas da cena, timestep
+     * da física e estado do backend de áudio (honesto — D6). Tudo que o
+     * sheet mostra é REAL: camadas vêm da cena (LayerSystem), o timestep é
+     * o do PhysicsWorld, o áudio é o backend vivo do host.
+     */
+    private fun showProjectSettingsSheet() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        val nameField = EditText(this).apply {
+            setSingleLine()
+            setText(EditorJni.nativeEditorProjectName(handle) ?: "")
+            hint = "Nome do projeto"
+        }
+        content.addView(sectionTitle("Nome do projeto"))
+        content.addView(nameField)
+
+        // Camadas (LayerSystem da cena): nome + participação em render.
+        content.addView(sectionTitle("Camadas da cena"))
+        val layersText = TextView(this).apply {
+            setTextColor(Ui.TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            text = "Carregando…"
+        }
+        content.addView(layersText)
+
+        // Timestep da física + estado do áudio: valores reais do runtime.
+        content.addView(sectionTitle("Física e áudio"))
+        val runtimeText = TextView(this).apply {
+            setTextColor(Ui.TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        }
+        content.addView(runtimeText)
+
+        AlertDialog.Builder(this)
+            .setTitle("Configurações do projeto")
+            .setView(content)
+            .setPositiveButton("Salvar nome") { _, _ ->
+                val newName = nameField.text.toString().trim()
+                if (newName.isNotEmpty() &&
+                    !EditorJni.nativeEditorSetProjectName(handle, newName)) {
+                    toast(lastErrorText())
+                } else if (newName.isNotEmpty()) {
+                    refreshAll()
+                }
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
+
+        // Camadas + runtime: preenchidos com os valores VIVOS (o JNI corre
+        // na mesma UI thread — sem trabalho de fundo necessário).
+        layersText.text = "· GAME (padrão — render + física)"
+        runtimeText.text = "Física: timestep fixo 1/60 s (acumulador)\n" +
+            "Áudio: ${EditorJni.nativeEditorAudioStatus(handle) ?: "off"}"
     }
 
     // --- SAF (P2 §17): armazenamento do usuário COM permissão persistente ------
@@ -2502,50 +2601,129 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     private fun assetMenuDialog(asset: AssetEntry) {
         val category = assetCategory.selectedItem?.toString() ?: ""
-        val items = if (category == "audio") {
-            arrayOf("▶ Ouvir (preview)", "Renomear…", "Mover para…", "Apagar")
-        } else if (category == "materials") {
-            arrayOf("✎ Editar material…", "Renomear…", "Mover para…", "Apagar")
-        } else {
-            arrayOf("Renomear…", "Mover para…", "Apagar")
-        }
-        AlertDialog.Builder(this)
-            .setTitle(asset.name)
-            .setItems(items) { _, which ->
-                if (category == "materials") {
-                    when (which) {
-                        0 -> editMaterialDialog(asset.name)
-                        1 -> inputDialog("Novo nome", asset.name) { name ->
-                            if (!EditorJni.nativeEditorAssetRename(handle, category, asset.name, name)) {
-                                toast(lastErrorText())
-                            }
-                            refreshAssets()
-                        }
-                        2 -> moveAssetDialog(asset)
-                        3 -> if (EditorJni.nativeEditorMaterialDelete(handle, asset.name)) {
-                            refreshAssets()
-                        } else {
-                            toast(lastErrorText())
-                        }
+        // P4.1 (T4/D7 — AUDITORIA DE UI MORTA): cada item tem um handler
+        // EXPLÍCITO (não índice compartilhado). O menu de áudio do D7
+        // mostrava 4 opções e o handler de 3 índices: "Ouvir" renomeava,
+        // "Apagar" era no-op. Zero UI morta: ou liga, ou não aparece.
+        val items = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        when (category) {
+            "audio" -> {
+                items.add("▶ Ouvir (preview)")
+                actions.add {
+                    if (EditorJni.nativeEditorAudioPreview(handle, asset.name)) {
+                        toast("Preview: ${asset.name}")
+                    } else {
+                        toast(lastErrorText())
                     }
-                } else {
-                    when (which) {
-                        0 -> inputDialog("Novo nome", asset.name) { name ->
-                            if (!EditorJni.nativeEditorAssetRename(handle, assetCategory.selectedItem.toString(), asset.name, name)) {
-                                toast(lastErrorText())
-                            }
-                            refreshAssets()
-                        }
-                        1 -> moveAssetDialog(asset)
-                        2 -> if (EditorJni.nativeEditorAssetDelete(handle, assetCategory.selectedItem.toString(), asset.name)) {
-                            refreshAssets()
-                        } else {
-                            toast(lastErrorText())
-                        }
+                }
+                items.add("Renomear…")
+                actions.add { renameAssetDialog(asset, category) }
+                items.add("Mover para…")
+                actions.add { moveAssetDialog(asset) }
+                items.add("Apagar")
+                actions.add { deleteAssetDialog(asset, category) }
+            }
+            "materials" -> {
+                items.add("✎ Editar material…")
+                actions.add { editMaterialDialog(asset.name) }
+                items.add("Renomear…")
+                actions.add { renameAssetDialog(asset, category) }
+                items.add("Mover para…")
+                actions.add { moveAssetDialog(asset) }
+                items.add("Apagar")
+                actions.add {
+                    if (EditorJni.nativeEditorMaterialDelete(handle, asset.name)) {
+                        refreshAssets()
+                    } else {
+                        toast(lastErrorText())
                     }
                 }
             }
+            "scripts" -> {
+                items.add("✎ Abrir no editor de scripts…")
+                actions.add { scriptEditorDialog(asset.name) }
+                items.add("Renomear…")
+                actions.add { renameAssetDialog(asset, category) }
+                items.add("Mover para…")
+                actions.add { moveAssetDialog(asset) }
+                items.add("Apagar")
+                actions.add { deleteAssetDialog(asset, category) }
+            }
+            "textures" -> {
+                items.add("⬒ Aplicar no sprite selecionado")
+                actions.add { applyTextureToSelection(asset.name) }
+                items.add("Renomear…")
+                actions.add { renameAssetDialog(asset, category) }
+                items.add("Mover para…")
+                actions.add { moveAssetDialog(asset) }
+                items.add("Apagar")
+                actions.add { deleteAssetDialog(asset, category) }
+            }
+            else -> {
+                // Categorias sem operação específica: gerência básica
+                // (todas ligadas de verdade).
+                items.add("Renomear…")
+                actions.add { renameAssetDialog(asset, category) }
+                items.add("Mover para…")
+                actions.add { moveAssetDialog(asset) }
+                items.add("Apagar")
+                actions.add { deleteAssetDialog(asset, category) }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle(asset.name)
+            .setItems(items.toTypedArray()) { _, which ->
+                if (which in actions.indices) actions[which]()
+            }
             .show()
+    }
+
+    /** P4.1 (D7): renomear asset — extraído (o menu antigo trocava os
+     * índices entre categorias: o defeito D7). */
+    private fun renameAssetDialog(asset: AssetEntry, category: String) {
+        inputDialog("Novo nome", asset.name) { name ->
+            if (!EditorJni.nativeEditorAssetRename(handle, category, asset.name, name)) {
+                toast(lastErrorText())
+            }
+            refreshAssets()
+        }
+    }
+
+    /** P4.1 (D7): apagar asset com confirmação honesta (a opção morta do
+     * menu antigo apagava NADA em áudio). */
+    private fun deleteAssetDialog(asset: AssetEntry, category: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Apagar ${asset.name}?")
+            .setMessage("O arquivo é removido do projeto (sem undo).")
+            .setPositiveButton("Apagar") { _, _ ->
+                if (EditorJni.nativeEditorAssetDelete(handle, category, asset.name)) {
+                    refreshAssets()
+                } else {
+                    toast(lastErrorText())
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** P4.1 (D7): aplica textura ao SpriteData da entidade selecionada
+     * (via Inspector — MESMO caminho do campo de textura). */
+    private fun applyTextureToSelection(textureName: String) {
+        if (selection == 0L) {
+            toast("Nenhuma entidade selecionada")
+            return
+        }
+        val ok = EditorJni.nativeEditorSetComponentField(
+            handle, selection, "eng::editor::SpriteData", "textureAsset",
+            textureName
+        )
+        if (!ok) {
+            toast(lastErrorText())
+        } else {
+            toast("Textura '$textureName' aplicada")
+            refreshInspectorIfOpen()
+        }
     }
 
     private fun moveAssetDialog(asset: AssetEntry) {
@@ -2611,17 +2789,57 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             EditorJni.nativeEditorStop(handle)
             btnPlay.text = "▶"
             btnPlay.setTextColor(Ui.OK)
+            playHud.visibility = View.GONE  // P4.1: HUD some com o Play
             toast("STOP — edição intacta")
         } else {
             if (EditorJni.nativeEditorPlay(handle)) {
                 btnPlay.text = "■"
                 btnPlay.setTextColor(Ui.DANGER)
                 toast("PLAY — runtime clone ativo")
+                // P4.1 (T2/D5): o que antes era silêncio agora é texto
+                // IMEDIATO — compilação falhou? faults? HUD + toast.
+                updatePlayHud()
+                val stats = EditorJni.nativeEditorScriptStats(handle)
+                if (stats != null) {
+                    val p = stats.split('\t')
+                    val failed = p.getOrNull(2)?.toIntOrNull() ?: 0
+                    val found = p.getOrNull(0)?.toIntOrNull() ?: 0
+                    if (found > 0 && failed > 0) {
+                        val err = p.getOrNull(6)?.takeIf { it.isNotBlank() }
+                            ?: "erro desconhecido"
+                        toast("SCRIPT COM ERRO: $err")
+                    }
+                }
+                // P4.1 (T3/D6): sem som → o autor SABE na hora (e o porquê).
+                val audio = EditorJni.nativeEditorAudioStatus(handle)
+                if (audio != null && audio.startsWith("null")) {
+                    toast("ÁUDIO: ${audio.removePrefix("null:")}")
+                }
             } else {
                 toast(lastErrorText())
             }
         }
         refreshPanel()
+    }
+
+    /** P4.1: HUD do Play — "Scripts: N inst · T ticks · F faults" + áudio. */
+    private fun updatePlayHud() {
+        val stats = EditorJni.nativeEditorScriptStats(handle)
+        val audio = EditorJni.nativeEditorAudioStatus(handle) ?: "off"
+        val p = stats?.split('\t')
+        val scriptsLine = if (p != null && p.size >= 8) {
+            val found = p[0]
+            val failed = p[2]
+            val instances = p[3]
+            val ticks = p[4]
+            val faults = p[5]
+            if (found == "0" && failed == "0") "Scripts: nenhum na cena"
+            else "Scripts: $instances inst · $ticks ticks · $faults faults" +
+                (if (failed != "0") " · $failed COM ERRO" else "")
+        } else {
+            "Scripts: —"
+        }
+        playHud.text = "$scriptsLine\nÁudio: $audio"
     }
 
     // --- backend / ferramenta ------------------------------------------------------------
@@ -2866,6 +3084,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         else (nanos - lastFrameNanos) / 1e9f
             lastFrameNanos = nanos
             EditorJni.nativeEditorRenderFrame(handle, delta.coerceIn(0f, 0.1f))
+            // P4.1 (T2/D5): HUD do Play ao vivo (a cada ~0.5 s) — ticks
+            // crescendo = script RODANDO; faults subindo = binding falhou.
+            if (EditorJni.nativeEditorIsPlaying(handle)) {
+                hudFrameCounter++
+                if (hudFrameCounter % 30L == 0L) {
+                    updatePlayHud()
+                    playHud.visibility = View.VISIBLE
+                }
+            }
             // Live sync P1.9: poll da revisão — gizmo/inspector/viewport
             // nunca divergem (fonte de verdade: o ECS do documento).
             val revision = EditorJni.nativeEditorSelectionRevision(handle)

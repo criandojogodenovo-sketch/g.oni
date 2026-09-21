@@ -106,6 +106,12 @@ public:
     void stopAudio() noexcept;
     [[nodiscard]] bool audioRunning() const noexcept;
 
+    /// P4.1 (T3/D6) — estado do áudio para o HUD do editor (honesto):
+    /// "off" | "running:<backend>" | "null:<motivo>" | "fallback:<motivo>".
+    /// O HUD do Play mostra ao autor o que está acontecendo — o silêncio
+    /// calado era o defeito D6.
+    [[nodiscard]] std::string audioStatusLine() const;
+
     /// P3.4 — observa o primeiro callback real do device (backend
     /// AAudio marca um átomo na thread de áudio; o host persiste o
     /// marco backend_stage::CallbackFirstFrame aqui, na UI thread).

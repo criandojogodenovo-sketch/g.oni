@@ -280,6 +280,13 @@ std::vector<Token> lex(std::string_view source, std::vector<NiDiag>& diags)
         if (c == '!' && two('=', TokKind::Ne)) { continue; }
         if (c == '<' && two('=', TokKind::Le)) { continue; }
         if (c == '>' && two('=', TokKind::Ge)) { continue; }
+        // P4.1 (D5): atribuição composta — += -= *= /= (o script canônico
+        // do editor usa `position.x -= dt`; sem isto o PLAY falha em
+        // silêncio para o autor — erro só no log).
+        if (c == '+' && two('=', TokKind::PlusAssign)) { continue; }
+        if (c == '-' && two('=', TokKind::MinusAssign)) { continue; }
+        if (c == '*' && two('=', TokKind::StarAssign)) { continue; }
+        if (c == '/' && two('=', TokKind::SlashAssign)) { continue; }
 
         struct OneChar {
             char c;

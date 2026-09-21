@@ -549,6 +549,26 @@ bool EditorHost::audioRunning() const noexcept
     return backend != nullptr && backend->isRunning();
 }
 
+std::string EditorHost::audioStatusLine() const
+{
+    // P4.1 (T3/D6) — VERDADE para o autor: qual backend está no ar (ou
+    // por que não há som). O NullBackend gracioso do P3.5 deixa de ser
+    // silêncio: vira "null: <último motivo do diagnóstico>".
+    const std::shared_ptr<eng::audio::IAudioBackend> backend =
+        audioBackendSnapshot();
+    if (backend == nullptr || !backend->isRunning()) {
+        return "off";
+    }
+    const std::string name{backend->name()};
+    if (name == "null") {
+        return audioNullFallback_
+                   ? "null: device sem AAudio/OpenSL — som indisponível "
+                     "(nova tentativa no próximo resume)"
+                   : "null: backend de teste (sem device)";
+    }
+    return "running: " + name + " — " + backend->describeDevice();
+}
+
 void EditorHost::checkAudioFirstCallbackFrame()
 {
     // P3.4 — evidência de vida do pull: o callback do AAudio marca um

@@ -10,6 +10,7 @@
 #include <unordered_map>
 
 #include "eng/editor/EditorHost.hpp"
+#include "eng/editor/NiRuntime.hpp"   // P4.1: NiScriptStats (stats() do runtime)
 #include "eng/editor/TextureCache.hpp"
 #include "eng/editor/Diagnostics.hpp"
 #include "eng/image/Image.hpp"
@@ -901,6 +902,63 @@ Java_com_goni_runtime_EditorJni_nativeEditorSetTool(JNIEnv* /*env*/,
     }
 }
 
+/// P4.1 (T1/D3/D4) — densidade do device (dp → px da surface). A
+/// Activity instala displayMetrics.density no startup e na troca de
+/// configuração; os alvos de toque do gizmo passam a respeitar 48 dp.
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetUiScale(JNIEnv* /*env*/,
+                                                       jobject /*thiz*/,
+                                                       jlong handle,
+                                                       jfloat scale)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return;
+    }
+    host->document().viewport().setUiScale(static_cast<float>(scale));
+}
+
+/// P4.1 (T2/D5) — estatística do runtime de scripts (VISÍVEL ao autor):
+/// TSV "found\tcompiled\tfailed\tinstances\tticks\tfaults\terro\tfault".
+/// A UI mostra no Play o que antes só existia no logcat.
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorScriptStats(JNIEnv* env,
+                                                        jobject /*thiz*/,
+                                                        jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    const eng::editor::NiScriptStats& s =
+        host->document().runtimeScripts().stats();
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+                  "%u\t%u\t%u\t%u\t%llu\t%u\t%s\t%s",
+                  s.scriptsFound, s.scriptsCompiled, s.scriptsFailed,
+                  s.instances,
+                  static_cast<unsigned long long>(s.ticks), s.faults,
+                  s.firstCompileError.c_str(),
+                  s.lastFaultMessage.c_str());
+    return env->NewStringUTF(buf);
+}
+
+/// P4.1 (T3/D6) — estado do áudio para o HUD (honesto): "off" |
+/// "running:<backend> <device>" | "null:<motivo>". A UI do Play mostra
+/// em vez de ficar calada quando o device recusa o som.
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAudioStatus(JNIEnv* env,
+                                                        jobject /*thiz*/,
+                                                        jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    const std::string status = host->audioStatusLine();
+    return env->NewStringUTF(status.c_str());
+}
+
 JNIEXPORT jint JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorGetTool(JNIEnv* /*env*/,
                                                     jobject /*thiz*/,
@@ -939,6 +997,10 @@ Java_com_goni_runtime_EditorJni_nativeEditorGizmoDragBegin(
     case GizmoHandle::ScaleNW: return 6;
     case GizmoHandle::ScaleSE: return 7;
     case GizmoHandle::ScaleSW: return 8;
+    case GizmoHandle::ScaleEdgeE: return 9;   // P4.1 (D4): arestas
+    case GizmoHandle::ScaleEdgeW: return 10;
+    case GizmoHandle::ScaleEdgeN: return 11;
+    case GizmoHandle::ScaleEdgeS: return 12;
     default: return 0;
     }
 }

@@ -194,7 +194,16 @@ public:
     // --- ferramentas + gizmo (P1.3–P1.6) ----------------------------------------
 
     [[nodiscard]] EditorTool tool() const noexcept { return tool_; }
-    void setTool(EditorTool tool) noexcept { tool_ = tool; }
+    /// P4.1 (T1/D1): trocar de ferramenta RE-ARMA o gizmo — nenhum estado
+    /// de drag sobrevive (o drag de A nunca vira drag de B por troca de
+    /// ferramenta no meio de um gesto).
+    void setTool(EditorTool tool) noexcept
+    {
+        if (tool_ != tool) {
+            gizmoDragEnd();
+        }
+        tool_ = tool;
+    }
 
     /// Bounds REAIS da entidade selecionada (posição/rotação/escala/
     /// textura/ppu — P1.2): tamanho DESENHADO em mundo, o mesmo do

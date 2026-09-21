@@ -416,6 +416,44 @@ TEST_CASE("ni vm: divisão por zero é Fault", "[ni]")
     REQUIRE(st.global("g")->i == 0); // instrução NÃO aplicou escrita (§5.3.3)
 }
 
+// P4.1 (T2/D5): atribuição composta — o script canônico do editor usa
+// `position.x -= dt`; sem os operadores o PLAY falhava em silêncio.
+TEST_CASE("ni vm: atribuição composta += -= *= /=", "[ni][p41]")
+{
+    NiEnv env;
+    auto p = env.compileOrFail(
+        "var g: float = 10.0\n"
+        "var h: float = 8.0\n"
+        "var m: float = 6.0\n"
+        "var n: float = 9.0\n"
+        "up update:\n"
+        "    g += 5.0\n"
+        "    h -= 3.0\n"
+        "    m *= 2.0\n"
+        "    n /= 3.0\n"
+        "stop\n");
+    auto& st = env.instantiate(p, env.scene.createNode());
+    REQUIRE(env.vm.run(st, "update", env.params()) == std::nullopt);
+    REQUIRE(st.global("g")->d[0] == 15.0);
+    REQUIRE(st.global("h")->d[0] == 5.0);
+    REQUIRE(st.global("m")->d[0] == 12.0);
+    REQUIRE(st.global("n")->d[0] == 3.0);
+    // Composto em CAMPO de binding (o caso do repro do device):
+    auto p2 = env.compileOrFail(
+        "add &BL\n"
+        "up update:\n"
+        "    var me = self()\n"
+        "    me.position.x += 0.5\n"
+        "stop\n");
+    auto e = env.scene.createNode();
+    auto& st2 = env.instantiate(p2, e);
+    REQUIRE(env.vm.run(st2, "update", env.params()) == std::nullopt);
+    const auto* transform =
+        env.scene.world().get<eng::math::Transform>(e);
+    REQUIRE(transform != nullptr);
+    REQUIRE(transform->position.x == 0.5);
+}
+
 TEST_CASE("ni vm: curto-circuito and/or", "[ni]")
 {
     NiEnv env;

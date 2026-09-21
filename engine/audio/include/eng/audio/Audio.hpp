@@ -252,8 +252,53 @@ private:
     bool running_{false};
 };
 
-/// Fábrica do backend padrão da plataforma (AAUDIO no Android via dlopen —
-/// AAudioBackend.cpp; null no Linux/testes). Dono é o chamador (host).
+/// P4.1 (T3/D6) — estágios granulares do backend OpenSL ES (fallback
+/// do Unisoc). Mesmo contrato do hook (backend_stage acima).
+namespace opensl_stage {
+inline constexpr char Dlopen[] = "AUDIO_OSLE_DLOPEN";
+inline constexpr char Symbols[] = "AUDIO_OSLE_SYMBOLS";
+inline constexpr char EngineCreate[] = "AUDIO_OSLE_ENGINE";
+inline constexpr char OutputMixCreate[] = "AUDIO_OSLE_MIX";
+inline constexpr char PlayerCreate[] = "AUDIO_OSLE_PLAYER";
+inline constexpr char PlayerRealize[] = "AUDIO_OSLE_REALIZE";
+inline constexpr char CallbackFirstFrame[] = "AUDIO_OSLE_FIRST_FRAME";
+}  // namespace opensl_stage
+
+/// P4.1 (T3/D6): backend REAL alternativo — OpenSL ES (NDK, API 9+,
+/// dlopen de libOpenSLES.so — mesmo padrão ADR-037/038). É o caminho
+/// Legacy do framework: quando o AAudio do HAL recusa (builder null no
+/// Unisoc T612 do Realme C33), o OpenSL ES abre. Saída i16 (formato
+/// universal do caminho Legacy); conversão/resampler via AudioAdapt.
+/// Android apenas (Linux/testes: fábrica não compilada — guard).
+[[nodiscard]] std::unique_ptr<IAudioBackend> createOpenSlEsBackend();
+
+/// P4.1 (T3/D6): CADEIA de seleção automática — tenta AAudio; recusado,
+/// tenta OpenSL ES; o backend vencedor é logado (marco
+/// AUDIO_BACKEND_SELECTED) e exposto ao autor (HUD do editor). Nunca
+/// fallback silencioso: a escolha fica registrada em estágio + status.
+class AutoAudioBackend final : public IAudioBackend {
+public:
+    ~AutoAudioBackend() override;
+    [[nodiscard]] eng::core::Result<void> start(AudioMixer& mixer) override;
+    void stop() override;
+    [[nodiscard]] bool isRunning() const noexcept override;
+    [[nodiscard]] std::string_view name() const noexcept override;
+    [[nodiscard]] std::string describeDevice() const override;
+    [[nodiscard]] bool hasFirstCallbackFired() const noexcept override;
+
+    /// Backend EFETIVO (nullptr antes do start bem-sucedido).
+    [[nodiscard]] const IAudioBackend* active() const noexcept
+    {
+        return active_.get();
+    }
+
+private:
+    std::unique_ptr<IAudioBackend> active_{};
+};
+
+/// Fábrica do backend padrão da plataforma (P4.1: CADEIA Auto no
+/// Android — AAudio → OpenSL ES; null no Linux/testes). Dono é o
+/// chamador (host).
 [[nodiscard]] std::unique_ptr<IAudioBackend> createDefaultBackend();
 
 // =============================================================================
