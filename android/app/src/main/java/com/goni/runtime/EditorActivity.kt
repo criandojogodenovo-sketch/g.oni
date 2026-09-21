@@ -366,7 +366,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         playHud = TextView(this).apply {
             setTextColor(Ui.TEXT)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setBackgroundColor(0x99000000)
+            // 0x99000000 > Int.MAX_VALUE — Kotlin exige .toInt() explícito
+            // (CI Android #45: literal não conforma a Int sem a conversão).
+            setBackgroundColor(0x99000000.toInt())
             setPadding(dp(8), dp(4), dp(8), dp(4))
             visibility = View.GONE
         }

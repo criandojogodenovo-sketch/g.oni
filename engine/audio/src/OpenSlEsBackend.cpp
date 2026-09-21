@@ -64,9 +64,48 @@ struct OpenSlApi {
     SLInterfaceID iidBufferQueue{nullptr};
 };
 
+/// SLresult → texto estável. O OpenSL ES NÃO expõe resultToText como o
+/// AAudio — tabela dos códigos do especificação Khronos (OpenSLES.h);
+/// "?" para código fora da tabela, NUNCA nullptr (o marco persiste o
+/// texto literal — contrato do hook). P4.1.1: o TU chamava um
+/// formatResult que nunca existiu aqui (o do AAudioBackend.cpp tem
+/// outra assinatura e vive noutro TU) — o clang do NDK recusou.
+[[nodiscard]] const char* formatResult(SLresult result) noexcept
+{
+    switch (result) {
+    case SL_RESULT_SUCCESS: return "SUCCESS";
+    case SL_RESULT_PRECONDITIONS_VIOLATED: return "PRECONDITIONS_VIOLATED";
+    case SL_RESULT_PARAMETER_INVALID: return "PARAMETER_INVALID";
+    case SL_RESULT_MEMORY_FAILURE: return "MEMORY_FAILURE";
+    case SL_RESULT_RESOURCE_ERROR: return "RESOURCE_ERROR";
+    case SL_RESULT_RESOURCE_LOST: return "RESOURCE_LOST";
+    case SL_RESULT_IO_ERROR: return "IO_ERROR";
+    case SL_RESULT_BUFFER_INSUFFICIENT: return "BUFFER_INSUFFICIENT";
+    case SL_RESULT_CONTENT_CORRUPTED: return "CONTENT_CORRUPTED";
+    case SL_RESULT_CONTENT_UNSUPPORTED: return "CONTENT_UNSUPPORTED";
+    case SL_RESULT_CONTENT_NOT_FOUND: return "CONTENT_NOT_FOUND";
+    case SL_RESULT_PERMISSION_DENIED: return "PERMISSION_DENIED";
+    case SL_RESULT_FEATURE_UNSUPPORTED: return "FEATURE_UNSUPPORTED";
+    case SL_RESULT_INTERNAL_ERROR: return "INTERNAL_ERROR";
+    case SL_RESULT_UNKNOWN_ERROR: return "UNKNOWN_ERROR";
+    case SL_RESULT_OPERATION_ABORTED: return "OPERATION_ABORTED";
+    case SL_RESULT_CONTROL_LOST: return "CONTROL_LOST";
+    default: return "?";
+    }
+}
+
 /// Resolve a tabela por dlsym (função + os SLInterfaceID exportados).
 /// false = dlopen falhou (libOpenSLES.so ausente — impossível em API
 /// ≥ 9) ou símbolo ausente (HAL quebrado — erro preciso no marco).
+///
+/// P4.1.1 (CI Android #45): os SL_IID_* são VARIÁVEIS globais do tipo
+/// `const SLInterfaceID` (= `const SLInterfaceID_ *const` — PONTEIRO
+/// const para o struct do IID de 16 bytes). O dlsym devolve O ENDEREÇO
+/// da variável; o VALOR (o IID em si) vem da desreferência — o código
+/// antigo fazia static_cast do endereço direto para o ponteiro e
+/// desreferenciava nos chamados (conversão inválida que o clang do NDK
+/// recusou). Null-check ANTES da desreferência (dlsym pode devolver
+/// nullptr).
 [[nodiscard]] bool loadOpenSlApi(OpenSlApi& api)
 {
     api.library = dlopen("libOpenSLES.so", RTLD_NOW | RTLD_LOCAL);
@@ -75,14 +114,18 @@ struct OpenSlApi {
     }
     api.createEngine = reinterpret_cast<SlCreateEngineFn>(
         dlsym(api.library, "slCreateEngine"));
-    api.iidEngine = static_cast<SLInterfaceID>(
-        dlsym(api.library, "SL_IID_ENGINE"));
-    api.iidPlay = static_cast<SLInterfaceID>(
-        dlsym(api.library, "SL_IID_PLAY"));
-    api.iidBufferQueue = static_cast<SLInterfaceID>(
-        dlsym(api.library, "SL_IID_ANDROIDSIMPLEBUFFERQUEUE"));
-    return api.createEngine != nullptr && api.iidEngine != nullptr &&
-           api.iidPlay != nullptr && api.iidBufferQueue != nullptr;
+    const void* symEngine = dlsym(api.library, "SL_IID_ENGINE");
+    const void* symPlay = dlsym(api.library, "SL_IID_PLAY");
+    const void* symQueue =
+        dlsym(api.library, "SL_IID_ANDROIDSIMPLEBUFFERQUEUE");
+    if (api.createEngine == nullptr || symEngine == nullptr ||
+        symPlay == nullptr || symQueue == nullptr) {
+        return false;
+    }
+    api.iidEngine = *static_cast<const SLInterfaceID*>(symEngine);
+    api.iidPlay = *static_cast<const SLInterfaceID*>(symPlay);
+    api.iidBufferQueue = *static_cast<const SLInterfaceID*>(symQueue);
+    return true;
 }
 
 /// Frames por buffer da fila (10 ms @ 48 kHz — latência previsível e
@@ -148,7 +191,7 @@ public:
             return refuse(r, "engine Realize falhou");
         }
         SLEngineItf engine = nullptr;
-        (void)(*engineObject)->GetInterface(engineObject, *api.iidEngine,
+        (void)(*engineObject)->GetInterface(engineObject, api.iidEngine,
                                             &engine);
         engine_ = engine;
         api_ = api;             // IIDs vivos até o stop
@@ -156,9 +199,12 @@ public:
 
         // ---- AUDIO_OSLE_MIX ---------------------------------------------
         reportBackendStage(opensl_stage::OutputMixCreate, "begin", "");
+        // P4.1.1 (CI Android #45): SLEngineItf é DUPLO ponteiro
+        // (const SLEngineItf_ *const *) — a chamada segue o MESMO
+        // idioma dos objetos: (*itf)->Função(itf, ...).
         if (engine == nullptr ||
-            engine->CreateOutputMix(engine, &mixObject_, 0, nullptr,
-                                    nullptr) != SL_RESULT_SUCCESS) {
+            (*engine)->CreateOutputMix(engine, &mixObject_, 0, nullptr,
+                                       nullptr) != SL_RESULT_SUCCESS) {
             reportBackendStage(opensl_stage::OutputMixCreate, "failed",
                                "CreateOutputMix recusado");
             return cleanupAndRefuse("CreateOutputMix falhou");
@@ -198,10 +244,11 @@ public:
         SLDataSink sink{};
         sink.pFormat = nullptr;
         sink.pLocator = &sinkLocator;
-        const SLInterfaceID ids[1] = {*api.iidBufferQueue};
+        const SLInterfaceID ids[1] = {api.iidBufferQueue};
         const SLboolean req[1] = {SL_BOOLEAN_TRUE};
-        if (engine->CreateAudioPlayer(engine, &playerObject_, &source, &sink,
-                                      1, ids, req) != SL_RESULT_SUCCESS) {
+        if ((*engine)->CreateAudioPlayer(engine, &playerObject_, &source,
+                                         &sink, 1, ids,
+                                         req) != SL_RESULT_SUCCESS) {
             reportBackendStage(opensl_stage::PlayerCreate, "failed",
                                "CreateAudioPlayer recusado");
             return cleanupAndRefuse("CreateAudioPlayer falhou");
@@ -219,9 +266,9 @@ public:
             return cleanupAndRefuse("player Realize falhou");
         }
         (void)(*playerObject_)
-            ->GetInterface(playerObject_, *api.iidPlay, &play_);
+            ->GetInterface(playerObject_, api.iidPlay, &play_);
         (void)(*playerObject_)
-            ->GetInterface(playerObject_, *api.iidBufferQueue, &queue_);
+            ->GetInterface(playerObject_, api.iidBufferQueue, &queue_);
         if (play_ == nullptr || queue_ == nullptr) {
             reportBackendStage(opensl_stage::PlayerRealize, "failed",
                                "interfaces PLAY/BUFFERQUEUE ausentes");
@@ -315,21 +362,25 @@ public:
     }
 
 private:
-    [[nodiscard]] eng::core::Error refuse(SLresult r,
-                                          const char* what) const
+    /// P4.1.1 (CI Android #45): o contrato de start() é Result<void> —
+    /// o erro devolve-se via makeUnexpected (Result NÃO converte Error
+    /// implicitamente; o clang do NDK recusou a conversão com -Werror).
+    [[nodiscard]] eng::core::Result<void> refuse(SLresult r,
+                                                 const char* what) const
     {
-        return eng::core::Error{eng::core::StatusCode::Unknown,
-                                std::string(what) + " (código " +
-                                    std::to_string(static_cast<int>(r)) +
-                                    ")"};
+        return eng::core::makeUnexpected(eng::core::Error{
+            eng::core::StatusCode::Unknown,
+            std::string(what) + " (código " +
+                std::to_string(static_cast<int>(r)) + ")"});
     }
 
     /// Destrói player/mix/engine (ordem folha→raiz) e devolve erro.
-    [[nodiscard]] eng::core::Error cleanupAndRefuse(const char* what)
+    [[nodiscard]] eng::core::Result<void> cleanupAndRefuse(const char* what)
     {
         destroyObjects();
-        return eng::core::Error{eng::core::StatusCode::Unknown,
-                                std::string("OpenSL ES: ") + what};
+        return eng::core::makeUnexpected(eng::core::Error{
+            eng::core::StatusCode::Unknown,
+            std::string("OpenSL ES: ") + what});
     }
 
     void destroyObjects() noexcept

@@ -272,6 +272,14 @@ inline constexpr char CallbackFirstFrame[] = "AUDIO_OSLE_FIRST_FRAME";
 /// Android apenas (Linux/testes: fábrica não compilada — guard).
 [[nodiscard]] std::unique_ptr<IAudioBackend> createOpenSlEsBackend();
 
+/// P3.4: backend AAudio real (dlopen libaaudio.so — API 26+, mesma
+/// disciplina ADR-037/038). Android apenas (Linux/testes: TU vazio —
+/// guard __ANDROID__). Declaração pública porque o Auto backend
+/// (cadeia P4.1) consulta a fábrica ANTES do OpenSL ES; nenhum outro
+/// chamador — no Linux/testes a definição não existe (TU vazio) e a
+/// cadeia Auto nem chega a ela (guard do AutoBackend.cpp).
+[[nodiscard]] std::unique_ptr<IAudioBackend> createAAudioBackend();
+
 /// P4.1 (T3/D6): CADEIA de seleção automática — tenta AAudio; recusado,
 /// tenta OpenSL ES; o backend vencedor é logado (marco
 /// AUDIO_BACKEND_SELECTED) e exposto ao autor (HUD do editor). Nunca

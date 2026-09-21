@@ -3680,8 +3680,12 @@ TEST_CASE("editor: P1 — renderer desenha GIZMO por cima do sprite (readback)",
     REQUIRE(owned->renderFrame(1.f / 60.f));
     const auto& gizmoVerts = renderer->lastFrameGizmoVertices();
     REQUIRE_FALSE(gizmoVerts.empty());
-    // 3 handles (centro+X+Y) × 6 vértices + 2 eixos (segmentos) × 6.
-    CHECK(gizmoVerts.size() == 30);
+    // P4.1 (D3/D4 — affordance de toque do MOVE REDESENHADA): quadrado
+    // central + 4 pontas de seta (5 quads × 6 vértices) + 4 hastes
+    // (4 segmentos × 6) = 54. O P1 desenhava 3 handles + 2 eixos (30);
+    // o contrato de contagem acompanha a especificação nova (o gizmo
+    // continua INTEIRO por cima do sprite — a prova de pixel abaixo).
+    CHECK(gizmoVerts.size() == 54);
 
     // Prova VISUAL: o pixel central da tela é o HANDLE CENTRAL amarelo
     // (kCenter 0.96/0.82/0.30) DESENHADO SOBRE o sprite vermelho/verde.
