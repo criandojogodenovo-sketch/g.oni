@@ -44,6 +44,12 @@ object EditorJni {
     external fun nativeEditorOpenProject(handle: Long, relPath: String): Boolean
     external fun nativeEditorSaveProject(handle: Long): Boolean
     external fun nativeEditorProjectName(handle: Long): String?
+    /** P4.2 (B-A): NOME DA PASTA real do projeto no disco (export/cena). */
+    external fun nativeEditorProjectFolder(handle: Long): String?
+    /** P4.2 (B-A): zip do projeto (C++, entradas embrulhadas) → relPath. */
+    external fun nativeEditorExportProjectZip(handle: Long, zipRelPath: String): Boolean
+    /** P4.2 (B-A): extrai zip no workspace; devolve a pasta criada. */
+    external fun nativeEditorImportProjectZip(handle: Long, zipRelPath: String, preferredName: String): String?
     external fun nativeEditorHasProject(handle: Long): Boolean
     external fun nativeEditorSetProjectName(handle: Long, name: String): Boolean
 
@@ -153,6 +159,9 @@ object EditorJni {
     external fun nativeEditorPlay(handle: Long): Boolean
     external fun nativeEditorStop(handle: Long)
     external fun nativeEditorIsPlaying(handle: Long): Boolean
+    /** P4.2 (T5 — Modo Jogo): PAUSE do runtime (tick congela; render vivo). */
+    external fun nativeEditorSetPaused(handle: Long, paused: Boolean)
+    external fun nativeEditorIsPaused(handle: Long): Boolean
 
     // --- assets (§8.5) ------------------------------------------------------------------
 

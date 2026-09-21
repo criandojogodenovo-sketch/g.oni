@@ -37,6 +37,33 @@ constexpr float kPi = 3.14159265358979323846f;
     return std::sqrt(dx * dx + dy * dy);
 }
 
+/// Distância em TELA de (screenX,screenY) ao SEGMENTO de mundo a—b
+/// (P4.2/B-D: as HASTES das setas de movimento viram alvo — tocar na
+/// haste em vez da pontinha não cai mais no fallback de scroll).
+[[nodiscard]] float screenDistanceToSegment(const Viewport& viewport,
+                                            float aWorldX, float aWorldY,
+                                            float bWorldX, float bWorldY,
+                                            float screenX,
+                                            float screenY) noexcept
+{
+    const float ax = viewport.worldToScreenX(aWorldX);
+    const float ay = viewport.worldToScreenY(aWorldY);
+    const float bx = viewport.worldToScreenX(bWorldX);
+    const float by = viewport.worldToScreenY(bWorldY);
+    const float abx = bx - ax;
+    const float aby = by - ay;
+    const float apx = screenX - ax;
+    const float apy = screenY - ay;
+    const float abLen2 = abx * abx + aby * aby;
+    float t = abLen2 > 0.f
+                  ? (apx * abx + apy * aby) / abLen2
+                  : 0.f;
+    t = std::clamp(t, 0.f, 1.f);
+    const float dx = apx - abx * t;
+    const float dy = apy - aby * t;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
 /// Ponto do anel de rotação no ângulo atual da entidade (o handle nasce
 /// "amarrado" à rotação — girar é pegar e balançar, sem salto).
 [[nodiscard]] std::pair<float, float> ringHandleWorld(const GizmoBounds& b,
@@ -141,27 +168,61 @@ GizmoHandle TransformGizmo::hitTest(const Viewport& viewport, EditorTool tool,
     const float hitScreenPx = hitPx(scale);
 
     if (tool == EditorTool::Move) {
+        // P4.2 (B-D — precedência CORRIGIDA): o CENTRO é avaliado PRIMEIRO.
+        // Com alvos em dp (48px de raio na densidade 2) a ponta interna da
+        // haste fica a 24px do centro — eixos primeiro faziam o raio de
+        // acerto da haste COBRIR o centro: agarrar o corpo da entidade
+        // arrastava só o eixo X ("o dedo não segue" no device, os DOIS
+        // eixos errados). Dentro do raio do centro, o centro vence; as
+        // hastes (borda → ponta) e as cabeças continuam alvos de eixo.
+        if (screenDistanceTo(viewport, bounds.worldX, bounds.worldY,
+                             screenX, screenY) <= hitScreenPx) {
+            return GizmoHandle::MoveCenter;
+        }
         // P4.1 (D1/D2): alvos em DUAS direções por eixo (±X, ±Y) — a
         // seta existe nos dois lados e o toque nela arrasta o EIXO.
-        // Precisão: eixos primeiro (alvos menores), centro por último.
+        // P4.2 (B-D): HASTE também acerta — o alvo deixou de ser só a
+        // pontinha (head dot); no device o toque na haste caía no
+        // fallback do onScroll (mover RELATIVO com slop) e a entidade
+        // "não seguia o dedo".
         const float axisLen = pxToWorld(viewport, axisPx(scale));
-        if (screenDistanceTo(viewport, bounds.worldX + axisLen,
+        const float shaftStartX = std::max(bounds.halfW, 0.f);
+        const float shaftStartY = std::max(bounds.halfH, 0.f);
+        const bool onXShaft =
+            screenDistanceToSegment(viewport,
+                                    bounds.worldX + shaftStartX, bounds.worldY,
+                                    bounds.worldX + axisLen, bounds.worldY,
+                                    screenX, screenY) <= hitScreenPx ||
+            screenDistanceToSegment(viewport,
+                                    bounds.worldX - shaftStartX, bounds.worldY,
+                                    bounds.worldX - axisLen, bounds.worldY,
+                                    screenX, screenY) <= hitScreenPx;
+        const bool onXHead =
+            screenDistanceTo(viewport, bounds.worldX + axisLen,
                              bounds.worldY, screenX, screenY) <= hitScreenPx ||
             screenDistanceTo(viewport, bounds.worldX - axisLen,
-                             bounds.worldY, screenX, screenY) <= hitScreenPx) {
+                             bounds.worldY, screenX, screenY) <= hitScreenPx;
+        if (onXHead || onXShaft) {
             return GizmoHandle::MoveAxisX;
         }
-        if (screenDistanceTo(viewport, bounds.worldX,
+        const bool onYShaft =
+            screenDistanceToSegment(viewport,
+                                    bounds.worldX, bounds.worldY + shaftStartY,
+                                    bounds.worldX, bounds.worldY + axisLen,
+                                    screenX, screenY) <= hitScreenPx ||
+            screenDistanceToSegment(viewport,
+                                    bounds.worldX, bounds.worldY - shaftStartY,
+                                    bounds.worldX, bounds.worldY - axisLen,
+                                    screenX, screenY) <= hitScreenPx;
+        const bool onYHead =
+            screenDistanceTo(viewport, bounds.worldX,
                              bounds.worldY + axisLen, screenX,
                              screenY) <= hitScreenPx ||
             screenDistanceTo(viewport, bounds.worldX,
                              bounds.worldY - axisLen, screenX,
-                             screenY) <= hitScreenPx) {
+                             screenY) <= hitScreenPx;
+        if (onYHead || onYShaft) {
             return GizmoHandle::MoveAxisY;
-        }
-        if (screenDistanceTo(viewport, bounds.worldX, bounds.worldY,
-                             screenX, screenY) <= hitScreenPx) {
-            return GizmoHandle::MoveCenter;
         }
         return GizmoHandle::None;
     }
@@ -169,13 +230,19 @@ GizmoHandle TransformGizmo::hitTest(const Viewport& viewport, EditorTool tool,
     if (tool == EditorTool::Rotate) {
         // P4.1 (D3): raio do anel com MÍNIMO de 64 px em tela — em zoom
         // baixo ou entidade pequena o anel continua agarrável.
+        // P4.2 (B-C): o anel INTEIRO é alvo — banda |dist − raio| ≤ hit
+        // — em vez de só o dot do handle. No device, tocar no anel a
+        // 90° do dot devolvia None e o gesto virava PAN da câmera
+        // ("rotação inoperante por toque"); o dot continua coberto
+        // (está SOBRE o anel).
         const float radiusPx =
-            std::max(bounds.halfW, bounds.halfH) *
-                viewport.effectiveCamera().zoom;
-        const float radius =
-            pxToWorld(viewport, ringRadiusPx(radiusPx, scale));
-        const auto [hx, hy] = ringHandleWorld(bounds, radius);
-        if (screenDistanceTo(viewport, hx, hy, screenX, screenY) <= hitScreenPx) {
+            ringRadiusPx(std::max(bounds.halfW, bounds.halfH) *
+                             viewport.effectiveCamera().zoom,
+                         scale);
+        const float dx = viewport.worldToScreenX(bounds.worldX) - screenX;
+        const float dy = viewport.worldToScreenY(bounds.worldY) - screenY;
+        const float distPx = std::sqrt(dx * dx + dy * dy);
+        if (std::abs(distPx - radiusPx) <= hitScreenPx) {
             return GizmoHandle::RotateRing;
         }
         return GizmoHandle::None;
@@ -248,6 +315,9 @@ void TransformGizmo::beginDrag(GizmoHandle handle,
     if (handle == GizmoHandle::RotateRing) {
         startAngleRad_ = std::atan2(worldY - bounds.worldY,
                                     worldX - bounds.worldX);
+        // P4.2 (B-C): acumulador por EVENTO — o primeiro delta é zero.
+        lastAngleRad_ = startAngleRad_;
+        accumulatedRotationDeg_ = 0.f;
     } else if (isCornerHandle(handle) || isEdgeHandle(handle)) {
         // Pointer no frame LOCAL do nó (desfaz a rotação) — o ratio
         // local é o que multiplica a escala (Godot-style: cantos
@@ -262,8 +332,8 @@ void TransformGizmo::beginDrag(GizmoHandle handle,
 }
 
 GizmoTransform TransformGizmo::dragTo(const Viewport& viewport,
-                                     const GizmoBounds& bounds, float screenX,
-                                     float screenY) const
+                                      const GizmoBounds& bounds, float screenX,
+                                      float screenY)
 {
     if (active_ == GizmoHandle::None) {
         return start_;
@@ -286,14 +356,22 @@ GizmoTransform TransformGizmo::dragTo(const Viewport& viewport,
         result.posY = start_.posY + dyWorld;  // X travado
         break;
     case GizmoHandle::RotateRing: {
+        // P4.2 (B-C — causa raiz da "rotação inoperante"): o código
+        // antigo normalizava o ÂNGULO TOTAL contra o ponto de agarre
+        // fixo; dedo além de 180° flipava o sinal (ex.: +200° virava
+        // −160°) e a entidade girava PARA TRÁS. Agora cada evento
+        // contribui com o delta CURTO contra o ângulo do evento
+        // ANTERIOR (sempre <180° — impossível flipar) e a soma
+        // acumula: volta(s) completas somam, drag contínuo funciona.
         const float angle = std::atan2(worldY - bounds.worldY,
                                        worldX - bounds.worldX);
-        float deltaDeg = (angle - startAngleRad_) * 180.f / kPi;
-        // Normaliza para (-180, 180]: a volta completa deve somar, não
-        // teleportar (drag contínuo cruza ±180 várias vezes).
+        float deltaDeg = (angle - lastAngleRad_) * 180.f / kPi;
         while (deltaDeg > 180.f) { deltaDeg -= 360.f; }
         while (deltaDeg < -180.f) { deltaDeg += 360.f; }
-        result.rotationDeg = snappedDegrees(start_.rotationDeg + deltaDeg);
+        lastAngleRad_ = angle;
+        accumulatedRotationDeg_ += deltaDeg;
+        result.rotationDeg =
+            snappedDegrees(start_.rotationDeg + accumulatedRotationDeg_);
         break;
     }
     case GizmoHandle::ScaleNE:

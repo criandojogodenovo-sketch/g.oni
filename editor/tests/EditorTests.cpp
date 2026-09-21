@@ -33,6 +33,7 @@
 #include "eng/editor/EditorHost.hpp"
 #include "eng/editor/Gizmo.hpp"
 #include "eng/editor/Inspector.hpp"
+#include "eng/editor/ProjectZip.hpp"
 #include "eng/editor/SpriteData.hpp"
 #include "eng/editor/TextureCache.hpp"
 #include "eng/editor/ViewportRenderer.hpp"
@@ -3101,11 +3102,12 @@ TEST_CASE("editor: P1 — tool modes: abstração única, Select sem gizmo, Play
     CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
           eng::editor::GizmoHandle::None);
     doc.stop();
-    // stop() RESETA a seleção (contrato a7fd366) → gizmo some; com nova
-    // seleção ele volta (Edit restabelecido).
-    CHECK(doc.gizmoDraw(nullptr).quads.empty());
-    REQUIRE(doc.select(g.entity).ok());
+    // P4.2 (T5 — contrato REVISTO; era a7fd366 "stop reseta"): o Modo
+    // Jogo exige voltar COM a seleção intacta → o gizmo CONTINUA na
+    // entidade selecionada (nova seleção também re-arma).
     CHECK_FALSE(doc.gizmoDraw(nullptr).quads.empty());
+    CHECK(doc.selection().has_value());
+    CHECK(*doc.selection() == g.entity);
 }
 
 // =============================================================================
@@ -3181,8 +3183,12 @@ TEST_CASE("editor: P4.1 — D1: troca de ferramenta/play/stop matam drag vivo",
             GizmoHandle::MoveCenter);
     REQUIRE(doc.play().ok());
     doc.stop();
+    // P4.2 (T5): stop PRESERVA a seleção (contrato revisto, era a7fd366)
+    // → o drag re-arma imediatamente (o re-armo P4.1 segue: NENHUM estado
+    // do drag pré-Play sobrevive — mas um toque NOVO funciona).
     CHECK(doc.gizmoDragBegin(100.f, 75.f, nullptr) ==
-          GizmoHandle::None);  // stop resetou a seleção (contrato)
+          GizmoHandle::MoveCenter);
+    doc.gizmoDragEnd();
 }
 
 TEST_CASE("editor: P4.1 — D2: raio de acerto CONSTANTE EM PX no zoom",
@@ -3614,13 +3620,15 @@ TEST_CASE("editor: P1 — PLAY: selected/duplicated/transformed/deleted no clone
     }
 
     doc.stop();
-    // Edição INTACTA: A em (3,2), C presente, seleção resetada.
+    // Edição INTACTA: A em (3,2), C presente. P4.2 (T5): a seleção da
+    // edição sobrevive ao stop (contrato do Modo Jogo — era a7fd366).
     CHECK_FALSE(doc.isPlaying());
     auto tr = doc.transform(g.entity);
     REQUIRE(tr.ok());
     CHECK(tr.value().position.x == Catch::Approx(3.f).margin(1e-5f));
     CHECK(doc.hierarchySnapshot().size() == 2);
-    CHECK_FALSE(doc.selection().has_value());
+    REQUIRE(doc.selection().has_value());
+    CHECK(*doc.selection() == g.entity);
 }
 
 // --- P1.15 RENDERING (readback de pixel — features visuais provadas) ---------------
@@ -6303,4 +6311,631 @@ TEST_CASE("editor: P3.5 — crash fatal despeja TODAS as threads + maps cru",
     CHECK(text.find("[maps.raw end]") != std::string::npos);
     // Pilhas em registo duplo.
     CHECK(text.find("[fp]") != std::string::npos);
+}
+
+// =============================================================================
+// P4.2 — DEVICE BUGS ROUND 2 (B-A…B-E) + MODO JOGO (T5)
+// =============================================================================
+
+// ---- B-A: round-trip de persistência à prova de device ----------------------
+
+TEST_CASE("editor: P4.2 — B-A: salvar projeto persiste a CENA (reload sem loadScene manual)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    auto& doc = *f.doc;
+
+    REQUIRE(doc.createEntity("Alpha", eng::scene::kNoEntity).ok());
+    auto beta = doc.createEntity("Beta", eng::scene::kNoEntity);
+    REQUIRE(beta.ok());
+    eng::editor::TransformDesc betaDesc;
+    betaDesc.position = eng::math::Vec3{2.f, 1.f, 0.f};
+    REQUIRE(doc.setTransform(beta.value(), betaDesc).ok());
+
+    // "Salvar projeto" (P4.2): projeto + cena em uma operação — a cena
+    // nunca salva usa o default "main.json" (mesmo default do menu Cena).
+    REQUIRE(doc.saveProject().ok());
+    CHECK(doc.currentScenePath() == "main.json");
+    CHECK_FALSE(doc.sceneDirty());
+    CHECK_FALSE(doc.projectDirty());
+
+    // Reload EXATAMENTE como a Activity faz: host novo, mesmo workspace,
+    // ensureStartupProject — NENHUM loadScene manual aqui (era o passo
+    // que só o TESTE fazia e o device não).
+    auto reopened = EditorDocument::create(f.fsStorage, eng::fs::Path{"."});
+    REQUIRE(reopened.ok());
+    auto& doc2 = *reopened.value();
+    REQUIRE(doc2.ensureStartupProject().ok());
+
+    const auto snapshot = doc2.hierarchySnapshot();
+    REQUIRE(snapshot.size() == 2);
+    eng::ecs::Entity betaInDoc2{};
+    bool alpha = false;
+    bool betaFound = false;
+    for (const auto& node : snapshot) {
+        alpha = alpha || node.name == "Alpha";
+        betaFound = betaFound || node.name == "Beta";
+        if (node.name == "Beta") {
+            betaInDoc2 = node.entity;  // handle do doc RECARREGADO
+        }
+    }
+    CHECK(alpha);
+    CHECK(betaFound);
+
+    // E o TRANSFORM sobreviveu (serialização da cena certa). Handle do
+    // documento recarregado — handles NÃO atravessam documentos (mesma
+    // família do bug do clone aleatório: índices não são identidade).
+    const auto betaNow = doc2.transform(betaInDoc2);
+    REQUIRE(betaNow.ok());
+    CHECK(betaNow.value().position.x == Catch::Approx(2.f).margin(1e-4f));
+    CHECK(betaNow.value().position.y == Catch::Approx(1.f).margin(1e-4f));
+}
+
+TEST_CASE("editor: P4.2 — B-A: export zip → import zip em workspace NOVO (cena vem junto)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    auto& doc = *f.doc;
+    REQUIRE(doc.createEntity("ZipHero", eng::scene::kNoEntity).ok());
+    REQUIRE(doc.saveProject().ok());
+
+    // Export com wrapper = nome da PASTA real (não config.name — o bug
+    // do rename no settings).
+    REQUIRE(doc.exportProjectZip(".goni_export.zip").ok());
+
+    // Import em workspace novo (mesma fs, outra raiz lógica).
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{"ws2"}).ok());
+    auto imported = eng::editor::extractProjectZip(
+        *f.fs, eng::fs::Path{".goni_export.zip"}, eng::fs::Path{"ws2"},
+        "NomeDoArquivo");
+    REQUIRE(imported.ok());
+    CHECK(imported.value() == "TestGame");  // WRAPPER vence (não o nome do arquivo)
+
+    // Diagnóstico: o import DEIXOU o projeto no destino?
+    {
+        auto there = f.fs->exists(
+            eng::fs::Path{"ws2/TestGame/project.goni.json"});
+        REQUIRE(there.ok());
+        if (!there.value()) {
+            auto listed = f.fs->list(eng::fs::Path{"."}, true);
+            REQUIRE(listed.ok());
+            std::string dump;
+            for (const auto& e : listed.value()) {
+                dump += e.path.str();
+                dump += ";";
+            }
+            FAIL("ws2/TestGame/project.goni.json ausente — fs: " << dump);
+        }
+    }
+    auto second = EditorDocument::create(f.fsStorage, eng::fs::Path{"ws2"});
+    REQUIRE(second.ok());
+    auto& doc2 = *second.value();
+    auto opened = doc2.openProject(eng::fs::Path{imported.value()});
+    if (!opened.ok()) {
+        FAIL("openProject falhou: " << opened.error().message);
+    }
+
+    // A cena VEIO no zip + marker .goni_last_scene → entidades presentes
+    // SEM loadScene (o marker viaja dentro do zip — B-A por completo).
+    const auto snapshot = doc2.hierarchySnapshot();
+    REQUIRE(snapshot.size() == 1);
+    CHECK(snapshot.front().name == "ZipHero");
+    CHECK(doc2.currentScenePath() == "main.json");
+}
+
+TEST_CASE("editor: P4.2 — B-A: cena registrada AUSENTE no reload é erro EXPLÍCITO (nunca vazio silencioso)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.doc->createEntity("Hero", eng::scene::kNoEntity).ok());
+    REQUIRE(f.doc->saveProject().ok());
+
+    // O arquivo da cena sumiu (usuário apagou no disco / zip quebrado).
+    REQUIRE(f.fs->remove(eng::fs::Path{"TestGame/scenes/main.json"}).ok());
+
+    auto reopened = EditorDocument::create(f.fsStorage, eng::fs::Path{"."});
+    REQUIRE(reopened.ok());
+    // REGRA: falha de load = erro explícito. Nunca silêncio, nunca
+    // "projeto novo" vazio.
+    CHECK_FALSE(reopened.value()->ensureStartupProject().ok());
+}
+
+TEST_CASE("editor: P4.2 — B-A: newScene limpa o marker de última cena",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.doc->createEntity("Hero", eng::scene::kNoEntity).ok());
+    REQUIRE(f.doc->saveProject().ok());
+    CHECK(f.fs->exists(eng::fs::Path{"TestGame/.goni_last_scene"}).ok());
+
+    // Cena nova = nada a restaurar no próximo open (decisão do autor).
+    REQUIRE(f.doc->newScene().ok());
+    CHECK(f.doc->currentScenePath().empty());
+    const auto marker = f.fs->exists(eng::fs::Path{"TestGame/.goni_last_scene"});
+    REQUIRE(marker.ok());
+    CHECK_FALSE(marker.value());
+
+    auto reopened = EditorDocument::create(f.fsStorage, eng::fs::Path{"."});
+    REQUIRE(reopened.ok());
+    REQUIRE(reopened.value()->ensureStartupProject().ok());
+    CHECK(reopened.value()->hierarchySnapshot().empty());  // vazio HONESTO
+}
+
+TEST_CASE("editor: P4.2 — B-A: zip com traversal e sem project.goni.json é RECUSADO",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.doc->saveProject().ok());
+    REQUIRE(f.doc->exportProjectZip(".goni_export.zip").ok());
+
+    // Import de zip válido em destino ocupado → erro explícito (sem merge).
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{"ws3/TestGame"}).ok());
+    auto clash = eng::editor::extractProjectZip(
+        *f.fs, eng::fs::Path{".goni_export.zip"}, eng::fs::Path{"ws3"}, "x");
+    REQUIRE(clash.isError());
+    CHECK(clash.error().code == eng::core::StatusCode::AlreadyExists);
+}
+
+// ---- B-C/B-D: matemática dos gizmos em parâmetros de DEVICE ------------------
+
+TEST_CASE("editor: P4.2 — B-D: gizmo MOVE segue o dedo (X e Y SEPARADOS, density 2, 720×1600, 2 zooms)",
+          "[editor][p42]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    // Parâmetros do device real (Realme C33): portrait 720×1600, densidade 2.
+    doc.viewport().setScreenSize(720.f, 1600.f);
+    doc.viewport().setUiScale(2.f);
+
+    for (const float zoom : {48.f, 120.f}) {
+        INFO("zoom = " << zoom);
+        doc.viewport().camera().posX = 0.f;
+        doc.viewport().camera().posY = 0.f;
+        doc.viewport().camera().zoom = zoom;
+
+        // Cada iteração começa com a entidade na ORIGEM (o drag da
+        // iteração anterior mexeu — e as alças seguem a ENTIDADE).
+        eng::editor::TransformDesc zero;
+        REQUIRE(doc.setTransform(g.entity, zero).ok());
+
+        // --- Eixo X: +200px de tela = +200/zoom de mundo; Y NÃO mexe. ---
+        REQUIRE(doc.select(g.entity).ok());
+        doc.setTool(eng::editor::EditorTool::Move);
+        const float axis = TransformGizmo::axisPx(2.f);  // 96dp×2 = 192px
+        CHECK(doc.gizmoDragBegin(360.f + axis, 800.f, nullptr) ==
+              GizmoHandle::MoveAxisX);
+        // Drag em VÁRIOS eventos (como o device entrega): 80 + 120px.
+        REQUIRE(doc.gizmoDragTo(360.f + axis + 80.f, 800.f).ok());
+        REQUIRE(doc.gizmoDragTo(360.f + axis + 200.f, 800.f + 30.f).ok());
+        doc.gizmoDragEnd();
+        auto tr = doc.transform(g.entity);
+        REQUIRE(tr.ok());
+        CHECK(tr.value().position.x == Catch::Approx(200.f / zoom).margin(1e-3f));
+        CHECK(tr.value().position.y == Catch::Approx(0.f).margin(1e-3f));
+
+        // --- "O dedo segue" (MoveCenter): agarrar o CORPO e arrastar —
+        // o tap no ponto FINAL do toque re-encontra a entidade. ---
+        eng::editor::TransformDesc reset;
+        REQUIRE(doc.setTransform(g.entity, reset).ok());
+        CHECK(doc.gizmoDragBegin(360.f, 800.f, nullptr) ==
+              GizmoHandle::MoveCenter);
+        REQUIRE(doc.gizmoDragTo(360.f + 150.f, 800.f - 100.f).ok());
+        doc.gizmoDragEnd();
+        tr = doc.transform(g.entity);
+        REQUIRE(tr.ok());
+        CHECK(tr.value().position.x == Catch::Approx(150.f / zoom).margin(1e-3f));
+        // Tela para CIMA = mundo para CIMA (Y de tela invertido — os DOIS
+        // eixos errados no device).
+        CHECK(tr.value().position.y == Catch::Approx(100.f / zoom).margin(1e-3f));
+        auto finger = doc.viewportTap(360.f + 150.f, 800.f - 100.f, nullptr);
+        REQUIRE(finger.has_value());
+        CHECK(*finger == g.entity);
+    }
+}
+
+TEST_CASE("editor: P4.2 — B-D: HASTE do eixo é alvo (tocar na haste não cai no fallback)",
+          "[editor][p42]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    doc.viewport().setUiScale(2.f);
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Move);
+
+    // Ponto NO MEIO da haste X (entre a borda do bounds e a ponta) — o
+    // alvo antigo era SÓ a pontinha: toque na haste devolvia None e o
+    // gesto virava scroll do fallback (mover relativo).
+    const float axis = TransformGizmo::axisPx(2.f);
+    const float midShaft = 100.f + (100.f / 2.f + axis) / 2.f;  // (borda+head)/2
+    CHECK(doc.gizmoDragBegin(midShaft, 75.f, nullptr) == GizmoHandle::MoveAxisX);
+    doc.gizmoDragEnd();
+
+    const float midShaftY = 75.f + (75.f / 2.f + axis) / 2.f;
+    CHECK(doc.gizmoDragBegin(100.f, midShaftY, nullptr) == GizmoHandle::MoveAxisY);
+    doc.gizmoDragEnd();
+}
+
+TEST_CASE("editor: P4.2 — B-D: raio de SELEÇÃO escala com a densidade (14px fixo era ~7dp no device)",
+          "[editor][p42]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    doc.viewport().setScreenSize(720.f, 1600.f);
+
+    // Entidade 1×1 mundo, zoom 48 → quad de 48px (borda a 24px do centro).
+    doc.viewport().camera().zoom = 48.f;
+    REQUIRE(doc.select(g.entity).ok());
+
+    // Toca a 30px FORA da borda do quad (centro do quad a 360/800):
+    //   - densidade 2 → raio de toque 28px → 30px > 24px+borda?? — 54px do
+    //     centro passa do quad (24) mas dentro do raio (24+28=52)... borda!
+    //     Usa 50px do centro: dentro do raio estendido, fora do quad.
+    doc.viewport().setUiScale(2.f);
+    auto hit2x = doc.viewportTap(360.f + 50.f, 800.f, nullptr);
+    REQUIRE(hit2x.has_value());
+    CHECK(*hit2x == g.entity);
+
+    //   - densidade 1 → raio 14px → 50-24=26px fora do quad, 26 > 14: MISS.
+    doc.deselect();
+    doc.viewport().setUiScale(1.f);
+    auto hit1x = doc.viewportTap(360.f + 50.f, 800.f, nullptr);
+    CHECK_FALSE(hit1x.has_value());
+}
+
+TEST_CASE("editor: P4.2 — B-C: o ANEL INTEIRO da rotação é alvo (toque a 90° do dot funciona)",
+          "[editor][p42]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    doc.viewport().setScreenSize(720.f, 1600.f);
+    doc.viewport().setUiScale(2.f);
+    doc.viewport().camera().zoom = 48.f;
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Rotate);
+
+    // Raio do anel em px (bounds 1×1 → 24px*48=?? não — halfW 0.5 × 48 =
+    // 24px + 26dp×2 = 52px → max(52, 64dp×2=128) = 128px).
+    const float radius = TransformGizmo::ringRadiusPx(0.5f * 48.f, 2.f);
+    CHECK(radius == Catch::Approx(128.f).margin(0.5f));
+
+    // Dot do handle está no ângulo 0 (entidade sem rotação): tocar no
+    // anel a 90° (EM CIMA, Y de tela para baixo) — o código antigo
+    // devolvia None aqui e o gesto virava PAN ("rotação inoperante").
+    CHECK(doc.gizmoDragBegin(360.f, 800.f - radius, nullptr) ==
+          GizmoHandle::RotateRing);
+    doc.gizmoDragEnd();
+    // E a 180°.
+    CHECK(doc.gizmoDragBegin(360.f - radius, 800.f, nullptr) ==
+          GizmoHandle::RotateRing);
+    doc.gizmoDragEnd();
+    // Fora do anel (a 60px do raio) continua None.
+    CHECK(doc.gizmoDragBegin(360.f, 800.f - radius - 60.f, nullptr) ==
+          GizmoHandle::None);
+}
+
+TEST_CASE("editor: P4.2 — B-C: rotação contínua ALÉM de 180° acumula na direção (sem flip)",
+          "[editor][p42]")
+{
+    // Nível GIZMO (alvo cru, sem round-trip de quat — o documento
+    // normaliza a Euler devolvida): é o contrato do gesto. O código
+    // antigo normalizava o ÂNGULO TOTAL contra o grab fixo — evento 2
+    // devolvia -100 (girava PARA TRÁS no device).
+    eng::editor::Viewport viewport;
+    viewport.setScreenSize(720.f, 1600.f);
+    viewport.camera().zoom = 48.f;
+
+    eng::editor::GizmoBounds bounds;
+    bounds.worldX = 0.f;
+    bounds.worldY = 0.f;
+    bounds.originX = 0.f;
+    bounds.originY = 0.f;
+    bounds.halfW = 0.5f;
+    bounds.halfH = 0.5f;
+    bounds.rotation = 0.f;
+    bounds.valid = true;
+
+    eng::editor::TransformGizmo gizmo;
+    eng::editor::GizmoTransform start{};
+
+    const float radius =
+        eng::editor::TransformGizmo::ringRadiusPx(0.5f * 48.f, 1.f);
+    auto pointAt = [&](float deg) {
+        const float rad = deg * 3.14159265358979f / 180.f;
+        return std::pair<float, float>{
+            360.f + radius * std::cos(rad),
+            800.f - radius * std::sin(rad)};
+    };
+
+    // Grab no ângulo 0 (à direita do centro).
+    CHECK(gizmo.hitTest(viewport, eng::editor::EditorTool::Rotate, bounds,
+                        360.f + radius, 800.f) ==
+          eng::editor::GizmoHandle::RotateRing);
+    gizmo.beginDrag(eng::editor::GizmoHandle::RotateRing, start, viewport,
+                    bounds, 360.f + radius, 800.f);
+
+    // Três eventos de +130° = +390° total. Os alvos CRUS devem somar
+    // (130 → 260 → 390): o flip do código antigo devolvia 130 → -100 → 30.
+    const float expected[] = {130.f, 260.f, 390.f};
+    const float touches[] = {130.f, 260.f, 390.f};
+    for (int i = 0; i < 3; ++i) {
+        const auto [px, py] = pointAt(touches[i]);
+        const auto target = gizmo.dragTo(viewport, bounds, px, py);
+        CHECK(target.rotationDeg ==
+              Catch::Approx(expected[i]).margin(0.5f));
+    }
+    gizmo.endDrag();
+}
+
+TEST_CASE("editor: P4.2 — B-C: rotação com density 2 e zooms variados segue o ângulo do dedo",
+          "[editor][p42]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    doc.viewport().setScreenSize(720.f, 1600.f);  // portrait do device
+    doc.viewport().setUiScale(2.f);
+    REQUIRE(doc.select(g.entity).ok());
+    doc.setTool(eng::editor::EditorTool::Rotate);
+
+    for (const float zoom : {24.f, 96.f}) {
+        INFO("zoom = " << zoom);
+        doc.viewport().camera().zoom = zoom;
+        doc.viewport().camera().posX = 0.f;
+        doc.viewport().camera().posY = 0.f;
+        const float radius = TransformGizmo::ringRadiusPx(0.5f * zoom, 2.f);
+
+        CHECK(doc.gizmoDragBegin(360.f + radius, 800.f, nullptr) ==
+              GizmoHandle::RotateRing);
+        // +90°: dedo vai para CIMA na tela (Y de tela invertido).
+        REQUIRE(doc.gizmoDragTo(360.f, 800.f - radius).ok());
+        doc.gizmoDragEnd();
+        const auto tr = doc.transform(g.entity);
+        REQUIRE(tr.ok());
+        CHECK(tr.value().rotationDegrees.z == Catch::Approx(90.f).margin(0.5f));
+
+        // Re-armo e volta para 0 (delta −90°) — nenhum estado vaza.
+        CHECK(doc.gizmoDragBegin(360.f, 800.f - radius, nullptr) ==
+              GizmoHandle::RotateRing);
+        REQUIRE(doc.gizmoDragTo(360.f + radius, 800.f).ok());
+        doc.gizmoDragEnd();
+        const auto tr2 = doc.transform(g.entity);
+        REQUIRE(tr2.ok());
+        CHECK(tr2.value().rotationDegrees.z == Catch::Approx(0.f).margin(0.5f));
+    }
+}
+
+// ---- B-E: honestidade no import de áudio ------------------------------------
+
+TEST_CASE("editor: P4.2 — B-E: import de áudio RECUSA não-WAV (erro no import, sem lixo no projeto)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{".import_tmp"}).ok());
+
+    // Bytes que NÃO são RIFF/WAVE (era aceito e estourava no preview:
+    // "ParseError: wav: não é RIFF/WAVE").
+    std::vector<std::byte> junk(64, std::byte{0x00});
+    junk[0] = std::byte{'O'};
+    junk[1] = std::byte{'g'};
+    junk[2] = std::byte{'g'};
+    junk[3] = std::byte{'S'};
+    REQUIRE(f.fs
+                ->writeAllBytes(eng::fs::Path{".import_tmp/musica.wav"},
+                                junk)
+                .ok());
+
+    auto imported = f.doc->importAsset(".import_tmp/musica.wav", "audio", "musica");
+    REQUIRE(imported.isError());
+    // Mensagem orienta: apenas WAV PCM por agora (OGG/MP3 = fase futura).
+    CHECK(imported.error().message.find("WAV PCM") != std::string::npos);
+    CHECK(imported.error().message.find("fase futura") != std::string::npos);
+
+    // Nada catalogado, nada no disco da categoria (import remove o lixo).
+    auto listed = f.doc->assets()->list("audio");
+    REQUIRE(listed.ok());
+    CHECK(listed.value().empty());
+}
+
+TEST_CASE("editor: P4.2 — B-E: WAV PCM válido importa e toca (caminho do preview intacto)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    constexpr std::uint32_t kSamples = 8;
+    std::vector<std::byte> wav;
+    auto push32 = [&](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i) {
+            wav.push_back(static_cast<std::byte>(v >> (8 * i)));
+        }
+    };
+    auto push16 = [&](std::uint16_t v) {
+        wav.push_back(static_cast<std::byte>(v & 0xff));
+        wav.push_back(static_cast<std::byte>(v >> 8));
+    };
+    auto pushTag = [&](const char (&tag)[5]) {
+        for (int i = 0; i < 4; ++i) {
+            wav.push_back(static_cast<std::byte>(tag[i]));
+        }
+    };
+    pushTag("RIFF");
+    push32(36 + kSamples * 2);
+    pushTag("WAVE");
+    pushTag("fmt ");
+    push32(16);
+    push16(1);
+    push16(1);
+    push32(48000);
+    push32(96000);
+    push16(2);
+    push16(16);
+    pushTag("data");
+    push32(kSamples * 2);
+    for (std::uint32_t i = 0; i < kSamples; ++i) {
+        push16(static_cast<std::uint16_t>(i * 100));
+    }
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{".import_tmp"}).ok());
+    REQUIRE(f.fs->writeAllBytes(eng::fs::Path{".import_tmp/beep.wav"}, wav).ok());
+
+    auto imported = f.doc->importAsset(".import_tmp/beep.wav", "audio", "beep");
+    REQUIRE(imported.ok());
+    CHECK(imported.value() == "beep.wav");  // extensão preservada (recovery P0)
+    REQUIRE(f.doc->audioPreview("beep.wav").ok());
+}
+
+TEST_CASE("editor: P4.2 — B-E: textura corrompida segue REJEITADA (validação migrada do JNI, contrato intacto)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{".import_tmp"}).ok());
+    const std::vector<std::byte> junk(48, std::byte{0xEE});
+    REQUIRE(f.fs
+                ->writeAllBytes(eng::fs::Path{".import_tmp/quebrada.png"}, junk)
+                .ok());
+
+    auto imported =
+        f.doc->importAsset(".import_tmp/quebrada.png", "textures", "quebrada");
+    REQUIRE(imported.isError());
+    auto listed = f.doc->assets()->list("textures");
+    REQUIRE(listed.ok());
+    CHECK(listed.value().empty());
+}
+
+// ---- T5: Modo Jogo (G1) -------------------------------------------------------
+
+TEST_CASE("editor: P4.2 — T5: STOP preserva a SELEÇÃO da edição (contrato do Modo Jogo)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    auto a = f.doc->createEntity("A", eng::scene::kNoEntity);
+    REQUIRE(a.ok());
+    auto b = f.doc->createEntity("B", eng::scene::kNoEntity);
+    REQUIRE(b.ok());
+    REQUIRE(f.doc->select(a.value()).ok());
+
+    REQUIRE(f.doc->play().ok());
+    f.doc->stop();
+
+    REQUIRE(f.doc->selection().has_value());
+    CHECK(*f.doc->selection() == a.value());
+    CHECK(f.doc->isSelected(a.value()));
+
+    // E a entidade continua editável (handle vivo na cena de EDIÇÃO).
+    eng::editor::TransformDesc moved;
+    moved.position = eng::math::Vec3{1.f, 0.f, 0.f};
+    REQUIRE(f.doc->setTransform(a.value(), moved).ok());
+}
+
+TEST_CASE("editor: P4.2 — T5: PAUSE congela o TICK (scripts param; render continua de pé)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Cena COM script de verdade (ticks crescem no scheduler — sintaxe
+    // canônica NI: `add &BL` + `up update:` + `stop`).
+    auto e = f.doc->createEntity("Runner", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    const std::string kScript =
+        "add &BL\n"
+        "\n"
+        "var speed: float = 1.0\n"
+        "\n"
+        "up update:\n"
+        "    var me = self()\n"
+        "    me.position.x = me.position.x + speed\n"
+        "stop\n";
+    auto* browser = f.doc->assets();
+    REQUIRE(browser != nullptr);
+    REQUIRE(f.doc->scriptCreate("Corredor").ok());
+    REQUIRE(f.doc->scriptWrite("Corredor.nis", kScript).ok());
+    REQUIRE(f.doc->scriptAssign(e.value(), "Corredor.nis").ok());
+
+    REQUIRE(f.doc->play().ok());
+    CHECK_FALSE(f.doc->isPaused());
+
+    for (int i = 0; i < 10; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    const auto statsRunning = f.doc->runtimeScripts().stats();
+    CHECK(statsRunning.ticks > 0);
+
+    // PAUSE: o mundo congela — ticks NÃO crescem mais.
+    f.doc->setPaused(true);
+    CHECK(f.doc->isPaused());
+    for (int i = 0; i < 30; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    const auto statsPaused = f.doc->runtimeScripts().stats();
+    CHECK(statsPaused.ticks == statsRunning.ticks);
+
+    // CONTINUE: volta a rodar.
+    f.doc->setPaused(false);
+    f.doc->tick(1.f / 60.f);
+    const auto statsResumed = f.doc->runtimeScripts().stats();
+    CHECK(statsResumed.ticks > statsPaused.ticks);
+
+    // STOP: pause é estado do gesto — morre com o Play.
+    f.doc->stop();
+    CHECK_FALSE(f.doc->isPaused());
+}
+
+TEST_CASE("editor: P4.2 — T5: câmera do EDITOR intacta através de play/stop (sem leak da câmera de jogo)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    f.withProject();
+    auto& vp = f.doc->viewport();
+    vp.camera().posX = 7.f;
+    vp.camera().posY = -3.f;
+    vp.camera().zoom = 96.f;
+
+    REQUIRE(f.doc->play().ok());
+    for (int i = 0; i < 5; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    f.doc->stop();
+
+    CHECK(vp.camera().posX == Catch::Approx(7.f).margin(1e-5f));
+    CHECK(vp.camera().posY == Catch::Approx(-3.f).margin(1e-5f));
+    CHECK(vp.camera().zoom == Catch::Approx(96.f).margin(1e-5f));
+    CHECK_FALSE(f.doc->hasGameCamera());
+}
+
+// ---- ProjectZip: contratos de formato ----------------------------------------
+
+TEST_CASE("editor: P4.2 — ProjectZip: zip SEM project.goni.json não é um projeto (erro claro)",
+          "[editor][p42]")
+{
+    DocFixture f;
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{"qualquer"}).ok());
+    REQUIRE(f.fs
+                ->writeAllText(eng::fs::Path{"qualquer/arquivo.txt"}, "oi")
+                .ok());
+    REQUIRE(eng::editor::buildProjectZip(
+                *f.fs, eng::fs::Path{"qualquer"},
+                eng::fs::Path{".goni_export.zip"}, "qualquer")
+                .ok());
+
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{"destino"}).ok());
+    auto extracted = eng::editor::extractProjectZip(
+        *f.fs, eng::fs::Path{".goni_export.zip"}, eng::fs::Path{"destino"},
+        "Importado");
+    REQUIRE(extracted.isError());
+    CHECK(extracted.error().message.find("project.goni.json") !=
+          std::string::npos);
 }

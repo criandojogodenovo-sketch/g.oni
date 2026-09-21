@@ -139,3 +139,69 @@ APK `assembleDebug` completo montado localmente.
 - linux-release (LTO): build OK, **31/31**.
 - Android arm64-v8a + x86_64 (NDK r27, Release, `-Werror`): 230/230 alvos.
 - `./gradlew assembleDebug`: BUILD SUCCESSFUL (APK 7,2 MB — valida C++ E Kotlin).
+
+---
+
+# P4.2 — Device bugs round 2 + Modo Jogo (G1)
+
+Base `0b029bd` (P4.1.1, CI verde). Sessão de teste no Realme C33 com
+`goni-p4.1.1-debug.apk` produziu 5 bugs device-verified (B-A…B-E). Esta
+fase corrige persistência/UX/gizmos/áudio e entrega o Modo Jogo.
+
+## Estado dos defeitos
+
+| Defeito | Estado | Causa raiz + correção |
+|---------|--------|------------------------|
+| **B-A** save/export → reload perde a cena | **FIXED** | Três falhas compostas: (1) `openProject`/`ensureStartupProject` nunca restauravam a cena (`newScene()` era o "default" — e a Activity ainda chamava `nativeEditorNewScene` DEPOIS de abrir/importar); (2) "Salvar projeto" escrevia só `project.goni.json` (a cena só existia com "Salvar cena…" manual); (3) zip export (Kotlin) não embrulhava as entradas numa pasta → import derivava o nome do projeto da ÚLTIMA entrada ("assets"/"scenes") → lixo no workspace + open falhava. Correção: marker `.goni_last_scene` na raiz do projeto + restore no `openProject` (falha de load = ERRO explícito — nunca vazio silencioso); `saveProject` = salvamento COMPLETO (projeto + cena, default `main.json`); zip do projeto movido para C++ (`ProjectZip`, store-only, wrapper = nome da PASTA real, anti-traversal, CRC32) — testável no Linux; Activity sem `newScene` pós-open/import. |
+| **B-B** teclado abre e fecha no Inspector | **FIXED** | `updatePanelPlacement()` re-parentava o `panelContainer` (remove+addView) a CADA dispatch de insets — abrir o teclado disparava insets → view destacada → foco perdido → IME fechava → loop. Agora só re-parenta quando o MODO (portrait/landscape) muda. `refreshInspector()` virou sync DIFERENCIAL: assinatura da estrutura; mesma estrutura → valores in-place com diff antes de `setText` e views com foco NUNCA tocadas (o padrão já usado por `updateTransformFieldsLive`). |
+| **B-C** gizmo de rotação inoperante por toque | **FIXED** | (1) O hit-test aceitava só o DOT do handle — tocar no anel a 90° do dot devolvia `None` e o gesto virava PAN. Agora o ANEL INTEIRO é alvo (banda \|dist−raio\| ≤ raio de acerto). (2) O ângulo TOTAL era normalizado contra o grab fixo: dedo além de 180° flipava o sinal e a entidade girava PARA TRÁS. Agora cada evento contribui com o DELTA curto contra o ângulo anterior e ACUMULA (voltas completas somam). |
+| **B-D** gizmo de move errado nos DOIS eixos | **FIXED** | Não era a matemática de conversão (px→mundo estava correta e única) — eram as PERIFERIAS do gesto: (1) `event.x/y` são sempre do pointer 0: um 2º dedo rouba o pointer e a entidade teleporta; agora o drag é dono de um pointer ID (`findPointerIndex`), `POINTER_UP` do dono encerra honesto, e os detectores (pinch!) não veem eventos durante o drag — zoom a meio do drag re-projetava o grab capturado no begin (salto nos 2 eixos); (2) tocar na HASTE (fora da pontinha) caía no fallback do `onScroll` (mover relativo com slop) — hastes agora são alvo; (3) precedência: com alvos em dp, o raio da haste cobria o centro — centro agora é avaliado PRIMEIRO; (4) raio de seleção do tap era 14 px FIXOS (~7dp no device) — escala com a densidade. Regressões com os parâmetros do device: 720×1600, density 2.0, 2 zooms, drags X e Y separados, e o teste "o dedo segue" (tap no ponto final re-encontra a entidade). |
+| **B-E** `ParseError: wav: não é RIFF/WAVE` no preview | **FIXED** | O import validava texturas apenas (e só no JNI); áudio aceitava qualquer bytes e o erro estourava DEPOIS no preview. A validação de conteúdo vive agora em `EditorDocument::importAsset` (testável no Linux; JNI delega): textura → probe de decode; áudio → probe RIFF/WAVE PCM com recusa NO IMPORT e mensagem clara ("apenas WAV PCM suportado por agora — OGG/MP3 é fase futura"). Picker de áudio filtra MIME de WAV. **Roadmap: OGG/MP3 = fase futura (declarado, não implementado).** |
+| **T5** Modo Jogo (G1) | **IMPLEMENTED** | Play → fullscreen (topBar/bottomBar/painéis fora) com HUD próprio: STOP, PAUSE/CONTINUE e linha de estado (backend de áudio, fps barato por janela de 30 frames, estado de PAUSE). PAUSE congela o TICK (nenhum sistema avança; render e câmera vivos). Input 100% roteado ao jogo durante o Play (`gameWantsTouch` não exige mais tool 0 — rota morta eliminada). STOP volta ao editor com SELEÇÃO e CÂMERA intactas: contrato "stop reseta seleção" (a7fd366) REVISTO pelo prompt — o handle da edição é capturado no play() e restaurado no stop(); a câmera do editor nunca saiu do lugar (regressão pinada). |
+
+## Verificação local (P4.2)
+
+- linux-debug (ASan+UBSan, `-Werror`): build OK, **133 passed + 12 skipped**
+  (`rhi_hardware` SKIPA no sandbox sem drivers; no CI rodam), 0 failed —
+  18 casos novos `[p42]` (B-A round-trips, zip traversal/clash, gizmos em
+  parâmetros de device, import de áudio/textura, pausa/seleção/câmera do
+  Modo Jogo, contratos do ProjectZip).
+- linux-release (LTO): build OK, **133 passed + 12 skipped**, 0 failed.
+- Android arm64-v8a + x86_64 (NDK r27, Release, `-Werror`): build OK.
+- `./gradlew assembleDebug`: BUILD SUCCESSFUL (APK 9,2 MB — valida C++ E Kotlin).
+
+## Contratos revistos (declarados)
+
+1. **"stop() RESETA a seleção" (a7fd366) → "stop() PRESERVA a seleção da
+   edição"** — exigido pelo Modo Jogo ("Stop volta ao editor com seleção e
+   câmera intactas"). Testes atualizados (não enfraquecidos: a nova
+   asserção é MAIS forte — exige o handle certo e entidade editável).
+2. **"Salvar projeto" agora persiste também a cena** (antes: só o
+   `project.goni.json` — a causa principal do B-A). Cena nunca salva →
+   default `main.json`, sem diálogo extra.
+3. **Em Play TODOS os toques vão ao jogo** (antes: só com tool Select —
+   os outros tool eram rota morta: gizmo inexistente em Play e pan/zoom
+   no-op sob câmera de jogo).
+4. **`saveProject` é rejeitado em Play** (antes: escrevia o projeto com a
+   cena em estado de runtime — agora coerente com "cena somente-leitura
+   em Play").
+
+## Verificação no device (Realme C33) — passos
+
+1. **B-A**: criar entidades → ☰ Salvar projeto → matar o app → reabrir:
+   as entidades ESTÃO lá (logcat `project-op: última cena restaurada
+   'main.json' (N entidades)`). Exportar zip → apagar projeto → importar
+   zip: entidades ESTÃO lá.
+2. **B-B**: abrir Inspector → tocar num campo de texto → digitar: o
+   teclado PERMANECE. Girar o device com o teclado aberto continua
+   reposicionando o painel (única condição de re-parent).
+3. **B-C**: tool ROTACIONAR → tocar no anel em QUALQUER ponto e arrastar
+   volta completa: rotação segue o dedo, sem inverter no meio.
+4. **B-D**: tool MOVER → agarrar o CORPO da entidade e arrastar: a
+   entidade acompanha o dedo nos dois eixos (tap final re-seleciona).
+   Arrastar pela haste X: só X; haste Y: só Y. Segundo dedo durante o
+   drag não teleporta a entidade.
+5. **B-E**: Assets → categoria audio → importar um `.m4a`/`.ogg`: recusado
+   NO IMPORT com toast claro. Importar `.wav`: entra e o preview toca.
+6. **T5**: Play → editor some, HUD com STOP/PAUSE + fps aparece; PAUSE
+   congela; STOP volta com a seleção e a câmera de onde estavam.

@@ -194,12 +194,21 @@ public:
                    float screenX, float screenY);
 
     /// Transform ALVO para a posição do pointer. Sem drag ativo →
-    /// devolve o transform inicial inalterado.
+    /// devolve o transform inicial inalterado. NÃO-const (P4.2/B-C): a
+    /// rotação ACUMULA o ângulo por evento (ver accumulatedRotationDeg_)
+    /// — o drag é a única fonte do estado do gesto.
     [[nodiscard]] GizmoTransform dragTo(const Viewport& viewport,
                                         const GizmoBounds& bounds,
-                                        float screenX, float screenY) const;
+                                        float screenX, float screenY);
 
-    void endDrag() noexcept { active_ = GizmoHandle::None; }
+    void endDrag() noexcept
+    {
+        active_ = GizmoHandle::None;
+        // P4.2 (B-C): o acumulador de rotação morre com o drag — nenhum
+        // estado de gesto atravessa re-armo (regra P4.1/D1 mantida).
+        accumulatedRotationDeg_ = 0.f;
+        lastAngleRad_ = 0.f;
+    }
     [[nodiscard]] GizmoHandle activeHandle() const noexcept
     {
         return active_;
@@ -234,6 +243,13 @@ private:
     float grabWorldX_ = 0.f;   ///< ponto de agarre em MUNDO (move)
     float grabWorldY_ = 0.f;
     float startAngleRad_ = 0.f; ///< ângulo pointer↔pivot no begin (rotate)
+    /// P4.2 (B-C — rotação inoperante além de 180°): o ANGULO TOTAL era
+    /// normalizado contra o ponto de agarre fixo — dedo além de 180°
+    /// flipava o sinal e a entidade girava PARA TRÁS. Agora cada evento
+    /// contribui com o DELTA curto (sempre <180°) acumulado aqui; a soma
+    /// dá quantas voltas o dedo der.
+    float accumulatedRotationDeg_ = 0.f;
+    float lastAngleRad_ = 0.f;  ///< ângulo do ÚLTIMO evento (delta curto)
     float startPointerLocalX_ = 1.f; ///< pointer no frame LOCAL do nó (scale)
     float startPointerLocalY_ = 1.f;
 };

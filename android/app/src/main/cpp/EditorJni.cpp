@@ -13,7 +13,6 @@
 #include "eng/editor/NiRuntime.hpp"   // P4.1: NiScriptStats (stats() do runtime)
 #include "eng/editor/TextureCache.hpp"
 #include "eng/editor/Diagnostics.hpp"
-#include "eng/image/Image.hpp"
 
 /// EditorJni.cpp — fronteira JNI do EDITOR (FASE 8, missão §5).
 ///
@@ -499,6 +498,66 @@ Java_com_goni_runtime_EditorJni_nativeEditorProjectName(JNIEnv* env, jobject /*t
         return nullptr;
     }
     return stringToJni(env, host->document().projectName());
+}
+
+// P4.2 (B-A): NOME DA PASTA real do projeto no disco — settings renomeia
+// config.name sem renomear a pasta; export zip e dialogs de cena precisam
+// do nome que EXISTE (o config apontava export para pasta inexistente).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorProjectFolder(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr || !host->document().hasProject()) {
+        return nullptr;
+    }
+    return stringToJni(env,
+                       host->document().projectRoot().filename().str());
+}
+
+// P4.2 (B-A): zip do projeto (C++ — testável no Linux; Kotlin só copia o
+// arquivo pronto para o SAF). Entradas embrulhadas na pasta do projeto.
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorExportProjectZip(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring zipRelPath)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char zipBuf[kMaxStringArg];
+    if (!copyJString(env, zipRelPath, zipBuf, sizeof(zipBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().exportProjectZip(zipBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+// P4.2 (B-A): extrai o zip NO workspace (anti-traversal no C++) e devolve
+// o nome da pasta criada. A Activity abre o projeto em seguida (open
+// explícito — erro volta como toast, nunca cena vazia silenciosa).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorImportProjectZip(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring zipRelPath,
+    jstring preferredName)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    char zipBuf[kMaxStringArg];
+    char prefBuf[kMaxStringArg];
+    if (!copyJString(env, zipRelPath, zipBuf, sizeof(zipBuf)) ||
+        !copyJString(env, preferredName, prefBuf, sizeof(prefBuf))) {
+        return nullptr;
+    }
+    auto imported = host->document().importProjectZip(zipBuf, prefBuf);
+    if (record(handle, imported)) {
+        return stringToJni(env, imported.value());
+    }
+    return nullptr;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -1315,6 +1374,30 @@ Java_com_goni_runtime_EditorJni_nativeEditorIsPlaying(JNIEnv* /*env*/,
                                                              : JNI_FALSE;
 }
 
+// P4.2 (T5 — Modo Jogo): PAUSE do runtime (tick não avança; render
+// continua). Estado vive no documento (fonte única — o HUD reflete).
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetPaused(JNIEnv* /*env*/,
+                                                      jobject /*thiz*/,
+                                                      jlong handle,
+                                                      jboolean paused)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host != nullptr) {
+        host->document().setPaused(paused == JNI_TRUE);
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorIsPaused(JNIEnv* /*env*/,
+                                                     jobject /*thiz*/,
+                                                     jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return (host != nullptr && host->document().isPaused()) ? JNI_TRUE
+                                                            : JNI_FALSE;
+}
+
 // =============================================================================
 // Assets (§8.5)
 // =============================================================================
@@ -1398,33 +1481,20 @@ Java_com_goni_runtime_EditorJni_nativeEditorAssetImport(JNIEnv* env,
         !copyJString(env, name, nameBuf, sizeof(nameBuf))) {
         return JNI_FALSE;
     }
-    auto* browser = host->document().assets();
-    if (browser == nullptr) {
+    if (host->document().assets() == nullptr) {
         return JNI_FALSE;
     }
-    // RECOVERY P0: o nome FINAL (com a extensão preservada do original) é
-    // o arquivo que existe de fato — a validação de conteúdo tem de ler
-    // EXATAMENTE ele (antes lia `nameBuf` sem extensão e o import de
-    // texturas com nome > que a extensão falhava com "arquivo não existe").
-    std::string finalName;
-    auto imported = browser->import(tempBuf, catBuf, nameBuf, &finalName);
+    // P4.2 (B-E): a VALIDAÇÃO DE CONTEÚDO vive no documento agora
+    // (EditorDocument::importAsset): texturas (probe de decode) E áudio
+    // (probe RIFF/WAVE PCM — o não-WAV era aceito e estourava depois no
+    // preview com "ParseError: wav: não é RIFF/WAVE"). Falha de
+    // validação remove o arquivo e volta como lastError (toast).
+    auto imported = host->document().importAsset(tempBuf, catBuf, nameBuf);
     if (record(handle, imported)) {
-        // VALIDAÇÃO de imagem no import (evolução P0-2): textura corrompida
-        // é rejeitada AQUI com erro preciso, não no primeiro render.
-        if (std::strcmp(catBuf, "textures") == 0) {
-            auto bytes = browser->read(catBuf, finalName);
-            if (bytes.isError()) {
-                return record(handle, bytes) ? JNI_TRUE : JNI_FALSE;
-            }
-            auto decoded = eng::image::decode(std::span{bytes.value()});
-            if (decoded.isError()) {
-                // Remove o arquivo importado inválido (não deixa lixo).
-                (void)browser->remove(catBuf, finalName);
-                return record(handle, decoded) ? JNI_TRUE : JNI_FALSE;
-            }
-        }
         // Textura (re)importada: o cache pode ter uma versão antiga.
-        host->invalidateTextureCache();
+        if (std::strcmp(catBuf, "textures") == 0) {
+            host->invalidateTextureCache();
+        }
         return JNI_TRUE;
     }
     return JNI_FALSE;

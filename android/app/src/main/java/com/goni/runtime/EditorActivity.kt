@@ -37,9 +37,7 @@ import android.widget.TextView
 import android.widget.Toast
 import android.content.Context
 import java.io.File
-import java.io.FileOutputStream
 import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
@@ -95,6 +93,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         mutableListOf()
     private var collectTransformFields = false
     private var lastSelectionRevision = -1L
+
+    // P4.2 (B-B — teclado que abre e fecha): sync DIFERENCIAL do Inspector.
+    // A estrutura (componentes/campos/kinds) tem assinatura; mudou → rebuild;
+    // mesma estrutura → valores in-place (nunca recria view, nunca toca na
+    // view com FOCO — o IME sobrevive).
+    private var inspectorKey: String? = null
+    private var inspectorContent: LinearLayout? = null
+    private var inspectorNameField: android.widget.EditText? = null
+    private val inspectorTextFields =
+        mutableMapOf<String, android.widget.EditText>()   // "comp\u0001path"
+    private val inspectorValueViews =
+        mutableMapOf<String, Pair<TextView, String>>()    // view + placeholder
+
+    // P4.2 (T5 — Modo Jogo G1): chrome escondido + HUD fullscreen.
+    private var gameMode = false
+    private var gameHudBar: LinearLayout? = null
+    private var gameHudStatus: TextView? = null
+    private var btnPauseGame: Button? = null
+    private var fpsFrames = 0
+    private var fpsAccum = 0f
+    private var fpsShown = 0f
 
     // Painel de scripts (P0-7): lista carregada por refreshScripts().
     private lateinit var scriptsList: ListView
@@ -395,6 +414,46 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 android.view.Gravity.BOTTOM or android.view.Gravity.START
             ).apply { bottomMargin = dp(56) }
         )
+        // P4.2 (T5 — Modo Jogo G1): HUD fullscreen do Play — STOP/PAUSE +
+        // linha de estado (áudio backend, fps, PAUSE). O chrome do editor
+        // some (applyGameModeChrome) e os toques vão ao JOGO inteiro.
+        gameHudBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(0xE0101010.toInt())
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        gameHudBar?.addView(
+            toolButton("■ STOP") { togglePlay() }.apply {
+                setTextColor(Ui.DANGER)
+            },
+            LinearLayout.LayoutParams(0, dp(40), 1f)
+        )
+        btnPauseGame = toolButton("⏸ PAUSE") { togglePauseGame() }.apply {
+            setTextColor(Ui.TEXT)
+        }
+        gameHudBar?.addView(
+            btnPauseGame,
+            LinearLayout.LayoutParams(0, dp(40), 1f)
+        )
+        gameHudStatus = TextView(this).apply {
+            setTextColor(Ui.TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(10), 0, 0, 0)
+        }
+        gameHudBar?.addView(
+            gameHudStatus,
+            LinearLayout.LayoutParams(0, dp(40), 1.5f)
+        )
+        root.addView(
+            gameHudBar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM
+            ).apply { bottomMargin = dp(48) }
+        )
         root.addView(
             bottomBar,
             FrameLayout.LayoutParams(
@@ -442,13 +501,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
+    private var panelPlacementLandscape = false
+
     /** Portrait: painel = sheet inferior (máx 62% da altura, viewport
      * continua por trás). Landscape: drawer lateral direito (46%). */
     private fun updatePanelPlacement() {
         if (!::panelHost.isInitialized || !::panelContainer.isInitialized) return
-        (panelContainer.parent as? FrameLayout)?.removeView(panelContainer)
         val isLandscape = resources.configuration.orientation ==
                 android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        // P4.2 (B-B — CAUSA RAIZ do teclado que abre e fecha): este método
+        // rodava a CADA dispatch de insets — e ABRIR O TECLADO dispara
+        // insets (adjustResize) — re-parentando o panelContainer
+        // (removeView+addView): o EditText focado era destacado da janela,
+        // o IME fechava, a janela voltava a crescer, novo dispatch, novo
+        // re-parent: LOOP. Agora só re-parenta quando o MODO muda de
+        // verdade (rotação) — insets só ajustam padding das barras.
+        if (panelContainer.parent != null &&
+            panelPlacementLandscape == isLandscape) {
+            return
+        }
+        panelPlacementLandscape = isLandscape
+        (panelContainer.parent as? FrameLayout)?.removeView(panelContainer)
         if (isLandscape) {
             panelHost.addView(
                 panelContainer,
@@ -1110,19 +1183,113 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         hierarchyAdapter.notifyDataSetChanged()
     }
 
+    /**
+     * P4.2 (B-B): dispatcher do sync do Inspector — DIFERENCIAL.
+     * Mesma estrutura (mesma seleção, mesmos componentes/campos/kinds) →
+     * atualiza os valores IN-PLACE (nenhuma view recriada; view com foco
+     * NUNCA é tocada — o IME sobrevive). Estrutura mudou → rebuild completo.
+     * O caminho antigo reconstruía TODAS as views a cada chamada: any
+     * refresh com o teclado aberto destruíaa o EditText focado.
+     */
     private fun refreshInspector() {
+        if (handle == 0L) {
+            inspectorScroll.removeAllViews()
+            inspectorKey = null
+            inspectorContent = null
+            return
+        }
+        val key = inspectorStructureKey()
+        val attached = inspectorContent?.parent === inspectorScroll
+        if (key != null && key == inspectorKey && attached) {
+            updateInspectorValuesInPlace()
+            return
+        }
+        rebuildInspector(key)
+    }
+
+    /** Assinatura da ESTRUTURA do painel (seleção + componentes + campos
+     * + kinds) — barata (TSV nativos, já carregados pelo rebuild). */
+    private fun inspectorStructureKey(): String? {
+        if (handle == 0L) return null
+        if (selection == 0L) return "none"
+        val sb = StringBuilder()
+        sb.append(selection).append('|')
+        val componentsTsv =
+            EditorJni.nativeEditorEntityComponents(handle, selection)
+                ?: return null
+        for (line in componentsTsv.lines().filter { it.isNotBlank() }) {
+            val parts = line.split('\t')
+            if (parts.size < 2) continue
+            sb.append(parts[0]).append(',')
+            val fieldsTsv =
+                EditorJni.nativeEditorComponentFields(handle, selection, parts[0])
+            if (fieldsTsv != null) {
+                for (fline in fieldsTsv.lines().filter { it.isNotBlank() }) {
+                    val fp = fline.split('\t')
+                    if (fp.size < 3) continue
+                    sb.append(fp[0]).append(':')
+                        .append(fp.getOrElse(3) { "text" }).append(',')
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    /** Valores in-place (B-B): diff antes de setText; FOCADO nunca é
+     * tocado (a fonte daquele campo é o teclado até o DONE — P1.9). */
+    private fun updateInspectorValuesInPlace() {
+        val sel = selection
+        if (sel == 0L) return
+        inspectorNameField?.let { f ->
+            if (!f.hasFocus()) {
+                val name = currentEntityName(sel)
+                if (f.text.toString() != name) f.setText(name)
+            }
+        }
+        updateTransformFieldsLive()
+        val componentsTsv =
+            EditorJni.nativeEditorEntityComponents(handle, sel) ?: return
+        for (line in componentsTsv.lines().filter { it.isNotBlank() }) {
+            val parts = line.split('\t')
+            if (parts.size < 2) continue
+            val component = parts[0]
+            val fieldsTsv =
+                EditorJni.nativeEditorComponentFields(handle, sel, component)
+                    ?: continue
+            for (fline in fieldsTsv.lines().filter { it.isNotBlank() }) {
+                val fp = fline.split('\t')
+                if (fp.size < 3) continue
+                val path = fp[0]
+                val value = fp[2]
+                inspectorTextFields["$component\u0001$path"]?.let { f ->
+                    if (!f.hasFocus() && f.text.toString() != value) {
+                        f.setText(value)
+                    }
+                }
+                inspectorValueViews["$component\u0001$path"]?.let { (v, empty) ->
+                    val shown = value.ifEmpty { empty }
+                    if (v.text.toString() != shown) v.text = shown
+                }
+            }
+        }
+    }
+
+    /** Rebuild COMPLETO (estrutura mudou / primeira abertura). Registra
+     * as views atualizáveis nos mapas do sync diferencial. */
+    private fun rebuildInspector(key: String?) {
+        inspectorTextFields.clear()
+        inspectorValueViews.clear()
+        inspectorNameField = null
+        inspectorKey = key
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(16))
-        }
-        if (handle == 0L) {
-            inspectorScroll.removeAllViews()
-            return
         }
         if (selection == 0L) {
             content.addView(labelView("Nenhuma entidade selecionada\n(toca no viewport ou na hierarquia)"))
             inspectorScroll.removeAllViews()
             inspectorScroll.addView(content)
+            inspectorContent = content
             return
         }
 
@@ -1141,6 +1308,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 } else false
             }
         }
+        inspectorNameField = nameField
         content.addView(nameField)
 
         // Transform (TRS com Euler em graus — API do documento). Os campos
@@ -1230,6 +1398,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
         inspectorScroll.removeAllViews()
         inspectorScroll.addView(content)
+        inspectorContent = content
     }
 
     /** Escreve o transform com os 9 CAMPOS vivos do painel (P1.9). */
@@ -1481,6 +1650,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                             .show()
                     }
                 }
+                // P4.2 (B-B): registrado p/ sync diferencial (valor in-place).
+                inspectorValueViews["$component\u0001$path"] = Pair(current, "")
                 row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1.1f))
                 parent.addView(row)
                 return
@@ -1519,6 +1690,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     setPadding(dp(8), dp(12), dp(8), dp(12))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 }
+                // P4.2 (B-B): registrado p/ sync diferencial.
+                inspectorValueViews["$component\u0001$path"] = Pair(current, "(nenhuma)")
                 row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
                 row.addView(
                     Button(this).apply {
@@ -1552,6 +1725,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     setPadding(dp(8), dp(12), dp(8), dp(12))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 }
+                // P4.2 (B-B): registrado p/ sync diferencial.
+                inspectorValueViews["$component\u0001$path"] = Pair(current, "(nenhum)")
                 row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
                 row.addView(
                     Button(this).apply {
@@ -1605,6 +1780,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     setPadding(dp(8), dp(12), dp(8), dp(12))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 }
+                // P4.2 (B-B): registrado p/ sync diferencial.
+                inspectorValueViews["$component\u0001$path"] = Pair(current, "(default lit)")
                 row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
                 row.addView(
                     Button(this).apply {
@@ -1657,6 +1834,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 } else false
             }
         }
+        // P4.2 (B-B): EditText registrado p/ sync diferencial — o mesmo
+        // campo é ATUALIZADO (sem foco) em vez de recriado a cada refresh.
+        inspectorTextFields["$component\u0001$path"] = edit
         row.addView(
             edit,
             LinearLayout.LayoutParams(0, dp(44), 1.3f)
@@ -2070,7 +2250,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         } else toast(lastErrorText())
                     }
                     2 -> openProjectDialog()
-                    3 -> if (!EditorJni.nativeEditorSaveProject(handle)) {
+                    3 -> if (EditorJni.nativeEditorSaveProject(handle)) {
+                        // P4.2 (B-A): "Salvar projeto" persiste PROJETO + CENA
+                        // (a cena vai em scenes/<path>; marker .goni_last_scene
+                        // garante o restore no reload).
+                        toast("Projeto + cena salvos")
+                    } else {
                         toast(lastErrorText())
                     }
                     // P2 §17 — SAF: pasta de exportação com permissão
@@ -2269,29 +2454,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         startActivityForResult(intent, reqSafExport)
     }
 
-    /** Zip REAL do projeto (assets + scenes + project.goni.json). */
+    /** Zip REAL do projeto (P4.2/B-A): o C++ (ProjectZip — testável no
+     *  Linux) escreve .goni_export.zip no workspace com as entradas
+     *  EMBRULHADAS na pasta real do projeto; o Kotlin só copia para o
+     *  SAF. O zip antigo (java.util.zip, sem wrapper) fazia o import
+     *  derivar nome de projeto da ÚLTIMA entrada — lixo no workspace. */
     private fun writeProjectZipTo(uri: Uri) {
         val project = EditorJni.nativeEditorProjectName(handle) ?: return
-        val root = File(File(filesDir, "projects"), project)
-        if (!root.isDirectory) {
-            toast("Pasta do projeto não encontrada")
-            return
-        }
+        val exportFile = File(File(filesDir, "projects"), ".goni_export.zip")
         try {
+            if (!EditorJni.nativeEditorExportProjectZip(handle, ".goni_export.zip")) {
+                toast(lastErrorText())
+                return
+            }
             contentResolver.openOutputStream(uri)?.use { out ->
-                ZipOutputStream(out).use { zip ->
-                    root.walkTopDown().filter { it.isFile }.forEach { file ->
-                        val entry =
-                            ZipEntry(file.relativeTo(root).invariantSeparatorsPath)
-                        zip.putNextEntry(entry)
-                        file.inputStream().use { it.copyTo(zip) }
-                        zip.closeEntry()
-                    }
-                }
+                exportFile.inputStream().use { it.copyTo(out) }
             }
             toast("Projeto '$project' exportado")
         } catch (e: Exception) {
             toast("Export falhou: ${e.message}")
+        } finally {
+            exportFile.delete()
         }
     }
 
@@ -2304,59 +2487,39 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         startActivityForResult(intent, reqSafImport)
     }
 
-    /** Importa o zip PARA O WORKSPACE (privado) e ABRE o projeto. */
+    /** Importa o zip PARA O WORKSPACE (privado) e ABRE o projeto
+     *  (P4.2/B-A): extração + anti-traversal no C++ (ProjectZip); a pasta
+     *  vem do WRAPPER do zip (ou do nome do arquivo). SEM newScene — o
+     *  openProject restaura a última cena via marker; o newScene que
+     *  existia aqui APAGAVA a cena recém-importada. */
     private fun importProjectZipFrom(uri: Uri) {
+        val importFile = File(File(filesDir, "projects"), ".goni_import.zip")
         try {
-            // Nome do projeto: primeiro componente do zip (ou do nome do arquivo).
-            var projectName: String? = null
-            val staging = File(cacheDir, "saf_import").apply {
-                deleteRecursively(); mkdirs()
-            }
             contentResolver.openInputStream(uri)?.use { input ->
-                ZipInputStream(input).use { zip ->
-                    var entry: ZipEntry? = zip.nextEntry
-                    while (entry != null) {
-                        // Anti-traversal: caminhos com .. são rejeitados.
-                        if (entry.name.contains("..")) {
-                            toast("Entrada inválida no zip: ${entry.name}")
-                            return
-                        }
-                        val out = File(staging, entry.name)
-                        if (entry.isDirectory) {
-                            out.mkdirs()
-                        } else {
-                            out.parentFile?.mkdirs()
-                            FileOutputStream(out).use { zip.copyTo(it) }
-                        }
-                        val first = entry.name.substringBefore('/')
-                        if (first.isNotEmpty()) projectName = first
-                        zip.closeEntry()
-                        entry = zip.nextEntry
-                    }
-                }
-            }
-            val name = projectName ?: run {
-                toast("Zip sem estrutura de projeto")
+                importFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: run {
+                toast("Não foi possível ler o arquivo")
                 return
             }
-            val target = File(File(filesDir, "projects"), name)
-            if (target.exists()) {
-                toast("Projeto '$name' já existe — renomeie o zip ou apague o atual")
+            val suggested = (uri.lastPathSegment?.substringAfterLast('/')
+                ?: "").removeSuffix(".zip").ifEmpty { "Importado" }
+            val folder = EditorJni.nativeEditorImportProjectZip(
+                handle, ".goni_import.zip", suggested
+            )
+            if (folder == null) {
+                toast(lastErrorText())
                 return
             }
-            if (!staging.renameTo(target)) {
-                toast("Falha ao mover o projeto para o workspace")
-                return
-            }
-            if (EditorJni.nativeEditorOpenProject(handle, name)) {
-                EditorJni.nativeEditorNewScene(handle)
+            if (EditorJni.nativeEditorOpenProject(handle, folder)) {
                 refreshAll()
-                toast("Projeto '$name' importado e aberto")
+                toast("Projeto '$folder' importado e aberto")
             } else {
                 toast(lastErrorText())
             }
         } catch (e: Exception) {
             toast("Import falhou: ${e.message}")
+        } finally {
+            importFile.delete()
         }
     }
 
@@ -2376,7 +2539,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             .setItems(names) { _, which ->
                 val name = names[which]
                 if (EditorJni.nativeEditorOpenProject(handle, name)) {
-                    EditorJni.nativeEditorNewScene(handle)
+                    // P4.2 (B-A): SEM newScene aqui — openProject restaura a
+                    // ÚLTIMA CENA do projeto (.goni_last_scene); o newScene
+                    // que existia nesta linha APAGAVA a cena recém-carregada
+                    // ("salvei, reabri e o projeto aparece vazio").
                     refreshAll()
                 } else {
                     toast(lastErrorText())
@@ -2406,10 +2572,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     private fun loadSceneDialog() {
-        // Cenas vivem em <workspace>/<PROJETO>/scenes (§8.1 — scenesRoot do
-        // projeto), não em <workspace>/scenes. O nome do projeto é a fonte
-        // da verdade (o mesmo que o documento C++ resolve via ProjectPaths).
-        val project = EditorJni.nativeEditorProjectName(handle)
+        // Cenas vivem em <workspace>/<PASTA-do-projeto>/scenes (§8.1 —
+        // scenesRoot do projeto). P4.2 (B-A): o nome da PASTA vem do
+        // documento (config.name pode ter sido renomeado sem rename da
+        // pasta — usar config listava a pasta ERRADA: "Nenhuma cena salva").
+        val project = EditorJni.nativeEditorProjectFolder(handle)
         if (project.isNullOrEmpty()) {
             toast("Nenhum projeto aberto")
             return
@@ -2748,6 +2915,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
+            // P4.2 (B-E): import de ÁUDIO filtra WAV no picker — o conteúdo
+            // é revalidado no C++ (EditorDocument::importAsset), mas o
+            // picker certo evita o erro ANTES de copiar o arquivo.
+            if ((assetCategory.selectedItem?.toString() ?: "") == "audio") {
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")
+                )
+            }
         }
         startActivityForResult(intent, REQUEST_IMPORT)
     }
@@ -2792,15 +2968,20 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             btnPlay.text = "▶"
             btnPlay.setTextColor(Ui.OK)
             playHud.visibility = View.GONE  // P4.1: HUD some com o Play
-            toast("STOP — edição intacta")
+            applyGameModeChrome(false)
+            // P4.2 (T5): Stop volta ao editor com SELEÇÃO e CÂMERA intactas
+            // (o documento restaura a seleção da edição; a câmera do editor
+            // nunca saiu do lugar).
+            toast("STOP — seleção e câmera intactas")
         } else {
             if (EditorJni.nativeEditorPlay(handle)) {
                 btnPlay.text = "■"
                 btnPlay.setTextColor(Ui.DANGER)
-                toast("PLAY — runtime clone ativo")
+                applyGameModeChrome(true)
                 // P4.1 (T2/D5): o que antes era silêncio agora é texto
                 // IMEDIATO — compilação falhou? faults? HUD + toast.
                 updatePlayHud()
+                updateGameHudStatus()
                 val stats = EditorJni.nativeEditorScriptStats(handle)
                 if (stats != null) {
                     val p = stats.split('\t')
@@ -2822,6 +3003,41 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
         }
         refreshPanel()
+    }
+
+    /** P4.2 (T5 — Modo Jogo G1): chrome do editor some/volta. Em jogo:
+     *  fullscreen (topBar/bottomBar/painéis fora), HUD de STOP/PAUSE
+     *  visível; painel aberto fecha. No Stop, tudo volta. */
+    private fun applyGameModeChrome(playing: Boolean) {
+        gameMode = playing
+        topBar.visibility = if (playing) View.GONE else View.VISIBLE
+        bottomBar.visibility = if (playing) View.GONE else View.VISIBLE
+        playHud.visibility = View.GONE
+        gameHudBar?.visibility = if (playing) View.VISIBLE else View.GONE
+        if (playing && activePanel != PANEL_NONE) {
+            togglePanel(activePanel)  // fecha o painel (toggle → NONE)
+        }
+        if (!playing) {
+            fpsShown = 0f; fpsFrames = 0; fpsAccum = 0f
+        }
+    }
+
+    /** P4.2 (T5): PAUSE/CONTINUE do runtime (estado no DOCUMENTO — o
+     *  tick para de avançar o mundo; render e câmera continuam vivos). */
+    private fun togglePauseGame() {
+        val paused = !EditorJni.nativeEditorIsPaused(handle)
+        EditorJni.nativeEditorSetPaused(handle, paused)
+        btnPauseGame?.text = if (paused) "▶ CONTINUAR" else "⏸ PAUSE"
+        updateGameHudStatus()
+        toast(if (paused) "PAUSE — runtime congelado" else "Play — runtime rodando")
+    }
+
+    /** Linha de estado do HUD do Modo Jogo (backend de áudio + fps + PAUSE). */
+    private fun updateGameHudStatus() {
+        val audio = EditorJni.nativeEditorAudioStatus(handle) ?: "off"
+        val fps = if (fpsShown > 0f) String.format(" · %.0f fps", fpsShown) else ""
+        val pause = if (EditorJni.nativeEditorIsPaused(handle)) " · PAUSE" else ""
+        gameHudStatus?.text = "Áudio: $audio$fps$pause"
     }
 
     /** P4.1: HUD do Play — "Scripts: N inst · T ticks · F faults" + áudio. */
@@ -2883,13 +3099,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     // --- gestos do viewport (§8.6/§8.8 — eventos do EDITOR, não do jogo) ------------------
 
     /**
-     * Em PLAY (sem ferramenta ativa), os toques do viewport vão ao INPUT DO
-     * JOGO (§6.4); a câmera do editor exige a ferramenta PAN/MOVER —
-     * separação explícita editor×jogo.
+     * Em PLAY, os toques do viewport vão ao INPUT DO JOGO (§6.4). P4.2
+     * (T5 — Modo Jogo): a rota é do JOGO INTEIRO durante o Play — o
+     * chrome some, então não existe gesto de editor a preservar (o gizmo
+     * nem existe em Play, e pan/zoom do editor eram no-op sob câmera de
+     * jogo: rota morta).
      */
     private fun gameWantsTouch(): Boolean =
-        handle != 0L && EditorJni.nativeEditorIsPlaying(handle) &&
-            editorTool == 0
+        handle != 0L && EditorJni.nativeEditorIsPlaying(handle)
 
     private fun attachGestures(view: SurfaceView) {
         val scaleDetector = ScaleGestureDetector(
@@ -2936,19 +3153,24 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             }
         )
         view.setOnTouchListener { _, event ->
-            // Bugs C-5/C-6 da auditoria final: em Play SEM ferramenta, os
-            // eventos BRUTOS vão ao input do jogo com fases e pointer IDs
-            // REAIS (como o GoniActivity) — o tap sintético (Down+Up na
-            // mesma janela de update) nunca expunha pressed/down, e o
-            // pointerId fixo 0 descartava o multitouch. Os detectores de
-            // gesto do EDITOR só rodam fora do modo jogo.
+            // Bugs C-5/C-6 da auditoria final: em Play, os eventos BRUTOS
+            // vão ao input do jogo com fases e pointer IDs REAIS (como o
+            // GoniActivity). P4.2 (T5): em Play a rota é do JOGO inteiro —
+            // o Modo Jogo esconde o chrome e nenhum gesto de editor
+            // sobra (gizmo nem existe em Play — §8.7).
             if (gameWantsTouch()) {
                 dispatchGameTouch(event)
                 true
             } else {
                 handleGizmoTouch(event)  // P1: raw events p/ drag de gizmo
-                scaleDetector.onTouchEvent(event)
-                tapDetector.onTouchEvent(event)
+                // P4.2 (B-D): durante o drag do gizmo os detectores NÃO
+                // veem o evento — um 2º dedo não vira pinch (o zoom mudaria
+                // NO MEIO do drag e o ponto de agarre, capturado no begin,
+                // re-projetaria com o zoom novo → salto nos dois eixos).
+                if (!gizmoDragging) {
+                    scaleDetector.onTouchEvent(event)
+                    tapDetector.onTouchEvent(event)
+                }
                 true
             }
         }
@@ -2962,11 +3184,16 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
      * acertou, o drag é do gizmo até o UP — tap/scroll ficam suprimidos.
      */
     private var gizmoDragging = false
+    /// P4.2 (B-D): pointer ID DONO do drag. event.x/event.y eram SEMPRE
+    /// os do pointer 0 — com um 2º dedo na tela o pointer 0 passa a ser
+    /// O OUTRO dedo e a entidade teletransportava nos dois eixos.
+    private var gizmoPointerId = -1
 
     private fun handleGizmoTouch(event: MotionEvent) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 gizmoDragging = false
+                gizmoPointerId = event.getPointerId(0)
                 if (editorTool != 0 && selection != 0L) {
                     val handleId = EditorJni.nativeEditorGizmoDragBegin(
                         handle, event.x, event.y
@@ -2974,15 +3201,43 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     gizmoDragging = handleId != 0
                 }
             }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // Dedo EXTRA nunca rouba o drag (o dono continua o mesmo).
+                if (!gizmoDragging) {
+                    gizmoPointerId = event.getPointerId(event.actionIndex)
+                }
+            }
             MotionEvent.ACTION_MOVE -> if (gizmoDragging) {
-                if (!EditorJni.nativeEditorGizmoDragTo(handle, event.x, event.y)) {
+                // Sempre o POINTER DO DRAG (não o índice 0).
+                val idx = event.findPointerIndex(gizmoPointerId)
+                if (idx < 0) return  // dono sumiu: UP/CANCEL chega em seguida
+                if (!EditorJni.nativeEditorGizmoDragTo(
+                        handle, event.getX(idx), event.getY(idx)
+                    )
+                ) {
                     gizmoDragging = false  // erro: entidade morreu no drag
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (gizmoDragging) {
-                EditorJni.nativeEditorGizmoDragEnd(handle)
+            MotionEvent.ACTION_POINTER_UP -> {
+                // O DONO do drag levantou → fim honesto; outro dedo levantar
+                // não mata o drag (antes, qualquer POINTER_UP era ignorado e
+                // o MOVE seguinte vinha do pointer errado).
+                if (gizmoDragging &&
+                    event.getPointerId(event.actionIndex) == gizmoPointerId
+                ) {
+                    EditorJni.nativeEditorGizmoDragEnd(handle)
+                    gizmoDragging = false
+                    gizmoPointerId = -1
+                    refreshInspectorIfOpen()  // P1.9: campos finais do drag
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (gizmoDragging) {
+                    EditorJni.nativeEditorGizmoDragEnd(handle)
+                    refreshInspectorIfOpen()  // P1.9: campos finais do drag
+                }
                 gizmoDragging = false
-                refreshInspectorIfOpen()  // P1.9: campos finais do drag
+                gizmoPointerId = -1
             }
         }
     }
@@ -3090,9 +3345,25 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             // crescendo = script RODANDO; faults subindo = binding falhou.
             if (EditorJni.nativeEditorIsPlaying(handle)) {
                 hudFrameCounter++
+                // P4.2 (T5): fps barato (média por janela de 30 frames).
+                if (delta > 0f) {
+                    fpsAccum += delta
+                    fpsFrames++
+                }
                 if (hudFrameCounter % 30L == 0L) {
+                    if (fpsAccum > 0f && fpsFrames > 0) {
+                        fpsShown = fpsFrames / fpsAccum
+                    }
+                    fpsAccum = 0f
+                    fpsFrames = 0
                     updatePlayHud()
-                    playHud.visibility = View.VISIBLE
+                    // No Modo Jogo o playHud fica FORA (HUD novo mostra
+                    // áudio/fps); em Play com chrome (não existe mais —
+                    // gameMode cobre todo Play) a linha clássica ficaria.
+                    if (!gameMode) {
+                        playHud.visibility = View.VISIBLE
+                    }
+                    updateGameHudStatus()
                 }
             }
             // Live sync P1.9: poll da revisão — gizmo/inspector/viewport

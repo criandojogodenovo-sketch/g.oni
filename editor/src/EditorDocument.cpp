@@ -21,7 +21,9 @@
 #include "eng/editor/AnimationAssets.hpp"
 #include "eng/editor/AudioSource.hpp"
 #include "eng/editor/NiScriptComponent.hpp"
+#include "eng/editor/ProjectZip.hpp"
 #include "eng/editor/SpriteData.hpp"
+#include "eng/image/Image.hpp"
 #include "eng/render/Light2D.hpp"
 #include "eng/editor/NiRuntime.hpp"
 #include "eng/scene/Name.hpp"
@@ -44,6 +46,33 @@ ENG_LOG_CATEGORY("editor");
 [[nodiscard]] Error documentError(StatusCode code, std::string message)
 {
     return Error{code, "EditorDocument: " + std::move(message)};
+}
+
+// --- marcadores de persistência (P3/P4.2 — usados por open/save/scene) ------
+
+/// Nome do projeto default criado numa instalação limpa (§8.1).
+constexpr std::string_view kDefaultProjectName{"MeuJogo"};
+/// Registro do último projeto usado (raiz do workspace — oculto).
+constexpr std::string_view kLastProjectFile{".goni_last_project"};
+/// Registro da ÚLTIMA CENA do projeto (raiz do PROJETO — P4.2/B-A:
+/// openProject restaura; viaja DENTRO do zip, então import → open já
+/// devolve a cena de onde o autor parou).
+constexpr std::string_view kLastSceneFile{".goni_last_scene"};
+
+/// Trim cru de marcador de uma linha (mesma política de .goni_last_project).
+[[nodiscard]] std::string trimMarkerLine(std::string text) noexcept
+{
+    while (!text.empty() &&
+           (text.front() == '\n' || text.front() == '\r' ||
+            text.front() == ' ')) {
+        text.erase(text.begin());
+    }
+    while (!text.empty() &&
+           (text.back() == '\n' || text.back() == '\r' ||
+            text.back() == ' ')) {
+        text.pop_back();
+    }
+    return text;
 }
 
 /// Euler (graus) ↔ Quat — MESMA convenção de Quat::fromEulerAngles
@@ -251,9 +280,36 @@ Result<void> EditorDocument::openProject(const eng::fs::Path& projectRoot)
         return makeUnexpected(loaded.error());
     }
 
+    // P4.2 (B-A — CAUSA RAIZ do "save/reload perde a cena"): o projeto
+    // abria e a cena ficava VAZIA (newScene) — o marker de última cena
+    // não existia e a Activity nem loadScene chamava. O restore é AQUI,
+    // no documento, testável no Linux: o marker (.goni_last_scene, na
+    // raiz do projeto) aponta a cena; falha de load é ERRO EXPLÍCITO —
+    // nunca silêncio, nunca "projeto novo" vazio (regra da missão).
+    std::string lastScene;
+    auto markerText = fs_->readAllText(
+        project_->paths().projectDir() / eng::fs::Path{kLastSceneFile});
+    if (!markerText.isError()) {
+        lastScene = trimMarkerLine(std::move(markerText.value()));
+    }
     auto fresh = newScene();
     if (fresh.isError()) {
         return makeUnexpected(fresh.error());
+    }
+    if (!lastScene.empty()) {
+        auto restored = loadScene(lastScene);
+        if (restored.isError()) {
+            ENG_ERROR("project-op: restaurar última cena '{}' falhou: {}",
+                      lastScene, restored.error().message);
+            return makeUnexpected(documentError(
+                restored.error().code,
+                "cena anterior não carregou ('" + lastScene + "'): " +
+                    restored.error().message));
+        }
+        ENG_INFO("project-op: última cena restaurada '{}' ({} entidades)",
+                 lastScene, scene_->nodeCount());
+    } else {
+        ENG_INFO("project-op: sem última cena registrada — cena nova vazia");
     }
     // Diagnóstico (P3 §0): operação/projeto/caminho/estado para o logcat.
     ENG_INFO(
@@ -269,15 +325,6 @@ Result<void> EditorDocument::openProject(const eng::fs::Path& projectRoot)
 // =============================================================================
 // Startup (bug Android "AlreadyExists" — P3 §0)
 // =============================================================================
-
-namespace {
-
-/// Nome do projeto default criado numa instalação limpa (§8.1).
-constexpr std::string_view kDefaultProjectName{"MeuJogo"};
-/// Registro do último projeto usado (raiz do workspace — oculto).
-constexpr std::string_view kLastProjectFile{".goni_last_project"};
-
-}  // namespace
 
 Result<std::vector<std::string>> EditorDocument::listProjects() const
 {
@@ -417,10 +464,29 @@ Result<void> EditorDocument::saveProject()
         return makeUnexpected(
             documentError(StatusCode::InvalidState, "sem projeto aberto"));
     }
+    if (mode_ == Mode::Play) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                             "projeto é somente-leitura em Play"));
+    }
     auto written = project_->writeTo(*fs_);
     if (written.isError()) {
         return makeUnexpected(written.error());
     }
+    // P4.2 (B-A): "Salvar projeto" é salvamento COMPLETO — a cena ATUAL
+    // vai junto (device round 1: o autor salvava, recarregava e a cena
+    // sumia — só o project.goni.json era escrito). Cena nunca salva →
+    // default "main.json" (sem diálogo extra; mesmo default do menu Cena).
+    const std::string scenePath = currentScenePath_.empty()
+                                      ? std::string{"main.json"}
+                                      : currentScenePath_;
+    auto savedScene = saveScene(scenePath);
+    if (savedScene.isError()) {
+        ENG_ERROR("project-op: salvar cena '{}' junto do projeto falhou: {}",
+                  scenePath, savedScene.error().message);
+        return makeUnexpected(savedScene.error());
+    }
+    ENG_INFO("project-op: salvar | projeto='{}' | cena='{}' ({} entidades)",
+             project_->config.name, scenePath, scene_->nodeCount());
     projectDirty_ = false;
     return {};
 }
@@ -456,6 +522,95 @@ eng::fs::Path EditorDocument::projectRoot() const
 }
 
 // =============================================================================
+// Import de assets com validação (P4.2/B-E) + zip do projeto (P4.2/B-A)
+// =============================================================================
+
+Result<std::string> EditorDocument::importAsset(std::string_view tempRelPath,
+                                                std::string_view category,
+                                                std::string_view name)
+{
+    if (assets_ == nullptr) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidState, "sem projeto aberto"));
+    }
+    std::string finalName;
+    auto imported = assets_->import(tempRelPath, category, name, &finalName);
+    if (imported.isError()) {
+        return makeUnexpected(imported.error());
+    }
+    // P4.2 (B-E): VALIDAÇÃO DE CONTEÚDO NO IMPORT — antes vivia no JNI
+    // e SÓ para texturas: áudio aceitava qualquer bytes e o erro estourava
+    // DEPOIS, no preview ("wav: não é RIFF/WAVE"), sem orientar. Agora o
+    // contrato vive no documento (testável no Linux; o JNI só delega).
+    // Falha → remove o arquivo (não deixa lixo catalogado no projeto).
+    if (category == "textures") {
+        auto bytes = assets_->read(category, finalName);
+        if (bytes.isError()) {
+            return makeUnexpected(bytes.error());
+        }
+        auto decoded = eng::image::decode(std::span{bytes.value()});
+        if (decoded.isError()) {
+            (void)assets_->remove(category, finalName);
+            return makeUnexpected(decoded.error());
+        }
+    } else if (category == "audio") {
+        auto bytes = assets_->read(category, finalName);
+        if (bytes.isError()) {
+            return makeUnexpected(bytes.error());
+        }
+        auto parsed = eng::audio::Wav::parse(std::span{bytes.value()});
+        if (parsed.isError()) {
+            (void)assets_->remove(category, finalName);
+            return makeUnexpected(documentError(
+                StatusCode::ParseError,
+                "áudio recusado no import — apenas WAV PCM suportado por "
+                "agora (OGG/MP3 é fase futura): " +
+                    parsed.error().message));
+        }
+    }
+    return finalName;
+}
+
+Result<void> EditorDocument::exportProjectZip(std::string_view zipRelPath)
+{
+    if (!hasProject()) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidState, "sem projeto aberto"));
+    }
+    if (!isSafeRelativePath(zipRelPath)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "path do zip deve ser relativo ao workspace (sem ..)"));
+    }
+    // P4.2 (B-A): o wrapper do zip é o NOME DA PASTA real no disco —
+    // settings renomeia config.name sem renomear a pasta; usar config
+    // apontava export para pasta inexistente ("Pasta do projeto não
+    // encontrada") e import derivava lixo da última entrada.
+    const std::string folder =
+        project_->paths().projectDir().filename().str();
+    if (folder.empty()) {
+        return makeUnexpected(documentError(StatusCode::Internal,
+                                           "pasta do projeto sem nome"));
+    }
+    return buildProjectZip(*fs_, project_->paths().projectDir(),
+                           eng::fs::Path{std::string(zipRelPath)}, folder);
+}
+
+Result<std::string> EditorDocument::importProjectZip(
+    std::string_view zipRelPath, std::string_view preferredName)
+{
+    if (!isSafeRelativePath(zipRelPath)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "path do zip deve ser relativo ao workspace (sem ..)"));
+    }
+    // NÃO abre o projeto aqui: o chamador decide (openProject explícito —
+    // erro de open volta para a UI como toast, nunca cena vazia silenciosa).
+    return extractProjectZip(*fs_, eng::fs::Path{std::string(zipRelPath)},
+                             workspaceRoot_, preferredName);
+}
+
+// =============================================================================
 // Cena (§8.2)
 // =============================================================================
 
@@ -468,6 +623,13 @@ Result<void> EditorDocument::newScene()
     scene_.emplace(); // constrói in place (Scene não é movível — ADR-025)
     selection_.reset();
     sceneDirty_ = false;
+    // P4.2 (B-A): cena nova = nada a restaurar no próximo open — o path
+    // corrente e o marker morrem JUNTOS (best-effort no marker).
+    currentScenePath_.clear();
+    if (hasProject()) {
+        (void)fs_->remove(project_->paths().projectDir() /
+                          eng::fs::Path{kLastSceneFile});
+    }
     return {};
 }
 
@@ -500,6 +662,17 @@ Result<void> EditorDocument::saveScene(std::string_view scenePath)
     if (written.isError()) {
         return makeUnexpected(written.error());
     }
+    // P4.2 (B-A): path corrente + marker de última cena (o openProject
+    // restaura de cá). Marker na raiz do PROJETO: viaja no zip (import →
+    // open devolve a cena de onde o autor parou).
+    currentScenePath_ = std::string(scenePath);
+    auto marker = fs_->writeAllText(
+        project_->paths().projectDir() / eng::fs::Path{kLastSceneFile},
+        currentScenePath_);
+    if (marker.isError()) {
+        ENG_WARN("scene-op: falha ao registrar última cena: {}",
+                 marker.error().message);
+    }
     sceneDirty_ = false;
     return {};
 }
@@ -531,6 +704,15 @@ Result<void> EditorDocument::loadScene(std::string_view scenePath)
     auto loaded = eng::scene::SceneSerializer::load(*scene_, text.value());
     if (loaded.isError()) {
         return makeUnexpected(loaded.error());
+    }
+    // P4.2 (B-A): mesma política do saveScene — path corrente + marker.
+    currentScenePath_ = std::string(scenePath);
+    auto marker = fs_->writeAllText(
+        project_->paths().projectDir() / eng::fs::Path{kLastSceneFile},
+        currentScenePath_);
+    if (marker.isError()) {
+        ENG_WARN("scene-op: falha ao registrar última cena: {}",
+                 marker.error().message);
     }
     sceneDirty_ = false;
     return {};
@@ -1455,11 +1637,16 @@ Result<void> EditorDocument::play()
             });
     }
     if (selection_.has_value()) {
+        // P4.2 (T5 — "Stop volta com a seleção intacta"): o handle da
+        // EDIÇÃO é capturado ANTES do remapeamento (a cópia remapeada
+        // morre com o clone no stop(); esta é restaurada).
+        selectionBeforePlay_ = selection_;
         const auto mapped = editToRuntime_.find(*selection_);
         if (mapped != editToRuntime_.end()) {
             selection_ = mapped->second;
         }
     }
+    paused_ = false;  // Play novo começa rodando (pause é estado do gesto)
 
     // Evolução P0-5 (ADR-051): o frame do jogo é o TICK SCHEDULER —
     // sistemas ordenados por (fase, ordem, inserção). Mesma ordem de
@@ -1509,11 +1696,19 @@ void EditorDocument::stop() noexcept
                                 // JUNTOS com o clone — ADR-044)
         audioMixer_.stopAll();  // P2 §12: vozes do Play morrem com o clone
         runtimeScene_.reset();
-        // Seleção pode apontar o CLONE (tap em Play) — handle órfão na
-        // edição. O contrato documentado do viewportTap ("stop reseta")
-        // agora é REAL: seleção limpa no retorno à edição.
-        selection_.reset();
-        ++selectionRevision_;  // UI percebe o reset (P1.9)
+        // P4.2 (T5 — contrato REVISTO, era a7fd366 "stop reseta"): o
+        // Modo Jogo exige voltar COM a seleção intacta — o handle da
+        // EDIÇÃO capturado no play() é restaurado (o remapeado ao clone
+        // é órfão aqui). Handle morto na edição → reset honesto.
+        if (selectionBeforePlay_.has_value() &&
+            scene_->isNode(*selectionBeforePlay_)) {
+            selection_ = *selectionBeforePlay_;
+        } else {
+            selection_.reset();
+        }
+        selectionBeforePlay_.reset();
+        paused_ = false;
+        ++selectionRevision_;  // UI percebe o retorno (P1.9)
         editToRuntime_.clear();
         ENG_INFO("STOP: runtime descartado — edição intacta");
     }
@@ -1527,6 +1722,13 @@ void EditorDocument::tick(float deltaSeconds) noexcept
     // de tempo em Edit.
     if (mode_ != Mode::Play) {
         previewTick(deltaSeconds);
+        return;
+    }
+    // P4.2 (T5 — PAUSE do Modo Jogo): runtime CONGELADO — nenhum sistema
+    // avança (física/scripts/animação/áudio); a câmera de jogo fica no
+    // último estado e o host continua RENDERIZANDO (frame vivo, mundo
+    // parado — sem tela morta).
+    if (paused_) {
         return;
     }
     // FASE 9 (§6.1): input com janela de um update por frame.
@@ -1627,7 +1829,12 @@ std::optional<eng::ecs::Entity> EditorDocument::viewportTap(
             }
         }
     }
-    auto hit = viewport_.hitTest(quads, screenX, screenY, 14.f);
+    // P4.2 (B-D — parte da "seleção frágil no device"): o raio de toque
+    // era 14 px FIXOS — no C33 (densidade 2) isso é ~7dp de alvo, o tap
+    // errava, o gizmo não armava e o gesto virava pan ("não segue o
+    // dedo"). Escala pela densidade como o gizmo (hitPx × uiScale).
+    const float tapRadius = std::max(14.f * viewport_.uiScale(), 14.f);
+    auto hit = viewport_.hitTest(quads, screenX, screenY, tapRadius);
     if (hit.has_value()) {
         // Seleção do EDITOR segue o foco (em Play seleciona no clone — a
         // seleção é visual e transitória; stop reseta).

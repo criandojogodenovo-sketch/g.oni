@@ -152,6 +152,13 @@ public:
 
     [[nodiscard]] bool sceneDirty() const noexcept { return sceneDirty_; }
     [[nodiscard]] bool projectDirty() const noexcept { return projectDirty_; }
+    /// Path da cena ATUAL relativo ao projeto ("main.json") — definido por
+    /// saveScene/loadScene; vazio = cena nunca salva (P4.2/B-A: é o que
+    /// faz "Salvar projeto" persistir TUDO sem diálogo extra).
+    [[nodiscard]] const std::string& currentScenePath() const noexcept
+    {
+        return currentScenePath_;
+    }
 
     // --- entidades (§8.2/§8.3) — REJEITADOS em Play ---------------------------
 
@@ -272,11 +279,42 @@ public:
     addComponentWithDependencies(eng::ecs::Entity entity,
                                  std::string_view component);
 
+    /// Importa asset da staging (".import_tmp/...") para a categoria com
+    /// VALIDAÇÃO DE CONTEÚDO no import (P4.2/B-E — honestidade: lixo não
+    /// entra no projeto; texturas já validavam, áudio não):
+    ///   - textures: probe de decode (eng::image::decode);
+    ///   - audio: probe de RIFF/WAVE PCM (eng::audio::Wav::parse) — não-WAV
+    ///     é RECUSADO no import com mensagem clara ("apenas WAV PCM
+    ///     suportado por agora"); OGG/MP3 é fase futura (roadmap).
+    /// Falha → arquivo não é movido/registrado (remove da categoria) e o
+    /// erro precisa volta para a UI. Devolve o nome FINAL (extensão
+    /// preservada — recovery P0).
+    [[nodiscard]] eng::core::Result<std::string> importAsset(
+        std::string_view tempRelPath, std::string_view category,
+        std::string_view name);
+
+    /// Zip do projeto ATUAL (assets + scenes + project.goni.json + meta)
+    /// para `<zipRelPath>` (relativo ao workspace; oculto ".goni_export.zip"
+    /// no device), entradas embrulhadas na PASTA real do projeto (não no
+    /// config.name — P4.2/B-A).
+    [[nodiscard]] eng::core::Result<void> exportProjectZip(
+        std::string_view zipRelPath);
+    /// Extrai `<zipRelPath>` no workspace e devolve o nome da pasta criada
+    /// (wrapper do zip vence; senão `preferredName`). NÃO abre o projeto —
+    /// o chamador decide (openProject explícito).
+    [[nodiscard]] eng::core::Result<std::string> importProjectZip(
+        std::string_view zipRelPath, std::string_view preferredName);
+
     // --- play/stop (§8.7, ADR-044) ---------------------------------------------
 
     [[nodiscard]] eng::core::Result<void> play();
     void stop() noexcept;
     [[nodiscard]] bool isPlaying() const noexcept { return mode_ == Mode::Play; }
+    /// P4.2 (T5 — Modo Jogo G1): pausa do RUNTIME — tick() não avança o
+    /// mundo (física/scripts/animação/áudio congelam), render e câmera
+    /// continuam. Só tem efeito em Play.
+    void setPaused(bool paused) noexcept { paused_ = paused; }
+    [[nodiscard]] bool isPaused() const noexcept { return paused_; }
     /// Avanço do runtime por frame. Play: input (§6.1) + TICK SCHEDULER
     /// (evolução P0-5, ADR-051 — física com timestep fixo, animação,
     /// partículas, scripts e câmera agendados por (fase, ordem)) sobre o
@@ -641,6 +679,9 @@ private:
 
     std::optional<eng::scene::Scene> scene_{}; ///< cena em EDIÇÃO (§8.7)
     bool sceneDirty_{false};
+    /// Path da cena atual ("main.json") — P4.2/B-A: saveProject usa para
+    /// persistir a cena junto do projeto; vazio = nunca salva/carregada.
+    std::string currentScenePath_{};
     std::optional<eng::scene::Scene> runtimeScene_{}; ///< só em Play (clone)
 
     enum class Mode : std::uint8_t { Edit, Play };
@@ -648,6 +689,12 @@ private:
 
     std::optional<eng::ecs::Entity> selection_{};
     std::uint64_t selectionRevision_ = 0;  ///< bump p/ live sync (P1.9)
+    /// Seleção da EDIÇÃO capturada no play() (P4.2/T5: "Stop volta ao
+    /// editor com seleção intacta" — a seleção remapeada ao clone é
+    /// descartada com ele; esta é restaurada no stop()).
+    std::optional<eng::ecs::Entity> selectionBeforePlay_{};
+    /// P4.2 (T5): runtime pausado (tick não avança; render continua).
+    bool paused_ = false;
 
     /// Ferramenta ativa (P1.6) + gizmo (P1.3–P1.5). O estado de drag
     /// vive no DOCUMENTO (não na Activity): o ECS continua a única
