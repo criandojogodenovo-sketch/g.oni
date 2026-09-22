@@ -1584,8 +1584,8 @@ internal fun EditorActivity.showProjectSettingsSheet() {
                     if (bit == 0L) {
                         toastErr(lastErrorText())
                     } else {
-                        collisionBox.addView(collisionLayerRow(
-                            act, collisionBox, newName, bit))
+                        collisionBox.addView(
+                            act.collisionLayerRow(collisionBox, newName, bit))
                     }
                 }
             )
@@ -1599,7 +1599,7 @@ internal fun EditorActivity.showProjectSettingsSheet() {
         if (parts.size < 2) continue
         val bit = parts[1].toLongOrNull() ?: continue
         collisionBox.addView(
-            collisionLayerRow(act, collisionBox, parts[0], bit))
+            act.collisionLayerRow(collisionBox, parts[0], bit))
     }
 
     // P4.6 (Bloco 5/L2): grade do viewport — passo em UNIDADES DE MUNDO,
@@ -1712,7 +1712,7 @@ internal fun EditorActivity.showProjectSettingsSheet() {
             val argb = parseHexColor(hex) ?: 0xFF888888.toInt()
             row.addView(TextView(this).apply {
                 text = ""
-                background = Oni.pill(act, argb, Oni.R_THUMB)
+                background = Oni.pill(act, argb)
                 setOnClickListener {
                     if (isMinor) curMinor = argb else curMajor = argb
                     applyGrid()
