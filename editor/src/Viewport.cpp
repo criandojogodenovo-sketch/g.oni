@@ -57,6 +57,44 @@ float Viewport::screenToWorldY(float sy) const noexcept
     return camera.posY - (sy - screenH_ * 0.5f) / camera.zoom;
 }
 
+std::pair<float, float> Viewport::worldToScreen(float wx,
+                                                float wy) const noexcept
+{
+    // Rotação da VISTA: com rotation == 0, caminho reto (idêntico ao
+    // pré-P4.7). Contrato testado: a 90°, +X do mundo aparece para CIMA.
+    const Camera2D& camera = effectiveCamera();
+    if (camera.rotation == 0.f) {
+        return {worldToScreenX(wx), worldToScreenY(wy)};
+    }
+    const float cx0 = worldToScreenX(wx);
+    const float cy0 = worldToScreenY(wy);
+    const float cosR = std::cos(camera.rotation);
+    const float sinR = std::sin(camera.rotation);
+    const float ox = cx0 - screenW_ * 0.5f;
+    const float oy = cy0 - screenH_ * 0.5f;
+    return {screenW_ * 0.5f + ox * cosR + oy * sinR,
+            screenH_ * 0.5f - ox * sinR + oy * cosR};
+}
+
+std::pair<float, float> Viewport::screenToWorld(float sx,
+                                                float sy) const noexcept
+{
+    const Camera2D& camera = effectiveCamera();
+    if (camera.rotation == 0.f) {
+        return {screenToWorldX(sx), screenToWorldY(sy)};
+    }
+    // Inversa: des-faz a rotação do offset de tela e volta ao mundo.
+    const float dx = sx - screenW_ * 0.5f;
+    const float dy = sy - screenH_ * 0.5f;
+    const float cosR = std::cos(camera.rotation);
+    const float sinR = std::sin(camera.rotation);
+    const float ox = dx * cosR - dy * sinR;
+    const float oy = dx * sinR + dy * cosR;
+    const float cx0 = screenW_ * 0.5f + ox;
+    const float cy0 = screenH_ * 0.5f + oy;
+    return {screenToWorldX(cx0), screenToWorldY(cy0)};
+}
+
 void Viewport::pan(float screenDx, float screenDy) noexcept
 {
     if (gameCameraActive()) {
@@ -208,6 +246,14 @@ std::vector<EntityQuad> Viewport::buildQuads(
                 static_cast<float>(screenW_) / zoom * 0.5f;
             quad.cameraHalfH =
                 static_cast<float>(screenH_) / zoom * 0.5f;
+            // P4.7.0 B4: rotação da vista + retângulo de limites.
+            quad.cameraRotation =
+                camera->rotationDeg * (3.14159265358979323846f / 180.f);
+            quad.cameraLimits = camera->limitsEnabled;
+            quad.cameraLimitMinX = camera->limitMinX;
+            quad.cameraLimitMinY = camera->limitMinY;
+            quad.cameraLimitMaxX = camera->limitMaxX;
+            quad.cameraLimitMaxY = camera->limitMaxY;
         }
 
         // Emissor de partículas (P2 §10): marcador editável — quad +

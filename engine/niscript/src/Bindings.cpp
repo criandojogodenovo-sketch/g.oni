@@ -690,6 +690,63 @@ void noHost(NiFault& fault, const char* who)
     return true;
 }
 
+/// camera.zoom(z): zoom da PRIMEIRA câmera ativa (px por unidade).
+[[nodiscard]] bool fnCameraZoom(NiExecContext& ctx, const NiValue* args,
+                                std::uint16_t /*argc*/, NiValue& out,
+                                NiFault& fault)
+{
+    float zoom = 0.f;
+    if (!argNumber(args[0], zoom, "camera.zoom", fault)) {
+        return false;
+    }
+    NiHost* host = ctx.host();
+    if (host == nullptr) {
+        noHost(fault, "camera.zoom");
+        return false;
+    }
+    out = niBool(host->cameraZoom(zoom));
+    return true;
+}
+
+/// camera.position(x,y): OFFSETS da câmera ativa (semântica Inspector).
+[[nodiscard]] bool fnCameraPosition(NiExecContext& ctx, const NiValue* args,
+                                    std::uint16_t /*argc*/, NiValue& out,
+                                    NiFault& fault)
+{
+    float x = 0.f;
+    float y = 0.f;
+    if (!argNumber(args[0], x, "camera.position", fault) ||
+        !argNumber(args[1], y, "camera.position", fault)) {
+        return false;
+    }
+    NiHost* host = ctx.host();
+    if (host == nullptr) {
+        noHost(fault, "camera.position");
+        return false;
+    }
+    out = niBool(host->cameraPosition(x, y));
+    return true;
+}
+
+/// camera.follow(nome): segue a primeira entidade com este Name.
+[[nodiscard]] bool fnCameraFollow(NiExecContext& ctx, const NiValue* args,
+                                  std::uint16_t /*argc*/, NiValue& out,
+                                  NiFault& fault)
+{
+    NiHost* host = ctx.host();
+    if (host == nullptr) {
+        noHost(fault, "camera.follow");
+        return false;
+    }
+    if (args[0].type != NiType::String) {
+        fault.kind = NiFault::Kind::Type;
+        fault.message = "camera.follow exige string (nome da entidade)";
+        return false;
+    }
+    out = niBool(host->cameraFollow(args[0].s));
+    return true;
+}
+
 } // namespace hostn
 
 void NiNativeTable::addStandardHost()
@@ -716,6 +773,11 @@ void NiNativeTable::addStandardHost()
         // documentado) e move_and_slide (varredura com deslize).
         {"move", 2, hostn::fnMove, NiType::Bool},
         {"move_and_slide", 2, hostn::fnMoveAndSlide, NiType::Bool},
+        // P4.7.0 (Bloco 4): câmera de jogo autorável por script — mesma
+        // câmera do Inspector/CameraTick (primeira ativa vence).
+        {"camera.zoom", 1, hostn::fnCameraZoom, NiType::Bool},
+        {"camera.position", 2, hostn::fnCameraPosition, NiType::Bool},
+        {"camera.follow", 1, hostn::fnCameraFollow, NiType::Bool},
     };
     for (const Reg& r : kHost) {
         names_.push_back(r.name);

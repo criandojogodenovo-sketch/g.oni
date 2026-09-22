@@ -884,6 +884,48 @@ namespace {
     return false;
 }
 
+// P4.7.0 Bloco 4 — migration aditiva da câmera: campos novos
+// (rotationDeg/followName/deadzone*/smoothingTime/limits*/limit*) INJETADOS
+// com os defaults pré-P4.7 quando ausentes. O decodeStruct é ESTRITO
+// (campo refletido ausente = ParseError) — cenas salvas por versões
+// anteriores NÃO carregariam sem este pre-pass. Idempotente por construção
+// (só injeta quando a chave NÃO existe; cenas novas saem do save completo).
+[[nodiscard]] bool migrateComponentDataP47(const std::string& type,
+                                           eng::serial::JsonValue& data)
+{
+    using eng::serial::JsonValue;
+    if (type != "eng::tick::CameraData") {
+        return false;
+    }
+    bool changed = false;
+    const auto injectNumber = [&](const char* key, double value) {
+        if (!data.find(key).has_value()) {
+            data.set(key, JsonValue::real(value));
+            changed = true;
+        }
+    };
+    const auto injectBool = [&](const char* key, bool value) {
+        if (!data.find(key).has_value()) {
+            data.set(key, JsonValue::boolean(value));
+            changed = true;
+        }
+    };
+    injectNumber("rotationDeg", 0.0);
+    if (!data.find("followName").has_value()) {
+        data.set("followName", JsonValue::string(""));
+        changed = true;
+    }
+    injectNumber("deadzoneW", 0.0);
+    injectNumber("deadzoneH", 0.0);
+    injectNumber("smoothingTime", 0.0);
+    injectBool("limitsEnabled", false);
+    injectNumber("limitMinX", 0.0);
+    injectNumber("limitMinY", 0.0);
+    injectNumber("limitMaxX", 0.0);
+    injectNumber("limitMaxY", 0.0);
+    return changed;
+}
+
 /// Percorre entities[].components[] e injeta os campos novos ausentes.
 /// true = algo foi injetado (o chamador re-dumpa o JSON para o load).
 [[nodiscard]] bool migrateSceneJsonAdditiveP46(eng::serial::JsonValue& root)
@@ -913,6 +955,11 @@ namespace {
                         if (type.has_value() && type->isString() &&
                             data.has_value() && data->isObject() &&
                             migrateComponentDataP46(type->asString(), *data)) {
+                            component.set("data", std::move(*data));
+                            entityChanged = true;
+                        }
+                        // P4.7.0 B4: câmera — campos novos com defaults.
+                        if (migrateComponentDataP47(type->asString(), *data)) {
                             component.set("data", std::move(*data));
                             entityChanged = true;
                         }
@@ -2086,8 +2133,9 @@ Result<void> EditorDocument::play()
     (void)scheduler_->addSystem(
         std::make_unique<ScriptTick>(*niRuntime_));
     (void)scheduler_->addSystem(std::make_unique<AudioTick>(*this));
-    (void)scheduler_->addSystem(
-        std::make_unique<eng::tick::CameraTickSystem>());
+    auto cameraTick = std::make_unique<eng::tick::CameraTickSystem>();
+    cameraTick_ = cameraTick.get();  // P4.7.0 B4: hint de vista por frame
+    (void)scheduler_->addSystem(std::move(cameraTick));
 
     mode_ = Mode::Play;
     // Câmera de jogo resolvida SEM rodar o frame: `up update` (e qualquer
@@ -2111,6 +2159,7 @@ void EditorDocument::stop() noexcept
     if (mode_ == Mode::Play) {
         mode_ = Mode::Edit;
         gizmoDragEnd();  // P4.1 (T1/D1): re-armo no retorno à edição
+        cameraTick_ = nullptr;  // P4.7.0 B4: morre com o scheduler
         scheduler_.reset();  // ticks morrem com o clone (ADR-051)
         gameCameraActive_ = false;
         viewport_.setGameCamera(nullptr);  // câmera do editor volta
@@ -2160,6 +2209,12 @@ void EditorDocument::tick(float deltaSeconds) noexcept
     // física (timestep fixo), animação, partículas, scripts, áudio e
     // câmera nas fases/ordens declaradas no play(). Determinismo: a ordem é
     // fixa e cada sistema vê o estado deixado pelos anteriores.
+    // P4.7.0 B4: o CameraTick recebe o tamanho REAL da vista — o clamp
+    // pós-zoom dos limites precisa das meia-extensões visíveis.
+    if (cameraTick_ != nullptr) {
+        cameraTick_->setViewSize(viewport_.screenWidth(),
+                                 viewport_.screenHeight());
+    }
     scheduler_->runFrame(*runtimeScene_, deltaSeconds);
 
     // P2 §8: FRAMES do clip do Animator aplicados ao SpriteData do clone
@@ -2185,6 +2240,9 @@ void EditorDocument::syncGameCamera(
         gameCamera_.posY = active.data.posY;
         gameCamera_.zoom =
             active.data.zoom > 0.f ? active.data.zoom : 48.f;
+        // P4.7.0 B4: rotação da vista (graus autoráveis → radianos).
+        gameCamera_.rotation =
+            active.data.rotationDeg * (3.14159265358979323846f / 180.f);
         viewport_.setGameCamera(&gameCamera_);
         gameCameraActive_ = true;
     } else {

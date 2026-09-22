@@ -208,6 +208,58 @@ Driver: round 6 — chips truncados/quebrados ("Cen a", "a u t").
 | Auditoria bidirecional com evidência persistida | VERIFIED (código; grep no round 7) |
 | Regressões de layout portrait/landscape (P4.6 L1) | VERIFIED (lógica preservada; visual round 7) |
 
-## Bloco 4 — Camera2D (zoom/limits/follow/smoothing/deadzone)
+## Bloco 4 — Camera2D: follow/deadzone/smoothing/limits/rotação + verbos
+
+- **CameraData estendida** (aditivos no FIM do struct; defaults =
+  comportamento pré-P4.7): `rotationDeg` (vista), `followName` (segue a
+  primeira entidade com este Name), `deadzoneW/H` (zona morta do follow,
+  unidades de mundo; 0 = off), `smoothingTime` (constante de tempo
+  exponencial em SEGUNDOS; 0 = snap), `limitsEnabled` +
+  `limitMinX/Y/MaxX/MaxY` (o retângulo VISÍVEL fica dentro do mundo).
+- **Migration pre-pass** (`migrateComponentDataP47` no loadScene): o
+  decodeStruct é ESTRITO (campo refletido ausente = ParseError) — cenas
+  salvas por versões anteriores ganham os 10 campos novos INJETADOS com
+  defaults (idempotente; teste com strip real do JSON salvo, padrão P4.6).
+- **Pipeline do CameraTick** (ordem fixa documentada):
+  DEADZONE → SMOOTHING → CLAMP pós-zoom. Follow por NOME (primeira
+  correspondência); deadzone move a câmera só pelo EXCESSO; smoothing
+  exponencial (`1 − exp(−dt/τ)`, re-inicia quando a câmera ativa muda);
+  clamp pós-zoom usa o tamanho REAL da vista (o documento entrega
+  `setViewSize(w,h)` por frame — meia-extensões visíveis = vista/2/zoom;
+  limites mais estreitos que a vista = centro). O cache `activeCamera()`
+  recebe a posição FINAL — o editor/runtime consomem a câmera processada.
+  Primeiro-ativo-vence inalterado (warning de ambiguidade mantido).
+- **Rotação da vista**: `Viewport::Camera2D` ganha `rotation` (radianos;
+  a câmera do EDITOR nunca rota). Conversão PAR nova (`worldToScreen/screenToWorld`) com contrato testado (a 90°, +X do mundo aparece PARA
+  CIMA; round-trip exato). As funções single-eixo ficam no caminho reto
+  (rotation == 0 — todas as cenas pré-P4.7). O renderer usa o par +
+  `rotOffset` nos pontos/direções de conteúdo (sprites lit/unlit, xadrez,
+  partículas, colliders, luz, emissor, marcadores de play/seleção) — a
+  composição de rotação do sprite é `quad.rotation + viewRot`.
+- **Moldura no editor**: o retângulo de VISTA da câmera (P2) agora gira
+  com a rotação e ganha a moldura dos LIMITES (dim) quando
+  `limitsEnabled` — o autor vê a área visível e o mundo permitido no
+  Edit, com a câmera ainda sem consumir gestos.
+- **Verbos NI-Script** (primeira câmera ativa; fault preciso sem câmera):
+  `camera.zoom(z)`, `camera.position(x,y)` (offsets — semântica
+  Inspector), `camera.follow("Nome")` ("" = solta). O parser ganha
+  chamadas com NOME PONTUADO via backtracking barato do cursor (cadeia
+  IDENT('.'IDENT)* + '(' — sem chamada, o cursor volta e o caminho de
+  campo/atribuição fica intocado; testes de regressão NI verdes).
+- **NiHost**: três virtuals com default no-op seguro (hosts sem cena
+  devolvem false → fault do verbo, nunca deslize silencioso).
+
+| Item | Status |
+|---|---|
+| Follow snap + deadzone (dentro não move / fora anda o excesso) | VERIFIED (3 testes tick) |
+| Smoothing exponencial monótona | VERIFIED |
+| Limits clamp pós-zoom com vista real | VERIFIED |
+| Round-trip rotação 90° (+X para cima) | VERIFIED |
+| Migration pre-pass de cenas antigas (strip real) | VERIFIED |
+| Moldura vista+limites no editor | VERIFIED (buildQuads; visual round 7) |
+| Verbos camera.zoom/position/follow no Play | VERIFIED (e2e doc+script) |
+| Primeiro ativo vence + regressões P0-5/P2 | VERIFIED (suite tick/editor) |
+
+## Bloco 5 — kinematic_sweep (colisão responde a script ingênuo)
 
 (este bloco ainda não começou)

@@ -921,6 +921,10 @@ private:
         soundCache_{};                         ///< assets WAV decodificados
     std::unique_ptr<class NiRuntime> niRuntime_;     ///< §FASE 11 (clone)
     std::unique_ptr<eng::tick::TickScheduler> scheduler_{}; ///< P0-5 (Play)
+    /// P4.7.0 B4: o CameraTick do clone (não-dono — o scheduler possui);
+    /// recebe o tamanho da vista por frame (clamp pós-zoom dos limites).
+    /// Nulo fora de Play; resetado no stop() junto com o scheduler.
+    eng::tick::CameraTickSystem* cameraTick_ = nullptr;
     Viewport::Camera2D gameCamera_{};      ///< cache da câmera ativa (P0-5)
     bool gameCameraActive_ = false;        ///< último refresh achou câmera?
     Viewport viewport_{};

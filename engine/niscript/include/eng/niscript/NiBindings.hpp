@@ -120,6 +120,28 @@ public:
     [[nodiscard]] virtual bool moveAndSlide(
         eng::ecs::Entity self, float dx, float dy,
         eng::math::Vec3& outPosition) = 0;
+
+    // --- P4.7.0 (Bloco 4): câmera de jogo como API de script --------------
+    // Operam sobre a PRIMEIRA câmera ativa da cena (ordem estável — o
+    // mesmo "primeiro ativo vence" do CameraTick). Default no-op seguro
+    // (hosts sem cena de jogo): false = sem câmera ativa.
+    /// camera.zoom(z): pixels por unidade (clamp > 0).
+    [[nodiscard]] virtual bool cameraZoom(float /*pixelsPerUnit*/)
+    {
+        return false;
+    }
+    /// camera.position(x,y): OFFSETS da câmera em relação à entidade
+    /// dela (mesma semântica do Inspector — P2 §11).
+    [[nodiscard]] virtual bool cameraPosition(float /*x*/, float /*y*/)
+    {
+        return false;
+    }
+    /// camera.follow(name): segue a primeira entidade com este Name
+    /// ("" = solta a câmera — follow off).
+    [[nodiscard]] virtual bool cameraFollow(std::string_view /*name*/)
+    {
+        return false;
+    }
 };
 
 /// Resolução de caminhos de entidade — `e.<alias>.<campo>.<subcampo>…`.

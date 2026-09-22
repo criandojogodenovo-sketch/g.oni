@@ -565,6 +565,35 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     const OverlayMapper mapper{w, h};
     auto w2sX = [&](float wx) { return viewport.worldToScreenX(wx); };
     auto w2sY = [&](float wy) { return viewport.worldToScreenY(wy); };
+    // P4.7.0 B4: rotação da VISTA — conversão PAR (ponto completo). Com
+    // rotation == 0 (toda cena pré-P4.7, câmera do editor) é passthrough.
+    // O helper gira o OFFSET de tela ao redor do centro da surface: com
+    // 90°, o +X do mundo aparece PARA CIMA na tela (contrato testado).
+    const float viewRot = viewport.effectiveCamera().rotation;
+    auto w2sPair = [&](float wx, float wy) -> std::pair<float, float> {
+        const float cx = w2sX(wx);
+        const float cy = w2sY(wy);
+        if (viewRot == 0.f) {
+            return {cx, cy};
+        }
+        const float cosR = std::cos(viewRot);
+        const float sinR = std::sin(viewRot);
+        const float ox = cx - w * 0.5f;
+        const float oy = cy - h * 0.5f;
+        return {w * 0.5f + ox * cosR + oy * sinR,
+                h * 0.5f - ox * sinR + oy * cosR};
+    };
+    // P4.7.0 B4: offset de tela girado pela rotação da VISTA (mesma
+    // matriz do w2sPair — para direções/offsets que nascem em px a partir
+    // de vetores de mundo: seta do emissor, cantos de marcador).
+    auto rotOffset = [&](float ox, float oy) -> std::pair<float, float> {
+        if (viewRot == 0.f) {
+            return {ox, oy};
+        }
+        const float cosR = std::cos(viewRot);
+        const float sinR = std::sin(viewRot);
+        return {ox * cosR + oy * sinR, -ox * sinR + oy * cosR};
+    };
     const eng::project::GridConfig& gridConf =
         grid != nullptr ? *grid : kDefaultGridConfig;
     if (gridConf.visible) {
@@ -641,15 +670,17 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     // LADO, na rotação px da entidade (mesmo visual, agora honesto).
     auto pushEntityMarkers = [&](const EntityQuad& quad, float halfWPx,
                                  float halfHPx) {
-        const float cx = w2sX(quad.worldX);
-        const float cy = w2sY(quad.worldY);
+        // P4.7.0 B4: par com rotação da vista + rotação do quad ajustada
+        // (a vista girada gira o que se vê — bordas giram junto).
+        const auto [mcx, mcy] = w2sPair(quad.worldX, quad.worldY);
+        const float markerRot = quad.rotation + viewRot;
         if (playMode) {
-            pushQuadPx(frameVertices_, mapper, cx, cy, halfWPx + 4.f,
-                       halfHPx + 4.f, quad.rotation, 0.10f, 0.75f, 0.35f);
+            pushQuadPx(frameVertices_, mapper, mcx, mcy, halfWPx + 4.f,
+                       halfHPx + 4.f, markerRot, 0.10f, 0.75f, 0.35f);
         }
         if (quad.selected) {
-            pushQuadPx(frameVertices_, mapper, cx, cy, halfWPx + 2.f,
-                       halfHPx + 2.f, quad.rotation, 0.95f, 0.96f, 0.98f);
+            pushQuadPx(frameVertices_, mapper, mcx, mcy, halfWPx + 2.f,
+                       halfHPx + 2.f, markerRot, 0.95f, 0.96f, 0.98f);
         }
     };
     for (const EntityQuad* quadPtr : untexturedQuads) {
@@ -679,8 +710,9 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             const float cellH = halfHPx * 2.f / kChecker;
             const float cosR = std::cos(quad.rotation);
             const float sinR = std::sin(quad.rotation);
-            const float centerPxX = w2sX(quad.worldX);
-            const float centerPxY = w2sY(quad.worldY);
+            const auto [chkX, chkY] = w2sPair(quad.worldX, quad.worldY);
+            const float centerPxX = chkX;
+            const float centerPxY = chkY;
             for (int iy = 0; iy < kChecker; ++iy) {
                 for (int ix = 0; ix < kChecker; ++ix) {
                     if (((ix + iy) & 1) == 0) {
@@ -706,8 +738,9 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         float b = 0.f;
         hsvToRgb(quad.tint, r, g, b);
 
-        pushQuadPx(frameVertices_, mapper, w2sX(quad.worldX),
-                   w2sY(quad.worldY), halfWPx, halfHPx, quad.rotation, r, g, b);
+        const auto [ccx, ccy] = w2sPair(quad.worldX, quad.worldY);
+        pushQuadPx(frameVertices_, mapper, ccx, ccy, halfWPx, halfHPx,
+                   quad.rotation + viewRot, r, g, b);
     }
 
     // --- partículas (drift D6 da FASE 10 — auditoria final) ------------------
@@ -717,9 +750,9 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     for (const ParticleQuad& particle : particles) {
         // RECOVERY P0 + P4.3 (N4): total = size*zoom px (mín 2px), px space.
         const float halfPx = std::max(particle.size * zoom, 2.f) * 0.5f;
-        pushQuadPx(frameVertices_, mapper, w2sX(particle.worldX),
-                   w2sY(particle.worldY), halfPx, halfPx, particle.rotation,
-                   1.f, 0.86f, 0.55f);
+        const auto [pcx, pcy] = w2sPair(particle.worldX, particle.worldY);
+        pushQuadPx(frameVertices_, mapper, pcx, pcy, halfPx, halfPx,
+                   particle.rotation + viewRot, 1.f, 0.86f, 0.55f);
     }
 
     // --- COLLIDERS (RECOVERY §10): o autor VÊ o shape de colisão ----------
@@ -749,8 +782,9 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                 quad.colliderTrigger ? kTriggerG : kSolidG;
             const float b =
                 quad.colliderTrigger ? kTriggerB : kSolidB;
-            const float cx = w2sX(quad.worldX);
-            const float cy = w2sY(quad.worldY);
+            const auto [ccX, ccY] = w2sPair(quad.worldX, quad.worldY);
+            const float cx = ccX;
+            const float cy = ccY;
             // RECOVERY P0: colliderHalfX é MEIA-extensão MUNDIAL — o canto
             // fica a halfX*zoom px do centro (px space: direto).
             const float hxPx =
@@ -812,22 +846,55 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             const float r = quad.cameraActive ? kCamR : kOffR;
             const float g = quad.cameraActive ? kCamG : kOffG;
             const float b = quad.cameraActive ? kCamB : kOffB;
-            const float cx = w2sX(quad.cameraCenterX);
-            const float cy = w2sY(quad.cameraCenterY);
+            const auto [camX, camY] = w2sPair(quad.cameraCenterX,
+                                              quad.cameraCenterY);
+            const float cx = camX;
+            const float cy = camY;
             const float hxPx = quad.cameraHalfW * zoom;
             const float hyPx = quad.cameraHalfH * zoom;
+            // P4.7.0 B4: a moldura da vista gira COM a rotação da câmera.
+            const float rotC = std::cos(quad.cameraRotation);
+            const float rotS = std::sin(quad.cameraRotation);
             const float corners[4][2] = {
                 {-hxPx, -hyPx}, {hxPx, -hyPx}, {hxPx, hyPx}, {-hxPx, hyPx}};
             float vx[4];
             float vy[4];
             for (int i = 0; i < 4; ++i) {
-                vx[i] = cx + corners[i][0];
-                vy[i] = cy + corners[i][1];
+                vx[i] = cx + corners[i][0] * rotC - corners[i][1] * rotS;
+                vy[i] = cy + corners[i][0] * rotS + corners[i][1] * rotC;
             }
             for (int i = 0; i < 4; ++i) {
                 const int next = (i + 1) % 4;
                 pushSegmentPx(frameVertices_, mapper, vx[i], vy[i], vx[next],
                               vy[next], kHalfThickPx, r, g, b);
+            }
+            // P4.7.0 B4: LIMITES do mundo (moldura externa tracejada-ish
+            // — retângulo escuro-dim; o retângulo VISÍVEL pós-zoom fica
+            // dentro dele no Play).
+            if (quad.cameraLimits) {
+                constexpr float kLimitR = 0.45f, kLimitG = 0.50f,
+                                kLimitB = 0.62f;
+                // Cantos do retângulo de limites em MUNDO → tela (par —
+                // mesmo caminho do conteúdo).
+                const float limitWX[4] = {
+                    quad.cameraLimitMinX, quad.cameraLimitMaxX,
+                    quad.cameraLimitMaxX, quad.cameraLimitMinX};
+                const float limitWY[4] = {
+                    quad.cameraLimitMinY, quad.cameraLimitMinY,
+                    quad.cameraLimitMaxY, quad.cameraLimitMaxY};
+                float lx[4];
+                float ly[4];
+                for (int i = 0; i < 4; ++i) {
+                    const auto [sx, sy] = w2sPair(limitWX[i], limitWY[i]);
+                    lx[i] = sx;
+                    ly[i] = sy;
+                }
+                for (int i = 0; i < 4; ++i) {
+                    const int next = (i + 1) % 4;
+                    pushSegmentPx(frameVertices_, mapper, lx[i], ly[i],
+                                  lx[next], ly[next], kHalfThickPx, kLimitR,
+                                  kLimitG, kLimitB);
+                }
             }
         }
     }
@@ -846,8 +913,9 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             if (!quad.hasLight) {
                 continue;
             }
-            const float cx = w2sX(quad.worldX);
-            const float cy = w2sY(quad.worldY);
+            const auto [lX, lY] = w2sPair(quad.worldX, quad.worldY);
+            const float cx = lX;
+            const float cy = lY;
             // Alcance em px (mínimo 12px para continuar agarrável visível).
             const float rPx = std::max(quad.lightRadius * zoom, 12.f);
             for (int i = 0; i < kSides; ++i) {
@@ -880,21 +948,26 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             if (!quad.hasEmitter) {
                 continue;
             }
-            const float cx = w2sX(quad.worldX);
-            const float cy = w2sY(quad.worldY);
+            const auto [emX, emY] = w2sPair(quad.worldX, quad.worldY);
+            const float cx = emX;
+            const float cy = emY;
             // P4.3 (N4): marcador inteiro em PX (meia-aresta = size*zoom px).
             const float halfPx = quad.emitterSize * zoom;
-            // Quad-marcador na rotação do nó.
+            // Quad-marcador na rotação do nó (composta com a vista — B4).
             pushQuadPx(frameVertices_, mapper, cx, cy, halfPx, halfPx,
-                       quad.rotation, kEmR * 0.35f, kEmG * 0.35f, kEmB * 0.35f);
+                       quad.rotation + viewRot, kEmR * 0.35f, kEmG * 0.35f,
+                       kEmB * 0.35f);
             // Seta: direção (mundo) do emissor escalada ~2x o marcador.
+            // P4.7.0 B4: o OFFSET px da direção gira com a vista.
             const float dirX = quad.emitterDirX;
             const float dirY = quad.emitterDirY;
-            const float tipX = cx + dirX * halfPx * 2.6f;
-            const float tipY = cy - dirY * halfPx * 2.6f;  // Y mundo ↑, px ↓
-            pushSegmentPx(frameVertices_, mapper, cx + dirX * halfPx,
-                          cy - dirY * halfPx, tipX, tipY, kHalfThickPx,
-                          kEmR, kEmG, kEmB);
+            const auto [bx, by] = rotOffset(dirX * halfPx, -dirY * halfPx);
+            const auto [tx, ty] = rotOffset(dirX * halfPx * 2.6f,
+                                            -dirY * halfPx * 2.6f);
+            const float tipX = cx + tx;
+            const float tipY = cy + ty;
+            pushSegmentPx(frameVertices_, mapper, cx + bx, cy + by, tipX,
+                          tipY, kHalfThickPx, kEmR, kEmG, kEmB);
             // Ponta da seta: duas pernas para trás±perpendicular (px —
             // "trás" em mundo = +dirY em px).
             const float leg = halfPx * 0.6f;
@@ -956,8 +1029,11 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float sinR = std::sin(quad.rotation);
         const float centerWX = quad.worldX + pivotOffX * cosR - pivotOffY * sinR;
         const float centerWY = quad.worldY + pivotOffX * sinR + pivotOffY * cosR;
-        const float cx = w2sX(centerWX);
-        const float cy = w2sY(centerWY);
+        const auto [tcx, tcy] = w2sPair(centerWX, centerWY);
+        const float cx = tcx;
+        const float cy = tcy;
+        // P4.7.0 B4: a rotação da vista compõe com a do sprite.
+        const float spriteRot = quad.rotation + viewRot;
 
         // UV com flip (região trocada por eixo flipado).
         const float u0 = quad.flipX ? quad.u1 : quad.u0;
@@ -987,13 +1063,13 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             // a distância às luzes no fragment.
             pushLitSpriteQuadPx(litSpriteVertices_, mapper, cx, cy,
                                 worldW * zoom * 0.5f, worldH * zoom * 0.5f,
-                                quad.rotation, u0, v0, u1, v1, quad.tintR,
+                                spriteRot, u0, v0, u1, v1, quad.tintR,
                                 quad.tintG, quad.tintB, quad.tintA,
                                 quad.worldX, quad.worldY, worldW, worldH);
         } else {
             pushSpriteQuadPx(spriteVertices_, mapper, cx, cy,
                              worldW * zoom * 0.5f, worldH * zoom * 0.5f,
-                             quad.rotation, u0, v0, u1, v1, quad.tintR,
+                             spriteRot, u0, v0, u1, v1, quad.tintR,
                              quad.tintG, quad.tintB, quad.tintA);
         }
         ++lastFrameTexturedSprites_;

@@ -694,6 +694,57 @@ private:
         }
         case TokKind::Ident: {
             advance();
+            // P4.7.0 B4: chamadas com NOME PONTUADO ("camera.zoom",
+            // "camera.position", "camera.follow" — verbos da câmera).
+            // Backtracking barato: snapshot do cursor; cadeia
+            // IDENT ('.' IDENT)* seguida de '(' = chamada pontuada;
+            // caso contrário o cursor é RESTAURADO e o caminho normal
+            // (ident + postfix de campo/atribuição) fica intocado.
+            {
+                const std::size_t saved = pos_;
+                std::string dotted = t.text;
+                bool dottedCall = false;
+                while (check(TokKind::Dot)) {
+                    advance(); // '.'
+                    if (peek().kind != TokKind::Ident) {
+                        break;
+                    }
+                    dotted.push_back('.');
+                    dotted += advance().text;
+                    if (check(TokKind::LParen)) {
+                        dottedCall = true;
+                        break;
+                    }
+                    if (!check(TokKind::Dot)) {
+                        break;
+                    }
+                }
+                if (dottedCall) {
+                    advance(); // '('
+                    Expr* e = newExpr(Expr::Kind::Call, t);
+                    e->s = dotted;
+                    if (!check(TokKind::RParen)) {
+                        for (;;) {
+                            Expr* arg = parseExpr();
+                            if (arg == nullptr) {
+                                return nullptr;
+                            }
+                            e->args.push_back(arg);
+                            if (accept(TokKind::Comma)) {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    if (!expect(TokKind::RParen,
+                                "esperado ')' após argumentos")) {
+                        return nullptr;
+                    }
+                    return e;
+                }
+                pos_ = saved;          // sem chamada: volta ao ident base
+                lastProgress_ = saved; // ...e o progresso volta com ele
+            }
             if (check(TokKind::LParen)) {
                 advance();
                 Expr* e = newExpr(Expr::Kind::Call, t);

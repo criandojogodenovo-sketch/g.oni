@@ -5,6 +5,7 @@
 // geometria) rodam pelo MESMO caminho que a UI usa. O catálogo único
 // (ADR-043) alimenta Inspector, NI-Script e estas provas.
 
+#include <cstdio>
 #include <algorithm>
 #include <optional>
 #include <string>
@@ -634,4 +635,203 @@ TEST_CASE("p47: bus da cena — publish determinístico e contagem de inscritos"
     eng::scene::HitEvent event;
     scene.events().publish(event); // sem inscritos: no-op, sem crash
     CHECK(count == 2);
+}
+
+// =============================================================================
+// P4.7.0 Bloco 4 — Camera2D: rotação, moldura no editor, persistência
+// =============================================================================
+
+TEST_CASE("p47: viewport rotation — round-trip mundo↔tela a 90°",
+          "[editor][p47]")
+{
+    eng::editor::Viewport viewport;
+    viewport.setScreenSize(192.f, 96.f);
+    auto& camera = viewport.camera();
+    camera.posX = 0.f;
+    camera.posY = 0.f;
+    camera.zoom = 48.f;
+    camera.rotation = 3.14159265358979323846f * 0.5f; // 90°
+
+    // Contrato: com a vista a 90°, o +X do MUNDO aparece PARA CIMA.
+    const auto [sx, sy] = viewport.worldToScreen(1.f, 0.f);
+    CHECK(sx == Catch::Approx(96.f).margin(1e-3f));
+    CHECK(sy == Catch::Approx(0.f).margin(1e-3f));
+
+    // Round-trip exato em pontos arbitrários.
+    const auto [wx, wy] = viewport.screenToWorld(sx, sy);
+    CHECK(wx == Catch::Approx(1.f).margin(1e-3f));
+    CHECK(wy == Catch::Approx(0.f).margin(1e-3f));
+
+    // Rotação 0 = caminho reto idêntico ao pré-P4.7.
+    camera.rotation = 0.f;
+    CHECK(viewport.worldToScreenX(1.f)
+          == Catch::Approx(96.f + 48.f).margin(1e-3f));
+    CHECK(viewport.worldToScreenY(1.f)
+          == Catch::Approx(48.f - 48.f).margin(1e-3f));
+}
+
+TEST_CASE("p47: moldura da câmera no editor — vista, rotação e limites",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto cam = f.doc->createEntity("Camera", eng::scene::kNoEntity);
+    REQUIRE(cam.ok());
+    REQUIRE(f.doc->addComponent(cam.value(), "eng::tick::CameraData").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "rotationDeg", "90")
+                .ok());
+    // Limites: o autor VÊ a moldura dos limites no editor.
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "limitsEnabled", "true")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "limitMaxX", "40")
+                .ok());
+
+    // O quad da câmera carrega a vista (rotação) + limites para o
+    // renderer desenhar as MOLDURAS no viewport (edit mode).
+    const auto quads = f.doc->viewport().buildQuads(
+        *f.doc->sceneInFocus(), std::nullopt);
+    bool found = false;
+    for (const auto& quad : quads) {
+        if (quad.hasCamera) {
+            found = true;
+            CHECK(quad.cameraRotation
+                  == Catch::Approx(1.5707964f).margin(1e-3f));
+            CHECK(quad.cameraLimits);
+            CHECK(quad.cameraLimitMaxX == Catch::Approx(40.f));
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("p47: CameraData round-trip — campos novos persistem; cena antiga "
+          "carrega com defaults",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto cam = f.doc->createEntity("Camera", eng::scene::kNoEntity);
+    REQUIRE(cam.ok());
+    REQUIRE(f.doc->addComponent(cam.value(), "eng::tick::CameraData").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "rotationDeg", "90")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "followName", "Player")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "smoothingTime", "0.25")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "limitsEnabled", "true")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(cam.value(), "eng::tick::CameraData",
+                                    "limitMaxY", "30")
+                .ok());
+
+    // Round-trip por serialização (save→load em cena NOVA).
+    auto snapshot = eng::scene::SceneSerializer::save(*f.doc->sceneInFocus());
+    REQUIRE(snapshot.ok());
+    eng::scene::Scene reloaded;
+    REQUIRE(eng::scene::SceneSerializer::load(reloaded, snapshot.value()).ok());
+    const eng::tick::CameraData* data = nullptr;
+    reloaded.world().each<eng::tick::CameraData>(
+        [&](eng::ecs::Entity, const eng::tick::CameraData& camera) {
+            data = &camera;
+        });
+    REQUIRE(data != nullptr);
+    CHECK(data->rotationDeg == Catch::Approx(90.f));
+    CHECK(data->followName == "Player");
+    CHECK(data->smoothingTime == Catch::Approx(0.25f));
+    CHECK(data->limitsEnabled);
+    CHECK(data->limitMaxY == Catch::Approx(30.f));
+
+    // Cena PRÉ-P4.7: o MESMO save com os campos NOVOS REMOVIDOS do JSON
+    // (strip real — padrão do teste de migration do P4.6). A migration
+    // (migrateComponentDataP47 no loadScene) injeta os defaults e o load
+    // passa — cenas de versões antigas continuam abrindo.
+    REQUIRE(f.doc->saveScene("main.json").ok());
+    auto saved = f.fs->readAllText(
+        eng::fs::Path{"ContractGame/scenes/main.json"});
+    REQUIRE(saved.ok());
+    std::string oldScene = saved.value();
+    for (const char* key :
+         {"rotationDeg", "followName", "deadzoneW", "deadzoneH",
+          "smoothingTime", "limitsEnabled", "limitMinX", "limitMinY",
+          "limitMaxX", "limitMaxY"}) {
+        const std::string needle = std::string("\"") + key + "\":";
+        std::size_t at;
+        while ((at = oldScene.find(needle)) != std::string::npos) {
+            // Todos os campos novos têm campo seguinte (ordem alfabética
+            // do dump) — a vírgula pertence ao par removido.
+            const std::size_t comma = oldScene.find(',', at);
+            REQUIRE(comma != std::string::npos);
+            oldScene.erase(at, comma - at + 1);
+        }
+        CHECK(oldScene.find(needle) == std::string::npos);
+    }
+    REQUIRE(f.fs->writeAllText(
+        eng::fs::Path{"ContractGame/scenes/main.json"}, oldScene));
+    REQUIRE(f.doc->loadScene("main.json").ok());
+    const eng::tick::CameraData* legacyCamera = nullptr;
+    f.doc->sceneInFocus()->world().each<eng::tick::CameraData>(
+        [&](eng::ecs::Entity, const eng::tick::CameraData& camera) {
+            legacyCamera = &camera;
+        });
+    REQUIRE(legacyCamera != nullptr);
+    CHECK(legacyCamera->rotationDeg == Catch::Approx(0.f));
+    CHECK(legacyCamera->followName.empty());
+    CHECK_FALSE(legacyCamera->limitsEnabled);
+}
+
+TEST_CASE("p47: verbos camera.* — script dirige a câmera ativa",
+          "[editor][p47][niscript]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto cam = f.doc->createEntity("Camera", eng::scene::kNoEntity);
+    REQUIRE(cam.ok());
+    REQUIRE(f.doc->addComponent(cam.value(), "eng::tick::CameraData").ok());
+
+    auto actor = f.doc->createEntity("Herói", eng::scene::kNoEntity);
+    REQUIRE(actor.ok());
+    REQUIRE(f.doc->addComponent(actor.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    const char* source = "up update:\n"
+                         "    camera.zoom(64)\n"
+                         "    camera.position(2, 1)\n"
+                         "    camera.follow(\"Herói\")\n"
+                         "stop\n";
+    REQUIRE(f.doc
+                ->setInspectorField(actor.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+
+    // A câmera do CLONE recebeu os verbos (a edição fica intocada).
+    eng::tick::CameraData* data = nullptr;
+    f.doc->sceneInFocus()->world().each<eng::tick::CameraData>(
+        [&](eng::ecs::Entity, eng::tick::CameraData& camera) {
+            data = &camera;
+        });
+    REQUIRE(data != nullptr);
+    CHECK(data->zoom == Catch::Approx(64.f));
+    CHECK(data->posX == Catch::Approx(2.f));
+    CHECK(data->posY == Catch::Approx(1.f));
+    CHECK(data->followName == "Herói");
+    f.doc->stop();
 }

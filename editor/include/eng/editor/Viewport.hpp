@@ -107,6 +107,13 @@ struct EntityQuad {
     float cameraCenterY{0.f};
     float cameraHalfW{1.f};    ///< meia-largura da vista em MUNDO
     float cameraHalfH{1.f};
+    // P4.7.0 B4: rotação da vista + limites do mundo (moldura extra).
+    float cameraRotation{0.f}; ///< radianos (mesmo campo do Camera2D)
+    bool cameraLimits{false};
+    float cameraLimitMinX{0.f};
+    float cameraLimitMinY{0.f};
+    float cameraLimitMaxX{0.f};
+    float cameraLimitMaxY{0.f};
 
     // --- emissor de partículas (P2 §10 — representação editável) ----------
     /// O nó tem ParticleEmitter: marcador no viewport (quad + seta de
@@ -148,6 +155,9 @@ public:
         float posX{0.f};
         float posY{0.f};
         float zoom{48.f};          ///< pixels por unidade de mundo
+        /// P4.7.0 B4: rotação da VISTA em radianos CCW (0 = sem rotação;
+        /// a câmera do EDITOR nunca rota — só a de jogo, via CameraData).
+        float rotation{0.f};
     };
 
     // --- conversões --------------------------------------------------------
@@ -156,6 +166,15 @@ public:
     [[nodiscard]] float worldToScreenY(float wy) const noexcept;
     [[nodiscard]] float screenToWorldX(float sx) const noexcept;
     [[nodiscard]] float screenToWorldY(float sy) const noexcept;
+
+    /// P4.7.0 B4: conversão PAR — a rotação da VISTA precisa do ponto
+    /// completo (as funções single-eixo acima assumem rotation == 0 e
+    /// preservam o caminho reto pré-P4.7; com câmera rotacionada, use
+    /// SEMPRE o par). Contrato: a 90°, o +X do mundo aparece PARA CIMA.
+    [[nodiscard]] std::pair<float, float> worldToScreen(float wx,
+                                                        float wy) const noexcept;
+    [[nodiscard]] std::pair<float, float> screenToWorld(float sx,
+                                                        float sy) const noexcept;
 
     // --- navegação (gestos — §8.6/§8.8) -------------------------------------
 

@@ -26,6 +26,7 @@
 #include "eng/physics/Physics.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneSerializer.hpp"
+#include "eng/tick/Camera.hpp"
 
 namespace eng::editor {
 
@@ -121,6 +122,52 @@ struct NiRuntime::HostImpl final : eng::ni::NiHost {
                                   (resolved - worldBefore);
         }
         outPosition = resolved;
+        return true;
+    }
+
+    // --- P4.7.0 (Bloco 4): câmera de jogo por script ---------------------
+    // PRIMEIRA câmera ativa (mesma resolução do CameraTick — determinística).
+
+    [[nodiscard]] eng::tick::CameraData* activeCameraData() const
+    {
+        eng::tick::CameraData* found = nullptr;
+        scene->world().each<eng::tick::CameraData>(
+            [&](eng::ecs::Entity, eng::tick::CameraData& camera) {
+                if (found == nullptr && camera.active) {
+                    found = &camera;
+                }
+            });
+        return found;
+    }
+
+    bool cameraZoom(float pixelsPerUnit) override
+    {
+        auto* camera = activeCameraData();
+        if (camera == nullptr || !(pixelsPerUnit > 0.f)) {
+            return false; // sem câmera ativa / zoom inválido
+        }
+        camera->zoom = pixelsPerUnit;
+        return true;
+    }
+
+    bool cameraPosition(float x, float y) override
+    {
+        auto* camera = activeCameraData();
+        if (camera == nullptr) {
+            return false;
+        }
+        camera->posX = x;
+        camera->posY = y;
+        return true;
+    }
+
+    bool cameraFollow(std::string_view name) override
+    {
+        auto* camera = activeCameraData();
+        if (camera == nullptr) {
+            return false;
+        }
+        camera->followName = std::string(name);
         return true;
     }
 };
