@@ -1034,35 +1034,44 @@ Java_com_goni_runtime_EditorJni_nativeEditorPerfStats(JNIEnv* env,
 
 #ifdef __ANDROID__
 #include <android/thermal.h>
+#include <dlfcn.h>
 
-/// P4.7.0 Bloco 6: wrapper do AThermal (ADPF). Manager adquirido UMA vez
-/// (vivo no processo inteiro); devices sem ADPF devolvem manager nulo →
-/// status −1 = desconhecido (o governor roda só com frame time — honesto).
+/// P4.7.0 Bloco 6: wrapper do AThermal (ADPF). A API 30 marca as funções
+/// "unavailable" no header com o minSdk do app (a compilação estrita do
+/// NDK rejeita MESMO com __builtin_available) — o padrão é dlsym em
+/// libandroid.so. Devices pré-30 (ou sem ADPF): símbolos ausentes →
+/// status −1 = desconhecido → governor roda só com frame time (honesto).
 namespace android::thermal {
 class ThermalProvider final {
 public:
     ThermalProvider()
     {
-        // ADPF introduzido na API 30: guard RUNTIME (o minSdk do app é
-        // menor — devices pré-30 caem no caminho "desconhecido" e o
-        // governor roda só com frame time; honesto e sem crash).
-        if (__builtin_available(android 30, *)) {
-            manager_ = AThermal_acquireManager();
+        void* lib = dlopen("libandroid.so", RTLD_NOW);
+        if (lib == nullptr) {
+            return;
         }
+        auto acquire = reinterpret_cast<AThermalManager* (*)()>(
+            dlsym(lib, "AThermal_acquireManager"));
+        if (acquire == nullptr) {
+            return;
+        }
+        manager_ = acquire();
+        if (manager_ == nullptr) {
+            return;
+        }
+        getStatus_ = reinterpret_cast<int (*)(AThermalManager*)>(
+            dlsym(lib, "AThermal_getCurrentThermalStatus"));
     }
     [[nodiscard]] int currentStatus() const noexcept
     {
-        if (manager_ == nullptr) {
-            return -1;
-        }
-        if (__builtin_available(android 30, *)) {
-            return AThermal_getCurrentThermalStatus(manager_);
-        }
-        return -1;
+        return (manager_ != nullptr && getStatus_ != nullptr)
+                   ? getStatus_(manager_)
+                   : -1;
     }
 
 private:
     AThermalManager* manager_ = nullptr;
+    int (*getStatus_)(AThermalManager*) = nullptr;
 };
 } // namespace android::thermal
 #endif // __ANDROID__
