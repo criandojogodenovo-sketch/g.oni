@@ -2138,6 +2138,29 @@ Java_com_goni_runtime_EditorJni_nativeEditorAudioPreview(JNIEnv* env,
                : JNI_FALSE;
 }
 
+/// P4.3 (N1): para o preview de áudio (toggle da UI — idempotente).
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAudioPreviewStop(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return;
+    }
+    host->document().audioPreviewStop();
+}
+
+/// P4.3 (N1): há voice de preview VIVA? (fonte de verdade do botão).
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAudioPreviewPlaying(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr && host->document().audioPreviewPlaying()
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
 /// Nomes dos assets de ÁUDIO (linhas \n) — picker do Inspector (kind audio).
 JNIEXPORT jstring JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorListAudio(JNIEnv* env,

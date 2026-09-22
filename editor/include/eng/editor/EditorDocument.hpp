@@ -565,9 +565,19 @@ public:
     {
         return audioMixer_;
     }
-    /// Toca um asset WAV AGORA (preview manual no editor — Edit incluso).
+    /// Toca/para um asset WAV (preview manual — P4.3/N1 TOGGLE): 1º toque
+    /// toca no bus de PREVIEW (isolado das vozes de jogo no master); 2º
+    /// toque no MESMO asset para. Outro asset para a anterior e toca o
+    /// novo (uma única voice de preview existe — sem sobreposição).
     [[nodiscard]] eng::core::Result<void> audioPreview(
         std::string_view assetName);
+    /// P4.3 (N1): para o preview IMEDIATAMENTE (idempotente — sem voice
+    /// viva é no-op). Chamado ao fechar painel/mudar categoria/importar/
+    /// entrar em Play — a voice de preview nunca sobrevive ao contexto.
+    void audioPreviewStop() noexcept;
+    /// P4.3 (N1): há voice de preview VIVA agora? (fonte de verdade do
+    /// toggle na UI — a voice pode ter terminado sozinha).
+    [[nodiscard]] bool audioPreviewPlaying() const noexcept;
     /// Sound decodificado do asset (cache do documento — o AudioTick e o
     /// host usam; pública para o tick da camada de composição).
     [[nodiscard]] eng::core::Result<
@@ -723,6 +733,10 @@ private:
     eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
     eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
     eng::audio::AudioMixer audioMixer_{};      ///< P2 §12 — mixer REAL
+    /// P4.3 (N1): voice/asset do PREVIEW (uma única; bus isolado do jogo).
+    eng::audio::VoiceHandle previewVoice_{};
+    std::string previewAsset_;
+    std::uint32_t previewBus_{0};              ///< bus "preview" (criado no create)
     std::unordered_map<std::string, std::shared_ptr<const eng::audio::Sound>>
         soundCache_{};                         ///< assets WAV decodificados
     std::unique_ptr<class NiRuntime> niRuntime_;     ///< §FASE 11 (clone)

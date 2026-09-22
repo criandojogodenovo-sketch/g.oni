@@ -6939,3 +6939,352 @@ TEST_CASE("editor: P4.2 — ProjectZip: zip SEM project.goni.json não é um pro
     CHECK(extracted.error().message.find("project.goni.json") !=
           std::string::npos);
 }
+
+// =============================================================================
+// P4.3 — BLOCO 0: N1 (preview áudio), N3 (rotação sem escala, anel px),
+// N4 (helper canónico px↔clip). Ver docs/p4-editor-ux.md (adenda P4.3).
+// =============================================================================
+
+#include "eng/editor/OverlayMath.hpp"
+
+TEST_CASE("editor: P4.3/N4 — OverlayMath: rotação em px é isotrópica",
+          "[editor][p43]")
+{
+    using eng::editor::OverlayMapper;
+    using eng::editor::quadCornersPx;
+    using eng::editor::segmentCornersPx;
+
+    // Portrait do device (720×1600) — o caso que deformava.
+    const OverlayMapper mapper{720.f, 1600.f};
+
+    // QUAD 80×20 px rodado 90°: a rotação em px PRESERVA o comprimento de
+    // cada aresta (isotropia — o bug antigo esticava o eixo 2,22× no clip).
+    eng::editor::PxCorner corners[4];
+    quadCornersPx(100.f, 200.f, 40.f, 10.f, 3.14159265f / 2.f, corners);
+    const float edgeX = std::sqrt(std::pow(corners[1].x - corners[0].x, 2.f) +
+                                  std::pow(corners[1].y - corners[0].y, 2.f));
+    const float edgeY = std::sqrt(std::pow(corners[2].x - corners[1].x, 2.f) +
+                                  std::pow(corners[2].y - corners[1].y, 2.f));
+    CHECK(edgeX == Catch::Approx(80.f).margin(1e-3f));  // 2*halfW inalterado
+    CHECK(edgeY == Catch::Approx(20.f).margin(1e-3f));  // 2*halfH inalterado
+    // E o RETÂNGULO OCUPADO trocou de eixo corretamente (80 wide × 20 tall
+    // vira 20 wide × 80 tall — sem cisalhamento).
+    float minX = corners[0].x, maxX = corners[0].x;
+    float minY = corners[0].y, maxY = corners[0].y;
+    for (int i = 1; i < 4; ++i) {
+        minX = std::min(minX, corners[i].x);
+        maxX = std::max(maxX, corners[i].x);
+        minY = std::min(minY, corners[i].y);
+        maxY = std::max(maxY, corners[i].y);
+    }
+    CHECK((maxX - minX) == Catch::Approx(20.f).margin(1e-3f));
+    CHECK((maxY - minY) == Catch::Approx(80.f).margin(1e-3f));
+
+    // Rodado 30°: TODOS os cantos ficam à MESMA distância do centro que os
+    // cantos sem rotação (quadrado qualquer continua quadrado em px).
+    quadCornersPx(100.f, 200.f, 40.f, 40.f, 0.5235988f, corners);
+    for (int i = 0; i < 4; ++i) {
+        const float dx = corners[i].x - 100.f;
+        const float dy = corners[i].y - 200.f;
+        CHECK(std::sqrt(dx * dx + dy * dy) ==
+              Catch::Approx(40.f * std::sqrt(2.f)).margin(1e-3f));
+    }
+
+    // SEGMENTO: a espessura VISÍVEL é a mesma em px para horizontal e
+    // vertical (a distância A−perp … A+perp é 2×halfThick nos dois casos —
+    // era aqui que o anel ficava "elíptico": espessura dependia da direção).
+    eng::editor::PxCorner seg[4];
+    segmentCornersPx(0.f, 0.f, 200.f, 0.f, 1.f, seg);    // horizontal
+    const float thickH = std::sqrt(std::pow(seg[3].x - seg[0].x, 2.f) +
+                                   std::pow(seg[3].y - seg[0].y, 2.f));
+    segmentCornersPx(0.f, 0.f, 0.f, 200.f, 1.f, seg);    // vertical
+    const float thickV = std::sqrt(std::pow(seg[3].x - seg[0].x, 2.f) +
+                                   std::pow(seg[3].y - seg[0].y, 2.f));
+    CHECK(thickH == Catch::Approx(2.f).margin(1e-3f));
+    CHECK(thickV == Catch::Approx(2.f).margin(1e-3f));
+
+    // MAPPER: px→clip→px round-trip idêntico (conversão sem distorção).
+    const float sx = 37.f;
+    const float sy = 1543.f;
+    const float backX = (mapper.toClipX(sx) + 1.f) * 0.5f * mapper.w;
+    const float backY = (1.f - mapper.toClipY(sy)) * 0.5f * mapper.h;
+    CHECK(backX == Catch::Approx(sx).margin(1e-3f));
+    CHECK(backY == Catch::Approx(sy).margin(1e-3f));
+}
+
+TEST_CASE("editor: P4.3/N3 — anel de rotação é CÍRCULO em px no portrait",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+    // Portrait REAL do device ×2 de densidade (zoom 48 px/unidade).
+    auto& viewport = f.doc->viewport();
+    viewport.setScreenSize(720.f, 1600.f);
+    viewport.setUiScale(2.f);
+
+    auto created = f.doc->createEntity("Alvo", eng::scene::kNoEntity);
+    REQUIRE(created.ok());
+    REQUIRE(f.doc->select(created.value()).ok());
+    f.doc->setTool(eng::editor::EditorTool::Rotate);
+
+    const TransformGizmo gizmo;
+    const auto bounds = f.doc->selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+
+    // Anel em PX: raio px = max(half*zoom) + 26dp×2 (kRingPadDp).
+    const float radiusPx =
+        TransformGizmo::ringRadiusPx(std::max(bounds.halfW, bounds.halfH) *
+                                         viewport.effectiveCamera().zoom,
+                                     viewport.uiScale());
+    const auto segments = gizmo.layoutSegments(viewport,
+                                               eng::editor::EditorTool::Rotate,
+                                               bounds);
+    REQUIRE(segments.size() >= 32);  // anel de 32 lados + spoke + chevron
+
+    // Cada PONTEIRO do anel projetado à tela (Viewport canónica) fica à
+    // MESMA distância em px do centro — aspect do anel em px == 1.
+    const float centerX = viewport.worldToScreenX(bounds.worldX);
+    const float centerY = viewport.worldToScreenY(bounds.worldY);
+    int ringPoints = 0;
+    float minDist = 1e9f;
+    float maxDist = 0.f;
+    for (const auto& segment : segments) {
+        const float x0 = viewport.worldToScreenX(segment.x0);
+        const float y0 = viewport.worldToScreenY(segment.y0);
+        const float dist = std::sqrt(std::pow(x0 - centerX, 2.f) +
+                                     std::pow(y0 - centerY, 2.f));
+        // Spoke/chevron têm pontos fora do raio — filtra pelo anel (32
+        // primeiros segmentos são todos do anel).
+        if (ringPoints < 32) {
+            minDist = std::min(minDist, dist);
+            maxDist = std::max(maxDist, dist);
+        }
+        ++ringPoints;
+    }
+    REQUIRE(ringPoints >= 32);
+    // Todos os pontos do anel no MESMO raio px (ε = 1e-2 px) — círculo
+    // PERFEITO em px (o bug: elipse por espessura/direção no clip).
+    CHECK(minDist == Catch::Approx(radiusPx).margin(0.05f));
+    CHECK(maxDist == Catch::Approx(radiusPx).margin(0.05f));
+}
+
+/// P4.3 (N3): rodar 90/180/360° NUNCA mexe no vetor de escala (regra
+/// "rotação escreve apenas orientação") — nem no transform, nem no quad
+/// desenhado (que alimenta o hit-test).
+TEST_CASE("editor: P4.3/N3 — rotação preserva a escala em 90/180/360",
+          "[editor][p43]")
+{
+    GizmoFixture g;
+    auto& doc = *g.f.doc;
+    using eng::editor::GizmoHandle;
+
+    REQUIRE(doc.select(g.entity).ok());
+    // Escala NÃO-uniforme de partida (o caso que "deformava").
+    auto t = doc.transform(g.entity);
+    REQUIRE(t.ok());
+    t.value().scale = {1.5f, 0.75f, 1.f};
+    REQUIRE(doc.setTransform(g.entity, t.value()).ok());
+    doc.setTool(eng::editor::EditorTool::Rotate);
+
+    const float kEps = 1e-3f;
+    // Euler (graus) wrapa em ±180 (atan2) — compara o ÂNGULO NORMALIZADO:
+    // 180° e −180° são a MESMA rotação.
+    auto normDeg = [](float d) {
+        float v = std::fmod(d + 180.f, 360.f);
+        if (v < 0.f) {
+            v += 360.f;
+        }
+        return v - 180.f;
+    };
+    float lastDeg = 0.f;
+    for (const float stepDeg : {90.f, 90.f, 90.f, 90.f}) {  // 90→180→270→360
+        const auto bounds = doc.selectionBounds(nullptr);
+        REQUIRE(bounds.valid);
+        const float radiusPx =
+            TransformGizmo::ringRadiusPx(
+                std::max(bounds.halfW, bounds.halfH) *
+                    doc.viewport().effectiveCamera().zoom,
+                doc.viewport().uiScale());
+        // Agarra o handle NO ÂNGULO ATUAL (anel amarrado à rotação).
+        // ATENÇÃO ao flip do Y de tela: ângulo de MUNDO θ aparece em tela
+        // como (cos θ, −sin θ) — w2sY tem inclinação negativa.
+        const float angle = bounds.rotation;
+        const float hx = doc.viewport().worldToScreenX(bounds.worldX) +
+                         std::cos(angle) * radiusPx;
+        const float hy = doc.viewport().worldToScreenY(bounds.worldY) -
+                         std::sin(angle) * radiusPx;
+        REQUIRE(doc.gizmoDragBegin(hx, hy, nullptr) ==
+                GizmoHandle::RotateRing);
+        // Gira +90° (passo de 90° → sem flip do atan2).
+        const float next = angle + stepDeg * 3.14159265f / 180.f;
+        REQUIRE(doc.gizmoDragTo(
+            doc.viewport().worldToScreenX(bounds.worldX) +
+                std::cos(next) * radiusPx,
+            doc.viewport().worldToScreenY(bounds.worldY) -
+                std::sin(next) * radiusPx).ok());
+        doc.gizmoDragEnd();
+
+        lastDeg += stepDeg;
+        auto after = doc.transform(g.entity);
+        REQUIRE(after.ok());
+        CHECK(after.value().scale.x == Catch::Approx(1.5f).margin(kEps));
+        CHECK(after.value().scale.y == Catch::Approx(0.75f).margin(kEps));
+        CHECK(std::abs(normDeg(after.value().rotationDegrees.z - lastDeg)) <=
+              0.5f);
+        // O quad DESenhado (fonte do hit-test/gizmo) mantém o tamanho:
+        // rotação não corrói a escala percebida.
+        const auto quads = doc.viewport().buildQuads(*doc.sceneInFocus(),
+                                                     doc.selection());
+        for (const auto& q : quads) {
+            if (q.entity == g.entity) {
+                CHECK(q.sizeX == Catch::Approx(1.5f).margin(kEps));
+                CHECK(q.sizeY == Catch::Approx(0.75f).margin(kEps));
+            }
+        }
+    }
+}
+
+/// P4.3 (N3): rotação com PAI rotacionado+escalado (uniforme) — o delta de
+/// mundo do dedo vira delta de ESCALA nunca; escala local intacta.
+TEST_CASE("editor: P4.3/N3 — rotação de filho com pai escalado não deforma",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+    f.doc->viewport().setScreenSize(400.f, 300.f);
+
+    auto parent = f.doc->createEntity("Pai", eng::scene::kNoEntity);
+    REQUIRE(parent.ok());
+    auto pt = f.doc->transform(parent.value());
+    REQUIRE(pt.ok());
+    pt.value().rotationDegrees.z = 30.f;
+    pt.value().scale = {2.f, 2.f, 1.f};
+    REQUIRE(f.doc->setTransform(parent.value(), pt.value()).ok());
+
+    auto child = f.doc->createEntity("Filho", parent.value());
+    REQUIRE(child.ok());
+    REQUIRE(f.doc->select(child.value()).ok());
+    f.doc->setTool(eng::editor::EditorTool::Rotate);
+
+    const auto bounds = f.doc->selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+    CHECK(bounds.rotation ==
+          Catch::Approx(30.f * 3.14159265f / 180.f).margin(1e-3f));
+
+    const float radiusPx = TransformGizmo::ringRadiusPx(
+        std::max(bounds.halfW, bounds.halfH) *
+            f.doc->viewport().effectiveCamera().zoom,
+        f.doc->viewport().uiScale());
+    const float angle = bounds.rotation;
+    const float hx = f.doc->viewport().worldToScreenX(bounds.worldX) +
+                     std::cos(angle) * radiusPx;
+    const float hy = f.doc->viewport().worldToScreenY(bounds.worldY) -
+                     std::sin(angle) * radiusPx;
+    REQUIRE(f.doc->gizmoDragBegin(hx, hy, nullptr) ==
+            eng::editor::GizmoHandle::RotateRing);
+    // +45° de delta de mundo (dois passos de 22.5° — sem flip).
+    float last = angle;
+    for (int i = 0; i < 2; ++i) {
+        last += 22.5f * 3.14159265f / 180.f;
+        REQUIRE(f.doc->gizmoDragTo(
+            f.doc->viewport().worldToScreenX(bounds.worldX) +
+                std::cos(last) * radiusPx,
+            f.doc->viewport().worldToScreenY(bounds.worldY) -
+                std::sin(last) * radiusPx).ok());
+    }
+    f.doc->gizmoDragEnd();
+
+    const auto after = f.doc->transform(child.value());
+    REQUIRE(after.ok());
+    // ESCALA LOCAL intacta (1,1) — o pai nunca contamina o filho.
+    CHECK(after.value().scale.x == Catch::Approx(1.f).margin(1e-3f));
+    CHECK(after.value().scale.y == Catch::Approx(1.f).margin(1e-3f));
+    // Rotação LOCAL = delta pedido (45°).
+    CHECK(after.value().rotationDegrees.z ==
+          Catch::Approx(45.f).margin(0.5f));
+}
+
+/// P4.3 (N1): preview de áudio com TOGGLE/STOP — a voice morre no 2º toque,
+/// no stop explícito, ao entrar em Play; uma única voice de preview existe.
+TEST_CASE("editor: P4.3/N1 — preview de áudio: toggle, stop e isolamento",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+    constexpr std::uint32_t kSamples = 240;
+    auto makeWav = [](std::vector<std::byte>& wav) {
+        auto push32 = [&](std::uint32_t v) {
+            for (int i = 0; i < 4; ++i) {
+                wav.push_back(static_cast<std::byte>(v >> (8 * i)));
+            }
+        };
+        auto push16 = [&](std::uint16_t v) {
+            wav.push_back(static_cast<std::byte>(v & 0xff));
+            wav.push_back(static_cast<std::byte>(v >> 8));
+        };
+        auto pushTag = [&](const char (&tag)[5]) {
+            for (int i = 0; i < 4; ++i) {
+                wav.push_back(static_cast<std::byte>(tag[i]));
+            }
+        };
+        pushTag("RIFF");
+        push32(36 + kSamples * 2);
+        pushTag("WAVE");
+        pushTag("fmt ");
+        push32(16);
+        push16(1);
+        push16(1);
+        push32(48000);
+        push32(96000);
+        push16(2);
+        push16(16);
+        pushTag("data");
+        push32(kSamples * 2);
+        for (std::uint32_t i = 0; i < kSamples; ++i) {
+            push16(static_cast<std::uint16_t>(i * 100));
+        }
+    };
+    std::vector<std::byte> wav;
+    makeWav(wav);
+    auto* browser = f.doc->assets();
+    REQUIRE(browser != nullptr);
+    REQUIRE(f.fs->mkdirs(eng::fs::Path{".import_tmp"}).ok());
+    REQUIRE(f.fs
+                ->writeAllBytes(eng::fs::Path{".import_tmp/beep.wav"},
+                                std::span{wav.data(), wav.size()})
+                .ok());
+    REQUIRE(browser->import(".import_tmp/beep.wav", "audio", "beep").ok());
+
+    // 1º toque: toca (uma voice, marcada como PREVIEW viva).
+    REQUIRE(f.doc->audioPreview("beep.wav").ok());
+    CHECK(f.doc->audioPreviewPlaying());
+    CHECK(f.doc->audioMixer().liveVoices() == 1);
+
+    // 2º toque no MESMO asset: PARA (era o bug N1 — tocava para sempre).
+    REQUIRE(f.doc->audioPreview("beep.wav").ok());
+    CHECK_FALSE(f.doc->audioPreviewPlaying());
+    CHECK(f.doc->audioMixer().liveVoices() == 0);
+
+    // Toca de novo e para via stop explícito; stop é IDEMPOTENTE.
+    REQUIRE(f.doc->audioPreview("beep.wav").ok());
+    CHECK(f.doc->audioPreviewPlaying());
+    f.doc->audioPreviewStop();
+    CHECK_FALSE(f.doc->audioPreviewPlaying());
+    CHECK(f.doc->audioMixer().liveVoices() == 0);
+    f.doc->audioPreviewStop();  // no-op garantido (sem crash, sem voz)
+    CHECK(f.doc->audioMixer().liveVoices() == 0);
+
+    // Isolamento Edit→Play: entrar em Play mata o preview (a voice de
+    // preview nunca atravessa a fronteira das vozes de jogo).
+    REQUIRE(f.doc->audioPreview("beep.wav").ok());
+    CHECK(f.doc->audioPreviewPlaying());
+    REQUIRE(f.doc->play().ok());
+    CHECK_FALSE(f.doc->audioPreviewPlaying());
+    f.doc->stop();
+    CHECK(f.doc->audioMixer().liveVoices() == 0);
+
+    // Erro honesto: asset inexistente → erro explícito, sem voice.
+    auto missing = f.doc->audioPreview("nao_existe.wav");
+    REQUIRE(missing.isError());
+    CHECK_FALSE(f.doc->audioPreviewPlaying());
+}

@@ -232,8 +232,12 @@ object EditorJni {
     external fun nativeEditorPreviewStart(handle: Long, packed: Long, clip: String): Boolean
     external fun nativeEditorPreviewStop(handle: Long)
     external fun nativeEditorPreviewing(handle: Long): Boolean
-    /** Toca um asset WAV AGORA (preview manual — Edit incluso). */
+    /** Toca/para um asset WAV (P4.3/N1 — toggle: 2º toque no mesmo = stop). */
     external fun nativeEditorAudioPreview(handle: Long, name: String): Boolean
+    /** P4.3 (N1): para o preview de áudio (idempotente). */
+    external fun nativeEditorAudioPreviewStop(handle: Long)
+    /** P4.3 (N1): há voice de preview viva? (fonte de verdade do botão). */
+    external fun nativeEditorAudioPreviewPlaying(handle: Long): Boolean
     /** Nomes dos assets de áudio (linhas \n) — picker do Inspector (kind audio). */
     external fun nativeEditorListAudio(handle: Long): String?
 

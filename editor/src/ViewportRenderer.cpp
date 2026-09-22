@@ -12,6 +12,7 @@
 
 #include "EditorShaders.hpp"
 #include "eng/editor/AssetBrowser.hpp"
+#include "eng/editor/OverlayMath.hpp"
 #include "eng/editor/TextureCache.hpp"
 #include "eng/log/Macros.hpp"
 #include "eng/rhi/RhiBackend.hpp"
@@ -60,115 +61,127 @@ void hsvToRgb(std::uint32_t hue, float& r, float& g,
     b = hueToRgb(p, q, h - 1.f / 3.f);
 }
 
-/// Um quad (2 triângulos) em clip space com cor uniforme e rotação.
-void pushQuad(std::vector<ViewportRenderer::Vertex>& out, float cx, float cy,
-              float halfW, float halfH, float rotation, float r, float g,
-              float b)
+// P4.3 (N3/N4 — REGRA ÚNICA DO OVERLAY): TODO quad/segmento do editor
+// nasce em PX DE TELA (centro, meia-extensões, rotação, espessura) e só
+// vira clip no ÚLTIMO passo, por eixo (OverlayMapper). A rotação acontece
+// EM PX (isotrópica): quadrados são quadrados e círculos são círculos em
+// qualquer aspect — o clip-space anisotrópico nunca mais vê uma rotação
+// (era a causa do sprite deformado a 90° e do anel "elíptico").
+
+/// Um quad (2 triângulos) em PX DE TELA com cor uniforme e rotação.
+void pushQuadPx(std::vector<ViewportRenderer::Vertex>& out,
+                const OverlayMapper& mapper, float cxPx, float cyPx,
+                float halfWPx, float halfHPx, float rotation, float r,
+                float g, float b)
 {
-    const float cosR = std::cos(rotation);
-    const float sinR = std::sin(rotation);
-    // Cantos em ordem CCW: (-,-), (+,-), (+,+), (-,+).
-    const float px[4] = {-halfW, halfW, halfW, -halfW};
-    const float py[4] = {-halfH, -halfH, halfH, halfH};
-    float vx[4];
-    float vy[4];
-    for (int i = 0; i < 4; ++i) {
-        vx[i] = cx + px[i] * cosR - py[i] * sinR;
-        vy[i] = cy + px[i] * sinR + py[i] * cosR;
-    }
+    // Cantos em ordem CCW: (-,-), (+,-), (+,+), (-,+) — rotação em px.
+    PxCorner corners[4];
+    quadCornersPx(cxPx, cyPx, halfWPx, halfHPx, rotation, corners);
     const ViewportRenderer::Vertex quad[6] = {
-        {vx[0], vy[0], 0.f, 1.f, r, g, b, 1.f},
-        {vx[1], vy[1], 0.f, 1.f, r, g, b, 1.f},
-        {vx[2], vy[2], 0.f, 1.f, r, g, b, 1.f},
-        {vx[0], vy[0], 0.f, 1.f, r, g, b, 1.f},
-        {vx[2], vy[2], 0.f, 1.f, r, g, b, 1.f},
-        {vx[3], vy[3], 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[1].x), mapper.toClipY(corners[1].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[3].x), mapper.toClipY(corners[3].y), 0.f, 1.f, r, g, b, 1.f},
     };
     out.insert(out.end(), std::begin(quad), std::end(quad));
 }
 
-/// Segmento espesso (RECOVERY §10 — contornos de collider): um quad
-/// girado de A a B com a espessura dada (half-thickness em clip).
-void pushSegment(std::vector<ViewportRenderer::Vertex>& out, float ax,
-                 float ay, float bx, float by, float halfThick, float r,
-                 float g, float b)
+/// Segmento ESPESSO em PX (RECOVERY §10 — contornos de collider; N3 —
+/// espessura constante em px em QUALQUER direção): perpendicular
+/// calculada em px (isotrópico), clip só no último passo.
+void pushSegmentPx(std::vector<ViewportRenderer::Vertex>& out,
+                   const OverlayMapper& mapper, float axPx, float ayPx,
+                   float bxPx, float byPx, float halfThickPx, float r,
+                   float g, float b)
 {
-    const float dx = bx - ax;
-    const float dy = by - ay;
-    const float length = std::sqrt(dx * dx + dy * dy);
-    if (length < 1e-9f) {
-        return;
-    }
-    pushQuad(out, (ax + bx) * 0.5f, (ay + by) * 0.5f, length * 0.5f,
-             halfThick, std::atan2(dy, dx), r, g, b);
+    PxCorner corners[4];
+    segmentCornersPx(axPx, ayPx, bxPx, byPx, halfThickPx, corners);
+    // Degenerado (comprimento ~0): quad colapsado — inofensivo no pipeline.
+    const ViewportRenderer::Vertex quad[6] = {
+        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[1].x), mapper.toClipY(corners[1].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[3].x), mapper.toClipY(corners[3].y), 0.f, 1.f, r, g, b, 1.f},
+    };
+    out.insert(out.end(), std::begin(quad), std::end(quad));
 }
 
 /// Um quad de sprite LIT (2 triângulos, pos+cor+uv+MUNDO — P3 §5): o
 /// fragment ilumina por DISTÂNCIA MUNDIAL (luzes do bloco PerFrame).
-void pushLitSpriteQuad(std::vector<ViewportRenderer::LitSpriteVertex>& out,
-                       float cx, float cy, float halfW, float halfH,
-                       float rotation, float u0, float v0, float u1, float v1,
-                       float r, float g, float b, float a, float worldX,
-                       float worldY, float worldHalfW, float worldHalfH)
+/// P4.3 (N3/N4): cantos em PX (rotação em px); o mundo per-vertex é
+/// emitido em unidades MUNDIAIS à parte (mesma orientação).
+void pushLitSpriteQuadPx(std::vector<ViewportRenderer::LitSpriteVertex>& out,
+                         const OverlayMapper& mapper, float cxPx, float cyPx,
+                         float halfWPx, float halfHPx, float rotation,
+                         float u0, float v0, float u1, float v1, float r,
+                         float g, float b, float a, float worldX,
+                         float worldY, float worldHalfW, float worldHalfH)
 {
     const float cosR = std::cos(rotation);
     const float sinR = std::sin(rotation);
-    const float px[4] = {-halfW, halfW, halfW, -halfW};
-    const float py[4] = {-halfH, -halfH, halfH, halfH};
+    const float lx[4] = {-halfWPx, halfWPx, halfWPx, -halfWPx};
+    const float ly[4] = {-halfHPx, -halfHPx, halfHPx, halfHPx};
     const float uu[4] = {u0, u1, u1, u0};
     const float vv[4] = {v0, v0, v1, v1};
     float vx[4];
     float vy[4];
     for (int i = 0; i < 4; ++i) {
-        vx[i] = cx + px[i] * cosR - py[i] * sinR;
-        vy[i] = cy + px[i] * sinR + py[i] * cosR;
+        vx[i] = cxPx + lx[i] * cosR - ly[i] * sinR;
+        vy[i] = cyPx + lx[i] * sinR + ly[i] * cosR;
     }
-    // Mundo: mesmo quad em unidades MUNDIAIS (também rotacionado).
+    // Mundo: mesmo quad em unidades MUNDIAIS (também rotacionado) —
+    // normaliza os offsets px pela meia-extensão px correspondente.
     float wx[4];
     float wy[4];
     for (int i = 0; i < 4; ++i) {
-        wx[i] = worldX + px[i] / halfW * worldHalfW * cosR -
-                py[i] / halfH * worldHalfH * sinR;
-        wy[i] = worldY + px[i] / halfW * worldHalfW * sinR +
-                py[i] / halfH * worldHalfH * cosR;
+        wx[i] = worldX + lx[i] / halfWPx * worldHalfW * cosR -
+                ly[i] / halfHPx * worldHalfH * sinR;
+        wy[i] = worldY + lx[i] / halfWPx * worldHalfW * sinR +
+                ly[i] / halfHPx * worldHalfH * cosR;
     }
     const ViewportRenderer::LitSpriteVertex quad[6] = {
-        {vx[0], vy[0], 0.f, 1.f, r, g, b, a, uu[0], vv[0], wx[0], wy[0]},
-        {vx[1], vy[1], 0.f, 1.f, r, g, b, a, uu[1], vv[1], wx[1], wy[1]},
-        {vx[2], vy[2], 0.f, 1.f, r, g, b, a, uu[2], vv[2], wx[2], wy[2]},
-        {vx[0], vy[0], 0.f, 1.f, r, g, b, a, uu[0], vv[0], wx[0], wy[0]},
-        {vx[2], vy[2], 0.f, 1.f, r, g, b, a, uu[2], vv[2], wx[2], wy[2]},
-        {vx[3], vy[3], 0.f, 1.f, r, g, b, a, uu[3], vv[3], wx[3], wy[3]},
+        {mapper.toClipX(vx[0]), mapper.toClipY(vy[0]), 0.f, 1.f, r, g, b, a, uu[0], vv[0], wx[0], wy[0]},
+        {mapper.toClipX(vx[1]), mapper.toClipY(vy[1]), 0.f, 1.f, r, g, b, a, uu[1], vv[1], wx[1], wy[1]},
+        {mapper.toClipX(vx[2]), mapper.toClipY(vy[2]), 0.f, 1.f, r, g, b, a, uu[2], vv[2], wx[2], wy[2]},
+        {mapper.toClipX(vx[0]), mapper.toClipY(vy[0]), 0.f, 1.f, r, g, b, a, uu[0], vv[0], wx[0], wy[0]},
+        {mapper.toClipX(vx[2]), mapper.toClipY(vy[2]), 0.f, 1.f, r, g, b, a, uu[2], vv[2], wx[2], wy[2]},
+        {mapper.toClipX(vx[3]), mapper.toClipY(vy[3]), 0.f, 1.f, r, g, b, a, uu[3], vv[3], wx[3], wy[3]},
     };
     out.insert(out.end(), std::begin(quad), std::end(quad));
 }
 
-/// Um quad de sprite (2 triângulos, pos+cor+uv) em clip space.
-void pushSpriteQuad(std::vector<ViewportRenderer::SpriteVertex>& out, float cx,
-                    float cy, float halfW, float halfH, float rotation, float u0,
-                    float v0, float u1, float v1, float r, float g, float b,
-                    float a)
+/// Um quad de sprite (2 triângulos, pos+cor+uv) em PX DE TELA.
+/// P4.3 (N3/N4): rotação em px — sprite rodado mantém proporção px.
+void pushSpriteQuadPx(std::vector<ViewportRenderer::SpriteVertex>& out,
+                      const OverlayMapper& mapper, float cxPx, float cyPx,
+                      float halfWPx, float halfHPx, float rotation, float u0,
+                      float v0, float u1, float v1, float r, float g, float b,
+                      float a)
 {
     const float cosR = std::cos(rotation);
     const float sinR = std::sin(rotation);
     // Cantos CCW com UV: (-,-)=uv00, (+,-)=uv10, (+,+)=uv11, (-,+)=uv01.
-    const float px[4] = {-halfW, halfW, halfW, -halfW};
-    const float py[4] = {-halfH, -halfH, halfH, halfH};
+    const float lx[4] = {-halfWPx, halfWPx, halfWPx, -halfWPx};
+    const float ly[4] = {-halfHPx, -halfHPx, halfHPx, halfHPx};
     const float uu[4] = {u0, u1, u1, u0};
     const float vv[4] = {v0, v0, v1, v1};
     float vx[4];
     float vy[4];
     for (int i = 0; i < 4; ++i) {
-        vx[i] = cx + px[i] * cosR - py[i] * sinR;
-        vy[i] = cy + px[i] * sinR + py[i] * cosR;
+        vx[i] = cxPx + lx[i] * cosR - ly[i] * sinR;
+        vy[i] = cyPx + lx[i] * sinR + ly[i] * cosR;
     }
     const ViewportRenderer::SpriteVertex quad[6] = {
-        {vx[0], vy[0], 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
-        {vx[1], vy[1], 0.f, 1.f, r, g, b, a, uu[1], vv[1]},
-        {vx[2], vy[2], 0.f, 1.f, r, g, b, a, uu[2], vv[2]},
-        {vx[0], vy[0], 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
-        {vx[2], vy[2], 0.f, 1.f, r, g, b, a, uu[2], vv[2]},
-        {vx[3], vy[3], 0.f, 1.f, r, g, b, a, uu[3], vv[3]},
+        {mapper.toClipX(vx[0]), mapper.toClipY(vy[0]), 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
+        {mapper.toClipX(vx[1]), mapper.toClipY(vy[1]), 0.f, 1.f, r, g, b, a, uu[1], vv[1]},
+        {mapper.toClipX(vx[2]), mapper.toClipY(vy[2]), 0.f, 1.f, r, g, b, a, uu[2], vv[2]},
+        {mapper.toClipX(vx[0]), mapper.toClipY(vy[0]), 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
+        {mapper.toClipX(vx[2]), mapper.toClipY(vy[2]), 0.f, 1.f, r, g, b, a, uu[2], vv[2]},
+        {mapper.toClipX(vx[3]), mapper.toClipY(vy[3]), 0.f, 1.f, r, g, b, a, uu[3], vv[3]},
     };
     out.insert(out.end(), std::begin(quad), std::end(quad));
 }
@@ -462,25 +475,21 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
 
     // --- grade ---------------------------------------------------------------
     // Linhas nos inteiros do mundo; passo 5 quando o zoom não comporta 1.
+    // P4.3 (N4): conversão canônica ÚNICA — pontos via Viewport (câmera em
+    // foco), px→clip pelo OverlayMapper; nenhuma conversão local duplicada.
     const float w = viewport.screenWidth();
     const float h = viewport.screenHeight();
-    auto worldToClipX = [&](float wx) {
-        return (viewport.worldToScreenX(wx) / w) * 2.f - 1.f;
-    };
-    auto worldToClipY = [&](float wy) {
-        return 1.f - (viewport.worldToScreenY(wy) / h) * 2.f;
-    };
+    const OverlayMapper mapper{w, h};
+    auto w2sX = [&](float wx) { return viewport.worldToScreenX(wx); };
+    auto w2sY = [&](float wy) { return viewport.worldToScreenY(wy); };
     const float step =
         viewport.effectiveCamera().zoom < 14.f ? 5.f : 1.f;  // P0-5: câmera em foco
     const float x0 = std::floor(viewport.screenToWorldX(0.f) / step) * step;
     const float x1 = viewport.screenToWorldX(w);
     const float y0 = std::floor(viewport.screenToWorldY(h) / step) * step;
     const float y1 = viewport.screenToWorldY(0.f);
-    // RECOVERY P0: 1 unidade NDC = w/2 px — meio-valor em clip de N pixels
-    // é (N*2/w)/2 = N/w. A espessura de ~1.4px exige half = 1.4/w (antes
-    // 0.7/w desenhava 0.7px — metade do que o comentário prometia).
-    const float halfPxX = 1.4f / w;
-    const float halfPxY = 1.4f / h;
+    // P4.3 (N4): espessuras em PX — half = N/2 px (N px de espessura total).
+    const float kGridHalfThickPx = 0.7f;  // 1.4 px de linha (como prometido)
     const float kGridR = 0.20f;
     const float kGridG = 0.21f;
     const float kGridB = 0.24f;
@@ -489,46 +498,48 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     const float kAxisB = 0.35f;
     for (float gx = x0; gx <= x1; gx += step) {
         const bool axis = std::abs(gx) < 0.5f * step;
-        const float cx = worldToClipX(gx);
-        pushQuad(frameVertices_, cx, 0.f, halfPxX, 1.f, 0.f,
-                 axis ? kAxisR : kGridR, axis ? kAxisG : kGridG,
-                 axis ? kAxisB : kGridB);
+        pushQuadPx(frameVertices_, mapper, w2sX(gx), h * 0.5f,
+                   kGridHalfThickPx, h * 0.5f, 0.f,
+                   axis ? kAxisR : kGridR, axis ? kAxisG : kGridG,
+                   axis ? kAxisB : kGridB);
     }
     for (float gy = y0; gy <= y1; gy += step) {
         const bool axis = std::abs(gy) < 0.5f * step;
-        const float cy = worldToClipY(gy);
-        pushQuad(frameVertices_, 0.f, cy, 1.f, halfPxY, 0.f,
-                 axis ? kAxisR : kGridR, axis ? kAxisG : kGridG,
-                 axis ? kAxisB : kGridB);
+        pushQuadPx(frameVertices_, mapper, w * 0.5f, w2sY(gy),
+                   w * 0.5f, kGridHalfThickPx, 0.f,
+                   axis ? kAxisR : kGridR, axis ? kAxisG : kGridG,
+                   axis ? kAxisB : kGridB);
     }
 
     // --- entidades SEM textura + BORDAS de sprites (pipeline pos+cor) -------
     // Ordem: play-indicator → seleção (borda) → quad. Sem blending: desenho
     // por sobreposição (ordem estável — quads em depth-first).
     const float zoom = viewport.effectiveCamera().zoom;  // P0-5
-    auto pushEntityMarkers = [&](const EntityQuad& quad, float halfW, float halfH) {
-        const float cx = worldToClipX(quad.worldX);
-        const float cy = worldToClipY(quad.worldY);
+    // P4.3 (N4): marcadores em px — bordas +4px (play) / +2px (seleção) POR
+    // LADO, na rotação px da entidade (mesmo visual, agora honesto).
+    auto pushEntityMarkers = [&](const EntityQuad& quad, float halfWPx,
+                                 float halfHPx) {
+        const float cx = w2sX(quad.worldX);
+        const float cy = w2sY(quad.worldY);
         if (playMode) {
-            pushQuad(frameVertices_, cx, cy, halfW + 8.f / w, halfH + 8.f / h,
-                     quad.rotation, 0.10f, 0.75f, 0.35f);
+            pushQuadPx(frameVertices_, mapper, cx, cy, halfWPx + 4.f,
+                       halfHPx + 4.f, quad.rotation, 0.10f, 0.75f, 0.35f);
         }
         if (quad.selected) {
-            pushQuad(frameVertices_, cx, cy, halfW + 4.f / w, halfH + 4.f / h,
-                     quad.rotation, 0.95f, 0.96f, 0.98f);
+            pushQuadPx(frameVertices_, mapper, cx, cy, halfWPx + 2.f,
+                       halfHPx + 2.f, quad.rotation, 0.95f, 0.96f, 0.98f);
         }
     };
     for (const EntityQuad* quadPtr : untexturedQuads) {
         const EntityQuad& quad = *quadPtr;
-        // RECOVERY P0: tamanho mundial correto — escala N unidades = N*zoom
-        // px na tela; half-extent NDC = total_px/w (o 0.5 espúrio desenhava
-        // tudo com METADE do size e o hit box ficava 2× maior que o quad).
-        const float halfW = std::max(quad.sizeX * zoom,
-                                     Viewport::kMinQuadPixels) / w;
-        const float halfH = std::max(quad.sizeY * zoom,
-                                     Viewport::kMinQuadPixels) / h;
+        // RECOVERY P0 + P4.3 (N4): tamanho em PX (escala N unidades = N*zoom
+        // px), mínimo visível — quad inteiro em px, rotação em px.
+        const float halfWPx = std::max(quad.sizeX * zoom,
+                                       Viewport::kMinQuadPixels) * 0.5f;
+        const float halfHPx = std::max(quad.sizeY * zoom,
+                                       Viewport::kMinQuadPixels) * 0.5f;
 
-        pushEntityMarkers(quad, halfW, halfH);
+        pushEntityMarkers(quad, halfWPx, halfHPx);
 
         // P1.10 — PLACEHOLDER de sprite: SpriteData SEM textura vira
         // xadrez magenta/escuro (convenção clássica "sem textura"),
@@ -539,27 +550,29 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             constexpr float kChessR = 0.55f, kChessG = 0.22f, kChessB = 0.55f;
             constexpr float kDarkR = 0.13f, kDarkG = 0.13f, kDarkB = 0.13f;
             // Base escura PRIMEIRO (painter: por baixo), xadrez por cima.
-            pushQuad(frameVertices_, worldToClipX(quad.worldX),
-                     worldToClipY(quad.worldY), halfW, halfH, quad.rotation,
-                     kDarkR, kDarkG, kDarkB);
-            const float cellW = halfW * 2.f / kChecker;
-            const float cellH = halfH * 2.f / kChecker;
+            pushQuadPx(frameVertices_, mapper, w2sX(quad.worldX),
+                       w2sY(quad.worldY), halfWPx, halfHPx, quad.rotation,
+                       kDarkR, kDarkG, kDarkB);
+            const float cellW = halfWPx * 2.f / kChecker;
+            const float cellH = halfHPx * 2.f / kChecker;
             const float cosR = std::cos(quad.rotation);
             const float sinR = std::sin(quad.rotation);
+            const float centerPxX = w2sX(quad.worldX);
+            const float centerPxY = w2sY(quad.worldY);
             for (int iy = 0; iy < kChecker; ++iy) {
                 for (int ix = 0; ix < kChecker; ++ix) {
                     if (((ix + iy) & 1) == 0) {
                         continue;  // célula escura já é o fundo
                     }
                     const float lx =
-                        -halfW + cellW * (static_cast<float>(ix) + 0.5f);
+                        -halfWPx + cellW * (static_cast<float>(ix) + 0.5f);
                     const float ly =
-                        -halfH + cellH * (static_cast<float>(iy) + 0.5f);
-                    pushQuad(frameVertices_,
-                             worldToClipX(quad.worldX) + lx * cosR - ly * sinR,
-                             worldToClipY(quad.worldY) + lx * sinR + ly * cosR,
-                             cellW * 0.5f, cellH * 0.5f, quad.rotation,
-                             kChessR, kChessG, kChessB);
+                        -halfHPx + cellH * (static_cast<float>(iy) + 0.5f);
+                    pushQuadPx(frameVertices_, mapper,
+                               centerPxX + lx * cosR - ly * sinR,
+                               centerPxY + lx * sinR + ly * cosR,
+                               cellW * 0.5f, cellH * 0.5f, quad.rotation,
+                               kChessR, kChessG, kChessB);
                 }
             }
             continue;
@@ -570,8 +583,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         float b = 0.f;
         hsvToRgb(quad.tint, r, g, b);
 
-        pushQuad(frameVertices_, worldToClipX(quad.worldX),
-                 worldToClipY(quad.worldY), halfW, halfH, quad.rotation, r, g, b);
+        pushQuadPx(frameVertices_, mapper, w2sX(quad.worldX),
+                   w2sY(quad.worldY), halfWPx, halfHPx, quad.rotation, r, g, b);
     }
 
     // --- partículas (drift D6 da FASE 10 — auditoria final) ------------------
@@ -579,13 +592,11 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     // gameplay do estado de Play (pools só existem em runtime/clone). Tamanho
     // mínimo de 2px para permanecerem visíveis em zoom baixo.
     for (const ParticleQuad& particle : particles) {
-        const float cx = worldToClipX(particle.worldX);
-        const float cy = worldToClipY(particle.worldY);
-        // RECOVERY P0: same correção de half-extent (total = size*zoom px).
-        const float half = std::max(particle.size * zoom, 2.f) / w;
-        const float halfY = std::max(particle.size * zoom, 2.f) / h;
-        pushQuad(frameVertices_, cx, cy, half, halfY, particle.rotation,
-                 1.f, 0.86f, 0.55f);
+        // RECOVERY P0 + P4.3 (N4): total = size*zoom px (mín 2px), px space.
+        const float halfPx = std::max(particle.size * zoom, 2.f) * 0.5f;
+        pushQuadPx(frameVertices_, mapper, w2sX(particle.worldX),
+                   w2sY(particle.worldY), halfPx, halfPx, particle.rotation,
+                   1.f, 0.86f, 0.55f);
     }
 
     // --- COLLIDERS (RECOVERY §10): o autor VÊ o shape de colisão ----------
@@ -601,9 +612,10 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         constexpr int kSphereSides = 8;
         const float kSolidR = 0.16f, kSolidG = 0.90f, kSolidB = 0.85f;
         const float kTriggerR = 0.98f, kTriggerG = 0.78f, kTriggerB = 0.20f;
-        const float inflateX = 2.f / w;
-        const float inflateY = 2.f / h;
-        const float halfThick = 0.75f / w;
+        // P4.3 (N4): inflação +1px e espessura 1.2px em PX — constantes em
+        // qualquer aspect/direção (antes variavam com w/h e com a direção).
+        const float kInflatePx = 1.f;
+        const float kHalfThickPx = 0.6f;  // contorno de 1.2 px
         for (const EntityQuad& quad : quads) {
             if (!quad.hasCollider) {
                 continue;
@@ -614,38 +626,36 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                 quad.colliderTrigger ? kTriggerG : kSolidG;
             const float b =
                 quad.colliderTrigger ? kTriggerB : kSolidB;
-            const float cx = worldToClipX(quad.worldX);
-            const float cy = worldToClipY(quad.worldY);
+            const float cx = w2sX(quad.worldX);
+            const float cy = w2sY(quad.worldY);
             // RECOVERY P0: colliderHalfX é MEIA-extensão MUNDIAL — o canto
-            // fica a halfX*zoom px do centro → offset NDC = 2*px/w. O fator
-            // 2 faltava e o contorno saía com METADE do tamanho físico (a
-            // promessa do §10 é ver o shape que a FÍSICA resolve).
-            const float hx =
-                quad.colliderHalfX * zoom * 2.f / w + inflateX;
-            const float hy =
-                quad.colliderHalfY * zoom * 2.f / h + inflateY;
+            // fica a halfX*zoom px do centro (px space: direto).
+            const float hxPx =
+                quad.colliderHalfX * zoom + kInflatePx;
+            const float hyPx =
+                quad.colliderHalfY * zoom + kInflatePx;
             if (quad.colliderIsSphere) {
                 // Octógono (fase inicial na rotação do nó p/ consistência).
-                float prevX = cx + hx * std::cos(quad.rotation);
-                float prevY = cy + hy * std::sin(quad.rotation);
+                float prevX = cx + hxPx * std::cos(quad.rotation);
+                float prevY = cy + hyPx * std::sin(quad.rotation);
                 for (int i = 1; i <= kSphereSides; ++i) {
                     const float angle =
                         quad.rotation +
                         (2.f * kPi * static_cast<float>(i)) /
                             static_cast<float>(kSphereSides);
-                    const float nextX = cx + hx * std::cos(angle);
-                    const float nextY = cy + hy * std::sin(angle);
-                    pushSegment(frameVertices_, prevX, prevY, nextX, nextY,
-                               halfThick, r, g, b);
+                    const float nextX = cx + hxPx * std::cos(angle);
+                    const float nextY = cy + hyPx * std::sin(angle);
+                    pushSegmentPx(frameVertices_, mapper, prevX, prevY, nextX,
+                                  nextY, kHalfThickPx, r, g, b);
                     prevX = nextX;
                     prevY = nextY;
                 }
             } else {
-                // Retângulo: 4 cantos girados pela rotação do nó.
+                // Retângulo: 4 cantos girados pela rotação do nó (px).
                 const float cosR = std::cos(quad.rotation);
                 const float sinR = std::sin(quad.rotation);
                 const float corners[4][2] = {
-                    {-hx, -hy}, {hx, -hy}, {hx, hy}, {-hx, hy}};
+                    {-hxPx, -hyPx}, {hxPx, -hyPx}, {hxPx, hyPx}, {-hxPx, hyPx}};
                 float vx[4];
                 float vy[4];
                 for (int i = 0; i < 4; ++i) {
@@ -656,8 +666,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                 }
                 for (int i = 0; i < 4; ++i) {
                     const int next = (i + 1) % 4;
-                    pushSegment(frameVertices_, vx[i], vy[i], vx[next],
-                                vy[next], halfThick, r, g, b);
+                    pushSegmentPx(frameVertices_, mapper, vx[i], vy[i],
+                                  vx[next], vy[next], kHalfThickPx, r, g, b);
                 }
             }
         }
@@ -671,7 +681,7 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     {
         const float kCamR = 0.42f, kCamG = 0.66f, kCamB = 0.98f;
         const float kOffR = 0.30f, kOffG = 0.32f, kOffB = 0.36f;
-        const float halfThick = 1.2f / w;
+        const float kHalfThickPx = 0.6f;  // P4.3 (N4): 1.2 px constantes
         for (const EntityQuad& quad : quads) {
             if (!quad.hasCamera) {
                 continue;
@@ -679,12 +689,12 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             const float r = quad.cameraActive ? kCamR : kOffR;
             const float g = quad.cameraActive ? kCamG : kOffG;
             const float b = quad.cameraActive ? kCamB : kOffB;
-            const float cx = worldToClipX(quad.cameraCenterX);
-            const float cy = worldToClipY(quad.cameraCenterY);
-            const float hx = quad.cameraHalfW * zoom * 2.f / w;
-            const float hy = quad.cameraHalfH * zoom * 2.f / h;
+            const float cx = w2sX(quad.cameraCenterX);
+            const float cy = w2sY(quad.cameraCenterY);
+            const float hxPx = quad.cameraHalfW * zoom;
+            const float hyPx = quad.cameraHalfH * zoom;
             const float corners[4][2] = {
-                {-hx, -hy}, {hx, -hy}, {hx, hy}, {-hx, hy}};
+                {-hxPx, -hyPx}, {hxPx, -hyPx}, {hxPx, hyPx}, {-hxPx, hyPx}};
             float vx[4];
             float vy[4];
             for (int i = 0; i < 4; ++i) {
@@ -693,8 +703,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             }
             for (int i = 0; i < 4; ++i) {
                 const int next = (i + 1) % 4;
-                pushSegment(frameVertices_, vx[i], vy[i], vx[next],
-                            vy[next], halfThick, r, g, b);
+                pushSegmentPx(frameVertices_, mapper, vx[i], vy[i], vx[next],
+                              vy[next], kHalfThickPx, r, g, b);
             }
         }
     }
@@ -705,39 +715,39 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     // frame do nó). Pools vivas continuam sendo quads no Play.
     if (!playMode) {  // em Play o que vale é a SIMULAÇÃO (partículas)
         const float kEmR = 0.72f, kEmG = 0.44f, kEmB = 0.98f;
-        const float halfThick = 1.0f / w;
+        const float kHalfThickPx = 0.5f;  // P4.3 (N4): 1 px constantes
         for (const EntityQuad* quadPtr : untexturedQuads) {
             const EntityQuad& quad = *quadPtr;
             if (!quad.hasEmitter) {
                 continue;
             }
-            const float cx = worldToClipX(quad.worldX);
-            const float cy = worldToClipY(quad.worldY);
-            const float half = quad.emitterSize * zoom * 2.f / w;
-            const float halfY = quad.emitterSize * zoom * 2.f / h;
+            const float cx = w2sX(quad.worldX);
+            const float cy = w2sY(quad.worldY);
+            // P4.3 (N4): marcador inteiro em PX (meia-aresta = size*zoom px).
+            const float halfPx = quad.emitterSize * zoom;
             // Quad-marcador na rotação do nó.
-            pushQuad(frameVertices_, cx, cy, half, halfY, quad.rotation,
-                     kEmR * 0.35f, kEmG * 0.35f, kEmB * 0.35f);
+            pushQuadPx(frameVertices_, mapper, cx, cy, halfPx, halfPx,
+                       quad.rotation, kEmR * 0.35f, kEmG * 0.35f, kEmB * 0.35f);
             // Seta: direção (mundo) do emissor escalada ~2x o marcador.
             const float dirX = quad.emitterDirX;
             const float dirY = quad.emitterDirY;
-            const float tipX = cx + dirX * half * 2.6f;
-            const float tipY = cy - dirY * halfY * 2.6f;  // Y mundo ↑, clip ↓
-            pushSegment(frameVertices_, cx + dirX * half, cy - dirY * halfY,
-                        tipX, tipY, halfThick, kEmR, kEmG, kEmB);
-            // Ponta da seta: duas pernas para trás±perpendicular (em
-            // clip space — Y invertido: "trás" em mundo = +dirY em clip).
-            const float legX = half * 0.6f;
-            const float legYc = halfY * 0.6f;
+            const float tipX = cx + dirX * halfPx * 2.6f;
+            const float tipY = cy - dirY * halfPx * 2.6f;  // Y mundo ↑, px ↓
+            pushSegmentPx(frameVertices_, mapper, cx + dirX * halfPx,
+                          cy - dirY * halfPx, tipX, tipY, kHalfThickPx,
+                          kEmR, kEmG, kEmB);
+            // Ponta da seta: duas pernas para trás±perpendicular (px —
+            // "trás" em mundo = +dirY em px).
+            const float leg = halfPx * 0.6f;
             const float perpX = -dirY, perpY = dirX;
-            pushSegment(frameVertices_, tipX, tipY,
-                        tipX - dirX * legX - perpX * legX,
-                        tipY + dirY * legYc + perpY * legYc,
-                        halfThick, kEmR, kEmG, kEmB);
-            pushSegment(frameVertices_, tipX, tipY,
-                        tipX - dirX * legX + perpX * legX,
-                        tipY + dirY * legYc - perpY * legYc,
-                        halfThick, kEmR, kEmG, kEmB);
+            pushSegmentPx(frameVertices_, mapper, tipX, tipY,
+                          tipX - dirX * leg - perpX * leg,
+                          tipY + dirY * leg + perpY * leg,
+                          kHalfThickPx, kEmR, kEmG, kEmB);
+            pushSegmentPx(frameVertices_, mapper, tipX, tipY,
+                          tipX - dirX * leg + perpX * leg,
+                          tipY + dirY * leg - perpY * leg,
+                          kHalfThickPx, kEmR, kEmG, kEmB);
         }
     }
 
@@ -776,7 +786,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float worldH = std::max(quad.sizeY * regionPy / quad.spritePpu,
                                       Viewport::kMinQuadPixels / zoom);
         // Borda de seleção/play no pipeline de cor (embaixo do sprite).
-        pushEntityMarkers(quad, worldW * zoom / w, worldH * zoom / h);
+        // P4.3 (N4): em PX — half = world*zoom/2 px.
+        pushEntityMarkers(quad, worldW * zoom * 0.5f, worldH * zoom * 0.5f);
 
         // Pivot: centro do quad desloca ((pivot - 0.5) * tamanho) nos eixos
         // do sprite (respeita rotação).
@@ -786,8 +797,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float sinR = std::sin(quad.rotation);
         const float centerWX = quad.worldX + pivotOffX * cosR - pivotOffY * sinR;
         const float centerWY = quad.worldY + pivotOffX * sinR + pivotOffY * cosR;
-        const float cx = worldToClipX(centerWX);
-        const float cy = worldToClipY(centerWY);
+        const float cx = w2sX(centerWX);
+        const float cy = w2sY(centerWY);
 
         // UV com flip (região trocada por eixo flipado).
         const float u0 = quad.flipX ? quad.u1 : quad.u0;
@@ -797,9 +808,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         const float v0 = quad.flipY ? quad.v1 : quad.v0;
         const float v1 = quad.flipY ? quad.v0 : quad.v1;
 
-        // RECOVERY P0: half-extent NDC = total_px/w — worldW*zoom é o
-        // total em px. O 0.5 espúrio desenhava a IMAGEM com metade do
-        // tamanho da própria borda de seleção (borda correta, imagem não).
+        // RECOVERY P0 + P4.3 (N4): meia-extensão em PX = world*zoom/2 —
+        // o total em px é world*zoom; rotação aplicada EM PX.
         const bool lit = quad.materialShader == "lit";
 
         // Run: abre ANTES do push — firstVertex é o BASE do sprite neste
@@ -816,15 +826,16 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         if (lit) {
             // LIT (P3 §5): + posição MUNDO interpolada (attribute 3) para
             // a distância às luzes no fragment.
-            pushLitSpriteQuad(litSpriteVertices_, cx, cy, worldW * zoom / w,
-                              worldH * zoom / h, quad.rotation, u0, v0, u1,
-                              v1, quad.tintR, quad.tintG, quad.tintB,
-                              quad.tintA, quad.worldX, quad.worldY, worldW,
-                              worldH);
+            pushLitSpriteQuadPx(litSpriteVertices_, mapper, cx, cy,
+                                worldW * zoom * 0.5f, worldH * zoom * 0.5f,
+                                quad.rotation, u0, v0, u1, v1, quad.tintR,
+                                quad.tintG, quad.tintB, quad.tintA,
+                                quad.worldX, quad.worldY, worldW, worldH);
         } else {
-            pushSpriteQuad(spriteVertices_, cx, cy, worldW * zoom / w,
-                          worldH * zoom / h, quad.rotation, u0, v0, u1, v1,
-                          quad.tintR, quad.tintG, quad.tintB, quad.tintA);
+            pushSpriteQuadPx(spriteVertices_, mapper, cx, cy,
+                             worldW * zoom * 0.5f, worldH * zoom * 0.5f,
+                             quad.rotation, u0, v0, u1, v1, quad.tintR,
+                             quad.tintG, quad.tintB, quad.tintA);
         }
         ++lastFrameTexturedSprites_;
 
@@ -988,16 +999,20 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         (!gizmo->quads.empty() || !gizmo->segments.empty())) {
         gizmoVertices_.clear();
         for (const GizmoQuad& quad : gizmo->quads) {
-            pushQuad(gizmoVertices_, worldToClipX(quad.worldX),
-                     worldToClipY(quad.worldY),
-                     quad.halfW * zoom / w, quad.halfH * zoom / h,
-                     quad.rotation, quad.r, quad.g, quad.b);
+            // P4.3 (N3/N4): half (mundo) × zoom = px; rotação em px —
+            // handles quadrados em QUALQUER aspect (eram paralelogramos).
+            pushQuadPx(gizmoVertices_, mapper, w2sX(quad.worldX),
+                       w2sY(quad.worldY), quad.halfW * zoom,
+                       quad.halfH * zoom, quad.rotation, quad.r, quad.g,
+                       quad.b);
         }
         for (const GizmoSegment& segment : gizmo->segments) {
-            pushSegment(gizmoVertices_, worldToClipX(segment.x0),
-                        worldToClipY(segment.y0), worldToClipX(segment.x1),
-                        worldToClipY(segment.y1), 1.5f / w, segment.r,
-                        segment.g, segment.b);
+            // P4.3 (N3): espessura de 2 px CONSTANTES (px space) — o anel
+            // de rotação é um círculo com linha uniforme (era elíptico).
+            pushSegmentPx(gizmoVertices_, mapper, w2sX(segment.x0),
+                          w2sY(segment.y0), w2sX(segment.x1),
+                          w2sY(segment.y1), 1.f, segment.r,
+                          segment.g, segment.b);
         }
         if (!gizmoVertices_.empty() && ensureCapacity(gizmoVertices_.size())) {
             auto pipelined = frame.setPipeline(shaders_.colorPipeline());

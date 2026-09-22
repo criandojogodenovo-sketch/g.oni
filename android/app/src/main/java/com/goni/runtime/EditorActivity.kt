@@ -65,6 +65,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     // UI
     private lateinit var surfaceView: SurfaceView
+    private lateinit var rootLayout: FrameLayout
     private lateinit var topBar: LinearLayout
     private lateinit var bottomBar: LinearLayout
     private lateinit var brand: TextView
@@ -304,7 +305,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         attachGestures(surfaceView)
 
         val root = FrameLayout(this)
+        rootLayout = root
         root.setBackgroundColor(Ui.BG)
+        // P4.3 (N2 — IME): o root ENCOLHE quando o teclado abre (adjustResize)
+        // — este listener reage e redimensiona o PAINEL por LayoutParams
+        // (nunca re-parent: o B-B — foco/IME intocáveis — não pode voltar).
+        root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updatePanelHeight()
+        }
 
         // ---- barra superior: marca + projeto + cena | backend | play ----
         topBar = LinearLayout(this).apply {
@@ -558,8 +566,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private fun togglePanel(panel: Int) {
         if (activePanel == panel) {
             activePanel = PANEL_NONE
+            // P4.3 (N1): painel fechou — a voice de preview morre com o
+            // contexto (nunca toca "para sempre" atrás da UI).
+            stopAudioPreview()
             panelContainer.visibility = View.GONE
             return
+        }
+        if (activePanel != PANEL_NONE) {
+            stopAudioPreview()  // troca de painel: mesmo contexto morto
         }
         activePanel = panel
         panelContainer.removeAllViews()
@@ -606,7 +620,83 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_ANIM -> buildAnimPanel()
         }
         panelContainer.visibility = View.VISIBLE
+        // P4.3 (N2): altura ADAPTATIVA (viewport atual, teclado incluído) —
+        // via LayoutParams (sem detach); ver updatePanelHeight.
+        updatePanelHeight()
         refreshPanel()
+    }
+
+    /** P4.3 (N2 — tab bar sobre o conteúdo com o teclado aberto): a altura
+     * do painel era FIXA (62% do display cheio); com o IME aberto a root
+     * encolhe e o painel continuava grande — campos ficavam atrás da
+     * bottomBar e sob a topBar. AGORA a altura é recalculada a partir da
+     * root ATUAL (IME incluído) e o painel ancora ACIMA da bottomBar —
+     * TUDO por LayoutParams (requestLayout), NUNCA re-parent/remova-view:
+     * o EditText focado nunca é destacado (regressão B-B não volta). */
+    private fun updatePanelHeight() {
+        if (!::rootLayout.isInitialized || !::panelContainer.isInitialized) return
+        if (activePanel == PANEL_NONE ||
+            panelContainer.visibility != View.VISIBLE) return
+        val rootH = rootLayout.height
+        if (rootH <= 0) return
+        val topH = if (::topBar.isInitialized) topBar.height else 0
+        val bottomH = if (::bottomBar.isInitialized) bottomBar.height else 0
+        val params = panelContainer.layoutParams as? FrameLayout.LayoutParams
+            ?: return
+        val isLandscape = resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        // Painel ancora ACIMA da bottomBar (margem) — em qualquer orientação.
+        val marginChanged = params.bottomMargin != bottomH
+        if (isLandscape) {
+            // Drawer lateral: altura cheia da root (menos nada) — só a
+            // margem inferior o livra da tab bar.
+            if (marginChanged) {
+                params.bottomMargin = bottomH
+                panelContainer.layoutParams = params  // requestLayout SEM detach
+            }
+        } else {
+            // Sheet inferior: no máximo 62% da altura VISÍVEL (root ATUAL —
+            // com o IME aberto a root encolhe e o painel encolhe junto) e
+            // nunca atrás da topBar/bottomBar.
+            val target = minOf((rootH * 0.62f).toInt(),
+                maxOf(rootH - topH - bottomH, dp(120)))
+            if (params.height != target || marginChanged) {
+                params.height = target
+                params.bottomMargin = bottomH
+                panelContainer.layoutParams = params  // requestLayout SEM detach
+            }
+        }
+        // Campo em edição sobe à vista quando o espaço muda (IME abriu).
+        if (!::inspectorScroll.isInitialized) return
+        val focus = currentFocus
+        if (focus != null && focus.width > 0) {
+            focus.post {
+                val bounds = android.graphics.Rect(0, 0, focus.width, focus.height)
+                focus.requestRectangleOnScreen(bounds, true)
+            }
+        }
+    }
+
+    // --- P4.3 (N1): preview de áudio — TOGGLE com stop automático ----------
+
+    /** 1º toque toca; 2º toque no MESMO asset para. Fonte de verdade: o
+     *  mixer NATIVO (a voice pode ter terminado sozinha). */
+    private fun toggleAudioPreview(name: String): Boolean {
+        if (handle == 0L) return false
+        return if (EditorJni.nativeEditorAudioPreviewPlaying(handle)) {
+            EditorJni.nativeEditorAudioPreviewStop(handle)
+            false
+        } else {
+            EditorJni.nativeEditorAudioPreview(handle, name)
+        }
+    }
+
+    /** Stop do preview (fechar painel / mudar categoria / importar /
+     *  Play) — idempotente, nunca toca nas vozes de jogo. */
+    private fun stopAudioPreview() {
+        if (handle != 0L) {
+            EditorJni.nativeEditorAudioPreviewStop(handle)
+        }
     }
 
     private fun refreshPanel() {
@@ -1090,7 +1180,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(
                     p: AdapterView<*>?, v: View?, pos: Int, id: Long
-                ) { refreshAssets() }
+                ) {
+                    // P4.3 (N1): mudou a categoria — a lista muda de assets;
+                    // a voice do preview morre com o contexto da lista.
+                    stopAudioPreview()
+                    refreshAssets()
+                }
 
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
@@ -1730,7 +1825,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
                 row.addView(
                     Button(this).apply {
-                        text = "Ouvir"
+                        // P4.3 (N1): TOGGLE — 2º toque para (label muda com o
+                        // estado real do mixer nativo).
+                        text = if (EditorJni.nativeEditorAudioPreviewPlaying(
+                                    handle)
+                            ) "■ Parar" else "▶ Ouvir"
                         minHeight = 0
                         setPadding(dp(10), 0, dp(10), 0)
                         height = dp(36)
@@ -1740,7 +1839,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         background = rippleBox(Ui.SURFACE_ALT, dp(6))
                         setOnClickListener {
                             if (value.isNotBlank()) {
-                                if (!EditorJni.nativeEditorAudioPreview(handle, value)) {
+                                // N1: não estava a tocar e não passou a tocar
+                                // = start falhou → erro explícito (o stop
+                                // intencional não é erro).
+                                val wasPlaying =
+                                    EditorJni.nativeEditorAudioPreviewPlaying(handle)
+                                val nowPlaying = toggleAudioPreview(value)
+                                text = if (nowPlaying) "■ Parar" else "▶ Ouvir"
+                                if (!wasPlaying && !nowPlaying) {
                                     toast(lastErrorText())
                                 }
                             }
@@ -2778,12 +2884,16 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         val actions = mutableListOf<() -> Unit>()
         when (category) {
             "audio" -> {
-                items.add("▶ Ouvir (preview)")
+                items.add("▶ Ouvir / ■ Parar (preview)")
                 actions.add {
-                    if (EditorJni.nativeEditorAudioPreview(handle, asset.name)) {
-                        toast("Preview: ${asset.name}")
-                    } else {
-                        toast(lastErrorText())
+                    // P4.3 (N1): TOGGLE — o 2º toque para a voice.
+                    val wasPlaying =
+                        EditorJni.nativeEditorAudioPreviewPlaying(handle)
+                    val nowPlaying = toggleAudioPreview(asset.name)
+                    when {
+                        nowPlaying -> toast("Preview: ${asset.name}")
+                        wasPlaying -> toast("Preview parado")
+                        else -> toast(lastErrorText())  // start falhou
                     }
                 }
                 items.add("Renomear…")
@@ -2952,6 +3062,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             val rel = ".import_tmp/${dest.name}"
             if (EditorJni.nativeEditorAssetImport(handle, rel, category, name)) {
                 toast("Importado em $category")
+                // P4.3 (N1): importou — contexto do preview mudou (lista de
+                // assets mudou); voice do preview morre.
+                stopAudioPreview()
                 refreshAssets()
             } else {
                 toast(lastErrorText())

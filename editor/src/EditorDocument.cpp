@@ -169,6 +169,9 @@ Result<std::unique_ptr<EditorDocument>> EditorDocument::create(
     // pré-projeto, mascarado pelo ensureProjectOnFirstRun da Activity).
     document->scene_.emplace();  // Scene não é movível — ADR-025
     document->niRuntime_ = std::make_unique<NiRuntime>(); // FASE 11
+    // P4.3 (N1): bus de PREVIEW isolado do master — a voice do preview
+    // nunca se mistura com as vozes de jogo (stop por handle + bus próprio).
+    document->previewBus_ = document->audioMixer_.createBus("preview", 1.f);
     return document;
 }
 
@@ -1579,6 +1582,9 @@ Result<void> EditorDocument::play()
         return makeUnexpected(
             documentError(StatusCode::InvalidState, "já em Play"));
     }
+    // P4.3 (N1): entrar em Play PARA o preview (isolamento de vozes — a
+    // voice de preview não atravessa a fronteira Edit→Play).
+    audioPreviewStop();
     // P4.1 (T1/D1 — re-armo): entrar em Play mata o drag do gizmo (o
     // clone é outra cena — nenhum estado de edição vaza para o runtime).
     gizmoDragEnd();
@@ -3022,18 +3028,46 @@ Result<void> EditorDocument::audioPreview(std::string_view assetName)
         return makeUnexpected(documentError(StatusCode::InvalidState,
                                             "nenhum projeto aberto"));
     }
+    // P4.3 (N1 — TOGGLE): 2º toque no MESMO asset = STOP (a voice vivia
+    // "para sempre" — sem handle de stop, o som só morria reiniciando a
+    // engine). Voice de outro asset: para a anterior e toca o novo.
+    if (previewVoice_.isValid() && audioMixer_.isPlaying(previewVoice_) &&
+        previewAsset_ == assetName) {
+        audioPreviewStop();
+        return {};
+    }
+    audioPreviewStop();  // mata voice anterior (outro asset/terminada)
     auto sound = soundFor(assetName);
     if (sound.isError()) {
         return makeUnexpected(sound.error());
     }
-    auto played = audioMixer_.playSound(*sound.value(),
-                                        eng::audio::AudioMixer::kMasterBus,
+    // Bus de PREVIEW (isolado das vozes de jogo do master) — o stop é
+    // por HANDLE (nunca stopAll, que mataria vozes do jogo).
+    auto played = audioMixer_.playSound(*sound.value(), previewBus_,
                                         1.f, false);
     if (played.isError()) {
         return makeUnexpected(played.error());
     }
+    previewVoice_ = played.value();
+    previewAsset_ = std::string{assetName};
     audioMixer_.tick();
     return {};
+}
+
+void EditorDocument::audioPreviewStop() noexcept
+{
+    // P4.3 (N1): stop POR HANDLE — idempotente; handle obsoleto é no-op
+    // seguro do mixer (§6.10). Nenhum outro caminho mata a voice.
+    if (previewVoice_.isValid()) {
+        audioMixer_.stop(previewVoice_);
+        previewVoice_ = eng::audio::VoiceHandle{};
+    }
+    previewAsset_.clear();
+}
+
+bool EditorDocument::audioPreviewPlaying() const noexcept
+{
+    return previewVoice_.isValid() && audioMixer_.isPlaying(previewVoice_);
 }
 
 }  // namespace eng::editor
