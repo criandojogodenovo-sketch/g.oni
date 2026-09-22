@@ -1133,6 +1133,33 @@ Java_com_goni_runtime_EditorJni_nativeEditorComponentCatalog(JNIEnv* env,
     return stringToJni(env, tsv);
 }
 
+// P4.7.0 Bloco 1: catálogo com METADADOS do contrato —
+// "name\tcategory\tscriptAlias" por linha (categoria do Inspector +
+// apelido NI-Script; a MESMA fonte do registro valida add/remove).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorComponentCategories(JNIEnv* env,
+                                                                jobject /*thiz*/,
+                                                                jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    std::string tsv;
+    for (const auto& item : eng::editor::Inspector::catalogEntries()) {
+        tsv += item.name;
+        tsv += '\t';
+        tsv += item.category.empty() ? "Outros" : item.category;
+        tsv += '\t';
+        tsv += item.scriptAlias;
+        tsv += '\n';
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return stringToJni(env, tsv);
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorEntityComponents(JNIEnv* env,
                                                               jobject /*thiz*/,

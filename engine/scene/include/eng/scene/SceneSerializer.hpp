@@ -3,6 +3,15 @@
 /// eng::scene::SceneSerializer — persistência determinística do grafo de
 /// nós (FASE 3, missão §2.7; ADR-033 — desvio D3: vive DENTRO de scene).
 ///
+/// P4.7.0 Bloco 1 — ComponentContract: cada componente do catálogo pode
+/// declarar `requires`/`conflicts`/`single`/`category`/`scriptAlias` e
+/// hooks de ciclo de vida (`onAttach`/`onDetach`/`onValidate`). Contratos
+/// são APLICAÇÃO DE AUTORIA (add/remove do Inspector — erros precisos);
+/// o LOAD não re-injeta dependências (cenas salvas já as satisfazem —
+/// cenas editadas à mão abrem com WARN, nunca falham por contrato).
+/// Registro NATIVO de efeitos colaterais (física/materiais/luz) passa a
+/// viver SOMENTE nos hooks — zero caso especial espalhado pelo editor.
+///
 /// Formato (formatVersion 1):
 /// {
 ///   "formatVersion": 1,
@@ -40,6 +49,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "eng/core/Result.hpp"
 #include "eng/scene/Scene.hpp"
@@ -47,6 +57,20 @@
 #include "eng/serial/JsonValue.hpp"
 
 namespace eng::scene {
+
+// Declarações ANTECIPADAS do detail — o contrato/hooks são parte da
+// assinatura pública de registerComponentType (P4.7.0 Bloco 1) e o
+// arquivo define o detail DEPOIS da classe.
+namespace detail {
+struct ComponentEntry;
+struct ComponentContract;
+using HookValidate = eng::core::Result<void>(*)
+    (eng::scene::Scene&, eng::ecs::Entity, const ComponentEntry&);
+using HookAttach = void(*)(eng::scene::Scene&, eng::ecs::Entity,
+                           const ComponentEntry&, void* hookUser);
+using HookDetach = void(*)(eng::scene::Scene&, eng::ecs::Entity,
+                           const ComponentEntry&, void* hookUser);
+} // namespace detail
 
 class SceneSerializer final {
 public:
@@ -56,9 +80,16 @@ public:
     /// NOME ESTÁVEL registrado no reflect (o mesmo do ENG_REFLECT_BEGIN).
     /// O tipo precisa estar registrado no reflect ANTES (senão erro).
     /// Built-ins registrados no próprio módulo: eng::math::Transform.
+    /// P4.7.0 Bloco 1: contrato + hooks opcionais (registrar no MESMO
+    /// chamada — o contrato é parte da entrada do catálogo).
     template<typename T>
     [[nodiscard]] static eng::core::Result<void> registerComponentType(
-        std::string_view typeName);
+        std::string_view typeName,
+        detail::ComponentContract contract = {},
+        detail::HookAttach onAttach = nullptr,
+        detail::HookDetach onDetach = nullptr,
+        detail::HookValidate onValidate = nullptr,
+        void* hookUser = nullptr);
 
     /// Scene → texto JSON determinístico. EFEITO: atribui SceneEntityId a
     /// nós que ainda não têm (componente SceneIdentity emplantado).
@@ -80,6 +111,43 @@ public:
 // =============================================================================
 
 namespace eng::scene::detail {
+
+// (ComponentContract, HookValidate/Attach/Detach e ComponentEntry já
+// declarados ANTES de SceneSerializer — ver topo do arquivo; aqui ficam
+// as DEFINIÇÕES completas.)
+
+/// Contrato de autoria de um componente (P4.7.0 Bloco 1). Tudo OPCIONAL
+/// exceto `category` (vazio = grupo "Outros" do Inspector).
+struct ComponentContract {
+    /// Tipos (nome canônico) que PRECISAM estar presentes na entidade
+    /// antes deste componente ser adicionado. ("requires" do contrato —
+    /// o identificador `requires` é palavra-chave C++20, por isso o
+    /// membro chama `required`.)
+    std::vector<std::string> required;
+    /// Tipos que NÃO podem coexistir com este na mesma entidade.
+    std::vector<std::string> conflicts;
+    /// true: instância ÚNICA na cena inteira (ex.: pós-processamento no
+    /// P4.7.1). false: quantas entidades quiserem.
+    bool single = false;
+    /// Grupo do Inspector: "Transform"|"Render"|"Física"|"Lógica"|
+    /// "Áudio"|"Câmera"|"FX" (vazio = "Outros").
+    std::string category;
+    /// Apelido NI-Script do componente ("" = sem apelido; scripts usam o
+    /// nome canônico). Gerado do MESMO registro que alimenta o Inspector.
+    std::string scriptAlias;
+};
+
+/// Hooks de ciclo de vida — registrados pelo AUTOR do componente
+/// (ComponentRegistration.cpp no editor; built-ins no próprio scene).
+/// `hookUser` é contexto fornecido no registro (ex.: ponteiro do
+/// documento para consulta de materiais).
+struct ComponentEntry;
+using HookValidate = eng::core::Result<void>(*)(
+    eng::scene::Scene&, eng::ecs::Entity, const ComponentEntry&);
+using HookAttach = void(*)(eng::scene::Scene&, eng::ecs::Entity,
+                           const ComponentEntry&, void* hookUser);
+using HookDetach = void(*)(eng::scene::Scene&, eng::ecs::Entity,
+                           const ComponentEntry&, void* hookUser);
 
 /// Entrada de componente serializável (type-erased via lambdas tipadas;
 /// a própria entrada é parâmetro das funções — sem capturas, conversível
@@ -105,6 +173,17 @@ struct ComponentEntry {
     eng::core::Result<void> (*decodeAndEmplace)(
         const ComponentEntry&, eng::ecs::World&, eng::ecs::Entity,
         const eng::serial::JsonValue&) = nullptr;
+    /// Número de instâncias vivas do componente no world (P4.7.0 —
+    /// contratos `single` + métricas do catálogo; World expõe
+    /// componentCount<T>() por tipo).
+    std::size_t (*count)(const eng::ecs::World&) = nullptr;
+
+    // --- P4.7.0 Bloco 1: contrato + hooks ---------------------------
+    ComponentContract contract;
+    HookValidate onValidate = nullptr;
+    HookAttach onAttach = nullptr;
+    HookDetach onDetach = nullptr;
+    void* hookUser = nullptr;
 };
 
 /// Registro global de componentes (não-template, no .cpp).
@@ -112,13 +191,26 @@ void registerComponentEntry(std::string typeName, ComponentEntry entry);
 [[nodiscard]] const std::map<std::string, ComponentEntry>&
 componentEntries();
 
+/// Anexa/atualiza contrato + hooks de um componente JÁ REGISTRADO
+/// (caminho dos built-ins — eng::math::Transform registra o seu no
+/// próprio módulo scene, sem re-registrar o tipo).
+void registerComponentContract(
+    std::string_view typeName, ComponentContract contract,
+    HookAttach onAttach = nullptr, HookDetach onDetach = nullptr,
+    HookValidate onValidate = nullptr, void* hookUser = nullptr);
+
 } // namespace eng::scene::detail
 
 namespace eng::scene {
 
 template<typename T>
 eng::core::Result<void> SceneSerializer::registerComponentType(
-    std::string_view typeName)
+    std::string_view typeName,
+    detail::ComponentContract contract,
+    detail::HookAttach onAttach,
+    detail::HookDetach onDetach,
+    detail::HookValidate onValidate,
+    void* hookUser)
 {
     using eng::core::Error;
     using eng::core::StatusCode;
@@ -188,6 +280,14 @@ eng::core::Result<void> SceneSerializer::registerComponentType(
         }
         return {};
     };
+    entry.count = [](const eng::ecs::World& world) {
+        return world.componentCount<T>();
+    };
+    entry.contract = std::move(contract);
+    entry.onAttach = onAttach;
+    entry.onDetach = onDetach;
+    entry.onValidate = onValidate;
+    entry.hookUser = hookUser;
 
     detail::registerComponentEntry(std::string(typeName), entry);
     return {};

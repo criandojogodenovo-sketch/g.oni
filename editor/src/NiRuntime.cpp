@@ -271,7 +271,6 @@ void NiRuntime::start(eng::scene::Scene& runtimeScene)
 {
     shutdown();
     scene_ = &runtimeScene;
-
     natives_.addBaseLibrary();
     natives_.addStandardHost();
     host_ = std::make_unique<HostImpl>();
@@ -329,26 +328,43 @@ void NiRuntime::start(eng::scene::Scene& runtimeScene)
         (void)eng::ni::niAddReflectionBinding(
             bindings_, typeName, typeName, &catalogFetchC, &catalogFetchM,
             fetch.get(), "", &worldValid);
-        // apelido curto (última parte do nome canônico, minúscula)
+        // P4.7.0 Bloco 1: apelido do CONTRATO (fonte única — o mesmo
+        // registro alimenta Inspector e scripts) e o legado (última
+        // parte do nome canônico em minúscula) CONTINUA valendo —
+        // scripts de fases anteriores nunca quebram.
+        std::string legacy;
         const std::size_t colon = typeName.rfind(':');
-        std::string lower;
         const std::string_view tail =
             colon == std::string::npos
                 ? std::string_view(typeName)
                 : std::string_view(typeName).substr(colon + 1);
         for (const char c : tail) {
-            lower.push_back(static_cast<char>(
+            legacy.push_back(static_cast<char>(
                 c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
         }
-        if (!lower.empty() && lower != "name" && lower != "transform") {
+        const std::string& alias = entry.contract.scriptAlias;
+        const std::string* const candidates[] = {&alias, &legacy};
+        for (const std::string* candidate : candidates) {
+            if (candidate->empty() || *candidate == "name"
+                || *candidate == "transform" || *candidate == typeName) {
+                continue;
+            }
             auto fetch2 = std::make_shared<CatalogFetch>();
             fetch2->world = world;
             fetch2->entry = &entry;
             (void)eng::ni::niAddReflectionBinding(
-                bindings_, lower, typeName, &catalogFetchC, &catalogFetchM,
-                fetch2.get(), "", &worldValid);
+                bindings_, *candidate, typeName, &catalogFetchC,
+                &catalogFetchM, fetch2.get(), "", &worldValid);
         }
     }
+
+    // P4.7.0 Bloco 1: inscreve os eventos de gameplay no barramento da
+    // cena — on_hit (física), on_enter/on_exit (triggers) e
+    // on_visible/on_invisible (culling do Bloco 6 publica). As inscrições
+    // são RAII e vivem APENAS até o shutdown (nunca sobrevivem à cena).
+    subscribeGameEvent<eng::scene::HitEvent>();
+    subscribeGameEvent<eng::scene::TriggerEvent>();
+    subscribeGameEvent<eng::scene::VisibilityEvent>();
 
     // Compila + instancia scripts do CLONE (ordem determinística do each).
     // P4.1 (T2/D5): TODOS os resultados vão para stats_ (fonte da UI —
@@ -454,6 +470,9 @@ void NiRuntime::shutdown() noexcept
     set_.clear();
     bindings_ = eng::ni::NiBindingTable{};
     natives_ = eng::ni::NiNativeTable{};
+    // P4.7.0 Bloco 1: cancela as inscrições de eventos ANTES de soltar a
+    // cena (Subscription nunca sobrevive ao bus — ADR-022).
+    eventSubscriptions_.clear();
     scene_ = nullptr;
     host_.reset();
 }
@@ -478,6 +497,60 @@ eng::ni::NiExecContext::Params NiRuntime::params() const
     p.set = const_cast<eng::ni::NiInstanceSet*>(&set_);
     p.budget = eng::ni::kDefaultBudget;
     return p;
+}
+
+// =============================================================================
+// P4.7.0 Bloco 1 — bridge de eventos de gameplay → NI-Script
+// =============================================================================
+
+void NiRuntime::runHandlerOn(eng::ecs::Entity self, std::string_view handler)
+{
+    if (dispatching_) {
+        return; // reentrância: evento dentro de handler NÃO re-despacha
+    }
+    dispatching_ = true;
+    struct DepthGuard {
+        bool& flag;
+        ~DepthGuard() { flag = false; }
+    } guard{dispatching_};
+
+    const eng::ni::NiExecContext::Params p = params();
+    for (const auto& instance : set_.asVector()) {
+        if (instance->self().index != self.index
+            || instance->self().generation != self.generation) {
+            continue; // handler roda APENAS no self do evento
+        }
+        (void)vm_.run(*instance, handler, p);
+        if (const std::optional<eng::ni::NiFault>& fault =
+                instance->lastFault();
+            fault.has_value()) {
+            ++stats_.faults;
+            char buf[192];
+            std::snprintf(buf, sizeof buf, "%s @ entidade %u",
+                          fault->message.c_str(),
+                          static_cast<unsigned>(instance->self().index));
+            stats_.lastFaultMessage = buf;
+            diag::mark("SCRIPT_FAULT", "runtime", buf);
+        }
+    }
+}
+
+void NiRuntime::dispatchHitEvent(const eng::scene::HitEvent& event)
+{
+    runHandlerOn(event.self, eng::scene::kEventHit);
+}
+
+void NiRuntime::dispatchTriggerEvent(const eng::scene::TriggerEvent& event)
+{
+    runHandlerOn(event.self, event.entered ? eng::scene::kEventTriggerEnter
+                                           : eng::scene::kEventTriggerExit);
+}
+
+void NiRuntime::dispatchVisibilityEvent(
+    const eng::scene::VisibilityEvent& event)
+{
+    runHandlerOn(event.entity, event.visible ? eng::scene::kEventVisible
+                                             : eng::scene::kEventInvisible);
 }
 
 } // namespace eng::editor

@@ -139,6 +139,8 @@ object EditorJni {
 
     /** TSV: typeName \t removable(0/1). */
     external fun nativeEditorComponentCatalog(handle: Long): String?
+    /** P4.7.0 B1: TSV typeName \t categoria \t apelidoScript (ordem fixa de categoria). */
+    external fun nativeEditorComponentCategories(handle: Long): String?
     /** TSV: typeName \t removable(0/1) — componentes PRESENTES na entidade. */
     external fun nativeEditorEntityComponents(handle: Long, packed: Long): String?
     /** TSV: fieldPath \t typeName \t value. */

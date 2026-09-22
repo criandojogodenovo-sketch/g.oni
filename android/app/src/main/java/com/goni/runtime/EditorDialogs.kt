@@ -459,6 +459,22 @@ internal fun EditorActivity.addComponentDialog() {
         val hint = hints.getOrNull(i)?.takeIf { it.isNotBlank() }
         if (hint != null) "${prettyComponent(raw)} — $hint" else prettyComponent(raw)
     }
+    // P4.7.0 B1: agrupamento por CATEGORIA do contrato (fonte única — o
+    // mesmo registro que valida add/remove). Sem rede = lista plana.
+    val categoryTsv = EditorJni.nativeEditorComponentCategories(handle)
+    val categoryOf = HashMap<String, String>()
+    if (categoryTsv != null) {
+        for (line in categoryTsv.lines().filter { it.isNotBlank() }) {
+            val parts = line.split('\t')
+            if (parts.size >= 2) {
+                categoryOf[parts[0]] = parts[1]
+            }
+        }
+    }
+    val categoryOrder = listOf(
+        "Transform", "Render", "Física", "Lógica", "Áudio", "Câmera", "FX", "Outros"
+    )
+    val grouped = rawNames.groupBy { n -> categoryOf[n] ?: "Outros" }
 
     val search = Oni.field(this).apply {
         setSingleLine()
@@ -470,41 +486,101 @@ internal fun EditorActivity.addComponentDialog() {
         dividerHeight = 0
         selector = android.graphics.drawable.ColorDrawable(0)
     }
+    // Paralelo ao conteúdo do adapter: null = cabeçalho (não clicável).
+    // P4.7.0 B1: declarado ANTES do adapter (closure por referência).
+    val ROW_HEADER = 0
+    val ROW_ITEM = 1
+    val rowKind = mutableListOf<Int>()
+    val selectable = mutableListOf<String?>()
     val adapter = object : android.widget.ArrayAdapter<String>(
         this, R.layout.oni_list_item, mutableListOf<String>()
     ) {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val text = getItem(position) ?: ""
-            val row = Oni.listRow(act)
-            row.addView(TextView(act).apply {
-                this.text = text
-                setTextColor(Oni.TEXT)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            row.addView(TextView(act).apply {
-                this.text = "›"
-                setTextColor(Oni.TEXT_DIM)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            })
+            val isHeader = position >= rowKind.size || rowKind[position] == ROW_HEADER
+            val row = if (isHeader) {
+                LinearLayout(act).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(dp(16), dp(10), dp(16), dp(4))
+                    addView(TextView(act).apply {
+                        this.text = text
+                        setTextColor(Oni.ACCENT)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                        letterSpacing = 0.08f
+                    }, LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                }
+            } else {
+                Oni.listRow(act).apply {
+                    addView(TextView(act).apply {
+                        this.text = text
+                        setTextColor(Oni.TEXT)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    }, LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(TextView(act).apply {
+                        this.text = "›"
+                        setTextColor(Oni.TEXT_DIM)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                    })
+                }
+            }
             return row
         }
     }
     list.adapter = adapter
     var current: List<String> = rawNames
     fun applyFilter(query: String) {
-        current = if (query.isBlank()) {
-            rawNames
+        rowKind.clear()
+        selectable.clear()
+        if (query.isBlank()) {
+            // Agrupado: cabeçalho + itens por categoria (ordem fixa).
+            val rendered = mutableListOf<Pair<Int, String?>>() // kind, raw
+            for (category in categoryOrder) {
+                val members = grouped[category] ?: continue
+                if (members.isEmpty()) continue
+                rendered.add(Pair(ROW_HEADER, category.uppercase()))
+                for (member in members) {
+                    rendered.add(Pair(ROW_ITEM, member))
+                }
+            }
+            for (extra in grouped.keys) {
+                if (!categoryOrder.contains(extra)) {
+                    val members = grouped[extra] ?: continue
+                    rendered.add(Pair(ROW_HEADER, extra.uppercase()))
+                    for (member in members) {
+                        rendered.add(Pair(ROW_ITEM, member))
+                    }
+                }
+            }
+            adapter.clear()
+            adapter.addAll(rendered.map { (kind, raw) ->
+                if (kind == ROW_HEADER) raw else {
+                    val idx = rawNames.indexOf(raw)
+                    display.getOrElse(idx) { raw }
+                }
+            })
+            for ((kind, raw) in rendered) {
+                rowKind.add(kind)
+                selectable.add(if (kind == ROW_HEADER) null else raw)
+            }
+            current = selectable.filterNotNull()
         } else {
-            rawNames.filterIndexed { i, raw ->
+            // Busca ativa: lista PLANA (cabeçalhos somem — mais resultados úteis).
+            current = rawNames.filterIndexed { i, raw ->
                 raw.contains(query, ignoreCase = true) ||
                     display[i].contains(query, ignoreCase = true)
             }
+            adapter.clear()
+            adapter.addAll(current.map { n ->
+                val idx = rawNames.indexOf(n)
+                display.getOrElse(idx) { n }
+            })
+            for (n in current) {
+                rowKind.add(ROW_ITEM)
+                selectable.add(n)
+            }
         }
-        adapter.clear()
-        adapter.addAll(current.map { n ->
-            val idx = rawNames.indexOf(n)
-            display.getOrElse(idx) { n }
-        })
     }
     applyFilter("")
     search.addTextChangedListener(object : android.text.TextWatcher {
@@ -529,7 +605,10 @@ internal fun EditorActivity.addComponentDialog() {
     }
     var dialog: android.app.Dialog? = null
     list.setOnItemClickListener { _, _, which, _ ->
-        if (!EditorJni.nativeEditorAddComponent(handle, selection, current[which])) {
+        // P4.7.0 B1: cabeçalho de categoria (null) não é clicável; índice
+        // do item vem do PARALELO selectable (nunca da lista exibida).
+        val component = selectable.getOrNull(which) ?: return@setOnItemClickListener
+        if (!EditorJni.nativeEditorAddComponent(handle, selection, component)) {
             toastErr(lastErrorText())
         }
         dialog?.dismiss()

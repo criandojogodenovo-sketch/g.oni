@@ -16,7 +16,7 @@ eng_add_module(scene
 # componentes) e log (WARN de componentes internos tolerados no load).
 # Nenhum arquivo/semântica de FASE 2 alterado.
 target_link_libraries(eng_scene
-    PUBLIC eng::ecs eng::math
+    PUBLIC eng::ecs eng::math eng::events
     PRIVATE eng::core eng::serial eng::reflect eng::log
 )
 

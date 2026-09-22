@@ -39,6 +39,7 @@
 #include "eng/core/Result.hpp"
 #include "eng/ecs/Ecs.hpp"
 #include "eng/scene/Scene.hpp"
+#include "eng/scene/SceneSerializer.hpp"
 
 namespace eng::editor {
 
@@ -57,6 +58,23 @@ public:
 
     /// Catálogo completo de componentes registrados (ordenado por nome).
     [[nodiscard]] static std::vector<std::string> catalog();
+
+    /// Entrada do catálogo com metadados do contrato (P4.7.0 Bloco 1) —
+    /// categoria do Inspector + apelido NI-Script, ambos gerados do MESMO
+    /// registro (ComponentContract no catálogo do serializer).
+    struct CatalogEntry {
+        std::string name;       ///< nome canônico do tipo
+        std::string category;   ///< "Transform".."FX" ("" = "Outros")
+        std::string scriptAlias; ///< apelido NI-Script ("" = nome canônico)
+    };
+    /// Catálogo com metadados, ordenado por (ordem de categoria fixa,
+    /// nome) — Transform, Render, Física, Lógica, Áudio, Câmera, FX,
+    /// Outros. É a ÚNICA fonte do agrupamento do painel Add.
+    [[nodiscard]] static std::vector<CatalogEntry> catalogEntries();
+
+    /// Contrato do componente (nullptr se fora do catálogo).
+    [[nodiscard]] static const eng::scene::detail::ComponentContract*
+    contractOf(std::string_view component);
 
     /// Componentes PRESENTES na entidade (ordenados por nome).
     [[nodiscard]] static std::vector<std::string> componentsOf(
@@ -85,14 +103,22 @@ public:
     [[nodiscard]] static bool isRemovable(std::string_view component);
 
     /// Adiciona componente default-construído via catálogo (D2).
+    /// P4.7.0 Bloco 1: valida o ComponentContract (requires/conflicts/
+    /// single) com erro PRECISO, executa onAttach (registro nativo de
+    /// efeitos colaterais — luz/física/materiais) e onValidate pós-anexo.
+    /// `attachUser` é contexto do chamador (ex.: EditorDocument) entregue
+    /// ao hook.
     [[nodiscard]] static eng::core::Result<void> addComponent(
         eng::scene::Scene& scene, eng::ecs::Entity entity,
-        std::string_view component);
+        std::string_view component, void* attachUser = nullptr);
 
-    /// Remove componente (recusa protegidos).
+    /// Remove componente (recusa protegidos). P4.7.0 Bloco 1: recusa
+    /// também quando OUTRO componente presente exige o removido (erro
+    /// com o nome do dependente); roda onDetach pós-remoção com
+    /// `detachUser`.
     [[nodiscard]] static eng::core::Result<void> removeComponent(
         eng::scene::Scene& scene, eng::ecs::Entity entity,
-        std::string_view component);
+        std::string_view component, void* detachUser = nullptr);
 };
 
 } // namespace eng::editor

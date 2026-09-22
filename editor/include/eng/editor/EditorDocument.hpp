@@ -618,6 +618,12 @@ public:
     [[nodiscard]] eng::core::Result<std::string> materialRead(
         std::string_view name) const;
 
+    /// P4.7.0 Bloco 1 (hook onAttach da Light2D): o material de um sprite
+    /// CONTA como lit para os defaults coerentes da luz? Semântica EXATA
+    /// do P4.6 Bloco 2: asset vazio = lit; cache frio = lit (default do
+    /// engine); cache quente decide pelo shader resolvido.
+    [[nodiscard]] bool materialCountsAsLit(const std::string& asset) const;
+
     /// Escreve o conteúdo cru (valida com o codec ANTES de gravar).
     [[nodiscard]] eng::core::Result<void> materialWrite(
         std::string_view name, std::string_view json);

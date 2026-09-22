@@ -7982,6 +7982,7 @@ static constexpr const char* kExpectedJniSymbols[] = {
     "Java_com_goni_runtime_EditorJni_nativeEditorAddCollisionLayer",
     "Java_com_goni_runtime_EditorJni_nativeEditorAddComponent",
     "Java_com_goni_runtime_EditorJni_nativeEditorAddableComponents",
+    "Java_com_goni_runtime_EditorJni_nativeEditorComponentCategories",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddFrame",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAssign",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddKey",
@@ -8115,8 +8116,8 @@ static constexpr const char* kExpectedJniSymbols[] = {
     // P4.6: 120 (P4.5.2) + 3 camadas de colisão nomeadas = 123.
     constexpr std::size_t kExpected =
         sizeof(kExpectedJniSymbols) / sizeof(kExpectedJniSymbols[0]);
-    // P4.6: 127 + 2 da grade (Grid v2) = 129.
-    STATIC_REQUIRE(kExpected == 129);
+    // P4.6: 127 + 2 da grade (Grid v2) = 129. P4.7.0 B1: +1 categorias = 130.
+    STATIC_REQUIRE(kExpected == 130);
 
     std::vector<std::string> missing;
     for (const char* name : kExpectedJniSymbols) {
@@ -8273,13 +8274,15 @@ TEST_CASE("p46: REPRO do utilizador — script move_and_slide contra estático "
                                     "position.x", "3")
                 .ok());
 
-    // Jogador: CharacterBody + Collider + script kinematic.
+    // Jogador: Collider + CharacterBody + script kinematic.
+    // P4.7.0 B1: o CONTRATO exige Collider antes (CharacterBody requires
+    // Collider — add na ordem antiga agora recusa com erro preciso).
     auto player = f.doc->createEntity("Jogador", eng::scene::kNoEntity);
     REQUIRE(player.ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider").ok());
     REQUIRE(f.doc->addComponent(player.value(),
                                 "eng::physics::CharacterBody")
                 .ok());
-    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider").ok());
     const char* source =
         "up update:\n"
         "    move_and_slide(delta() * 3.0, delta() * 1.0)\n"

@@ -1708,65 +1708,31 @@ Result<void> EditorDocument::addComponent(eng::ecs::Entity entity,
         return makeUnexpected(guard.error());
     }
     pushHistory("component");
-    auto added = Inspector::addComponent(*scene_, entity, component);
+    // P4.7.0 Bloco 1: contrato validado DENTRO do Inspector (requires/
+    // conflicts/single com erro preciso); efeitos colaterais NATIVOS da
+    // luz/física/materiais vivem em onAttach (registro em
+    // ComponentRegistration.cpp) — o caso especial da Light2D migrou
+    // para o hook (mesma semântica do P4.6 Bloco 2).
+    auto added = Inspector::addComponent(*scene_, entity, component,
+                                         /*attachUser=*/this);
     if (added.isError()) {
         return makeUnexpected(added.error());
-    }
-    // P4.6 (Bloco 2): luz nova CASA COM A CAMADA onde vivem os sprites
-    // lit da cena (defaults coerentes — uma luz criada num projeto cujos
-    // sprites estão em "UI" ilumina "UI", não some para "GAME"). Material
-    // vazio = lit (default); material explícito só conta quando o shader
-    // resolvido é lit (cache frio conta como lit — default do engine).
-    if (component == "eng::render::Light2D") {
-        if (auto* light =
-                scene_->world().get<eng::render::Light2D>(entity)) {
-            std::vector<std::pair<std::string, std::size_t>> counts;
-            scene_->world().each<eng::editor::SpriteData>(
-                [&](eng::ecs::Entity sprite,
-                    const eng::editor::SpriteData& data) {
-                    if (!data.materialAsset.empty()) {
-                        const auto it =
-                            materialCache_.find(data.materialAsset);
-                        if (it != materialCache_.end() &&
-                            it->second.shader !=
-                                std::string(eng::render::kShaderLit)) {
-                            return; // unlit: luz não afeta — não conta
-                        }
-                    }
-                    std::string layerName = "GAME";
-                    if (const auto* member =
-                            scene_->world().get<eng::scene::LayerMember>(
-                                sprite)) {
-                        layerName = member->layer;
-                    }
-                    bool found = false;
-                    for (auto& entry : counts) {
-                        if (entry.first == layerName) {
-                            ++entry.second;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        counts.emplace_back(layerName, 1u);
-                    }
-                });
-            // Vencedor = maior contagem (empate: 1ª camada vista —
-            // determinístico pela ordem do each).
-            const std::pair<std::string, std::size_t>* winner = nullptr;
-            for (const auto& entry : counts) {
-                if (winner == nullptr || entry.second > winner->second) {
-                    winner = &entry;
-                }
-            }
-            if (winner != nullptr) {
-                light->layer = winner->first;
-            }
-        }
     }
     sceneDirty_ = true;
     ++selectionRevision_;  // Inspector reflete o componente novo (P2)
     return {};
+}
+
+bool EditorDocument::materialCountsAsLit(const std::string& asset) const
+{
+    if (asset.empty()) {
+        return true; // material vazio = lit (default)
+    }
+    const auto it = materialCache_.find(asset);
+    if (it == materialCache_.end()) {
+        return true; // cache frio conta como lit — default do engine
+    }
+    return it->second.shader == std::string(eng::render::kShaderLit);
 }
 
 Result<void> EditorDocument::removeComponent(eng::ecs::Entity entity,
@@ -1777,7 +1743,10 @@ Result<void> EditorDocument::removeComponent(eng::ecs::Entity entity,
         return makeUnexpected(guard.error());
     }
     pushHistory("remove");
-    auto removed = Inspector::removeComponent(*scene_, entity, component);
+    // P4.7.0 Bloco 1: recusa quando outro componente presente EXIGE o
+    // removido (erro com o nome do dependente); onDetach roda pós-remoção.
+    auto removed = Inspector::removeComponent(*scene_, entity, component,
+                                              /*detachUser=*/this);
     if (removed.isError()) {
         return makeUnexpected(removed.error());
     }
@@ -1797,6 +1766,32 @@ namespace {
 /// dependência. O formato é texto livre para a UI exibir como está.
 [[nodiscard]] std::string dependencyHintFor(std::string_view component)
 {
+    // P4.7.0 Bloco 1: hint de CONTRATO primeiro (fonte única — o mesmo
+    // registro que valida o add); legacy depois (dicas não-expressíveis
+    // como requires — assets ausentes, painel recomendado).
+    const auto* contract = eng::editor::Inspector::contractOf(component);
+    if (contract != nullptr) {
+        if (!contract->required.empty()) {
+            std::string hint = "exige ";
+            for (std::size_t i = 0; i < contract->required.size(); ++i) {
+                if (i != 0) {
+                    hint += ", ";
+                }
+                hint += contract->required[i];
+            }
+            return hint;
+        }
+        if (!contract->conflicts.empty()) {
+            std::string hint = "conflita com ";
+            for (std::size_t i = 0; i < contract->conflicts.size(); ++i) {
+                if (i != 0) {
+                    hint += ", ";
+                }
+                hint += contract->conflicts[i];
+            }
+            return hint;
+        }
+    }
     if (component == "eng::physics::RigidBody") {
         return "Colisão requer Collider (corpo sem collider atravessa)";
     }
@@ -1964,6 +1959,39 @@ Result<void> EditorDocument::play()
     if (mode_ == Mode::Play) {
         return makeUnexpected(
             documentError(StatusCode::InvalidState, "já em Play"));
+    }
+    // P4.7.0 Bloco 1: validação de contratos ANTES de entrar em Play —
+    // componente inválido (ex.: Collider.radius negativo introduzido por
+    // caminho externo ao Inspector) NÃO entra em jogo: erro preciso com
+    // tipo + nó. Custo O(nós × componentes) uma vez por Play — editor.
+    {
+        const auto& entries = eng::scene::detail::componentEntries();
+        std::optional<eng::core::Error> contractError;
+        scene_->world().each<eng::scene::SceneIdentity>(
+            [&](eng::ecs::Entity node, const eng::scene::SceneIdentity&) {
+                if (contractError.has_value() || !scene_->isNode(node)) {
+                    return;
+                }
+                for (const auto& [name, entry] : entries) {
+                    if (entry.onValidate == nullptr
+                        || !entry.has(scene_->world(), node)) {
+                        continue;
+                    }
+                    auto validated = entry.onValidate(*scene_, node, entry);
+                    if (validated.isError()) {
+                        contractError = eng::core::Error{
+                            StatusCode::InvalidArgument,
+                            "não é possível entrar em Play: '" + name
+                                + "' no nó " + std::to_string(node.index)
+                                + " é inválido — "
+                                + validated.error().message};
+                        return;
+                    }
+                }
+            });
+        if (contractError.has_value()) {
+            return makeUnexpected(*contractError);
+        }
     }
     // P4.3 (N1): entrar em Play PARA o preview (isolamento de vozes — a
     // voice de preview não atravessa a fronteira Edit→Play).

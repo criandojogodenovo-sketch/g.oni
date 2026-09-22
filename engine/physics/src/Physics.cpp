@@ -1,5 +1,7 @@
 #include "eng/physics/Physics.hpp"
 
+#include "eng/scene/SceneEvents.hpp"
+
 /// Physics — implementação (FASE 10). Esfera + AABB; semi-implícito.
 
 #include <algorithm>
@@ -304,6 +306,19 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
 {
     contacts_.clear();
 
+    // P4.7.0 Bloco 1: par canônico (menor índice primeiro — geração
+    // desempata) para o diff de triggers entre passos.
+    auto canonicalPair = [](eng::ecs::Entity a,
+                            eng::ecs::Entity b) {
+        if (a.index < b.index
+            || (a.index == b.index && a.generation < b.generation)) {
+            return std::make_pair(a, b);
+        }
+        return std::make_pair(b, a);
+    };
+    std::vector<std::pair<eng::ecs::Entity, eng::ecs::Entity>>
+        currentTriggers;
+
     // 1) Integração semi-implícita (velocidade → posição).
     //    Camadas (evolução P0-5, ADR-051): corpo em camada sem
     //    participação de física é PULADO — fica estático e fora do
@@ -381,8 +396,27 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
             contacts_.push_back(ContactEvent{
                 a, b, normal, mid, depth, trigger});
             if (trigger) {
+                // P4.7.0 Bloco 1: par de trigger ATIVO neste passo (diff
+                // com o passo anterior publica on_enter/on_exit no fim).
+                currentTriggers.push_back(canonicalPair(a, b));
                 continue; // contato SEM resolução (§7.2)
             }
+
+            // P4.7.0 Bloco 1: on_hit nos DOIS sentidos (o bridge do
+            // NI-Script roda o handler do script cujo self == evento;
+            // normal aponta de other PARA self — convenção do doc).
+            eng::scene::HitEvent hitAB;
+            hitAB.self = a;
+            hitAB.other = b;
+            hitAB.nx = normal.x;
+            hitAB.ny = normal.y;
+            scene.events().publish(hitAB);
+            eng::scene::HitEvent hitBA;
+            hitBA.self = b;
+            hitBA.other = a;
+            hitBA.nx = -normal.x;
+            hitBA.ny = -normal.y;
+            scene.events().publish(hitBA);
 
             // 3) Resolução: projeção posicional proporcional às massas
             //    inversas + impulso escalar ao longo da normal.
@@ -430,6 +464,48 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
             }
         }
     }
+
+    // --- P4.7.0 Bloco 1: on_enter / on_exit (diff de pares de trigger)
+    // Nos DOIS sentidos (mesma razão do on_hit). Determinístico: pares
+    // canônicos; entrada em ordem de par detectado, saída em ordem do
+    // passo anterior.
+    for (const auto& pair : currentTriggers) {
+        const bool wasOverlapping =
+            std::find(triggerPairsPrev_.begin(), triggerPairsPrev_.end(),
+                      pair) != triggerPairsPrev_.end();
+        if (wasOverlapping) {
+            continue;
+        }
+        eng::scene::TriggerEvent enteredAB;
+        enteredAB.self = pair.first;
+        enteredAB.other = pair.second;
+        enteredAB.entered = true;
+        scene.events().publish(enteredAB);
+        eng::scene::TriggerEvent enteredBA;
+        enteredBA.self = pair.second;
+        enteredBA.other = pair.first;
+        enteredBA.entered = true;
+        scene.events().publish(enteredBA);
+    }
+    for (const auto& pair : triggerPairsPrev_) {
+        const bool stillOverlapping =
+            std::find(currentTriggers.begin(), currentTriggers.end(),
+                      pair) != currentTriggers.end();
+        if (stillOverlapping) {
+            continue;
+        }
+        eng::scene::TriggerEvent exitedAB;
+        exitedAB.self = pair.first;
+        exitedAB.other = pair.second;
+        exitedAB.entered = false;
+        scene.events().publish(exitedAB);
+        eng::scene::TriggerEvent exitedBA;
+        exitedBA.self = pair.second;
+        exitedBA.other = pair.first;
+        exitedBA.entered = false;
+        scene.events().publish(exitedBA);
+    }
+    triggerPairsPrev_.swap(currentTriggers);
 }
 
 // =============================================================================

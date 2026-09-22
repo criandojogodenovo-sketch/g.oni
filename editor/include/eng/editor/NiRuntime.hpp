@@ -16,11 +16,14 @@
 
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
+#include "eng/events/Events.hpp"
 #include "eng/niscript/NiScript.hpp"
 #include "eng/niscript/NiVm.hpp"
 #include "eng/scene/Scene.hpp"
+#include "eng/scene/SceneEvents.hpp"
 
 namespace eng::editor {
 
@@ -96,6 +99,35 @@ public:
 private:
     struct HostImpl;
 
+    /// P4.7.0 Bloco 1: inscreve os eventos de gameplay no barramento da
+    /// cena (on_hit/on_enter/on_exit/on_visible/on_invisible). A inscrição
+    /// é RAII e vive APENAS entre start/shutdown (nunca sobrevive à cena).
+    template<typename E>
+    void subscribeGameEvent()
+    {
+        eventSubscriptions_.push_back(scene_->events().subscribe<E>(
+            [this](const E& event) {
+                if constexpr (std::is_same_v<E, eng::scene::HitEvent>) {
+                    dispatchHitEvent(event);
+                } else if constexpr (std::is_same_v<E,
+                                         eng::scene::TriggerEvent>) {
+                    dispatchTriggerEvent(event);
+                } else {
+                    static_assert(std::is_same_v<E,
+                                      eng::scene::VisibilityEvent>,
+                                  "evento de gameplay não suportado");
+                    dispatchVisibilityEvent(event);
+                }
+            }));
+    }
+
+    /// Handlers: roda `up <nome>` nas instâncias cujo self == entidade do
+    /// evento (inline durante o publish — física/ordem determinística).
+    void dispatchHitEvent(const eng::scene::HitEvent& event);
+    void dispatchTriggerEvent(const eng::scene::TriggerEvent& event);
+    void dispatchVisibilityEvent(const eng::scene::VisibilityEvent& event);
+    void runHandlerOn(eng::ecs::Entity self, std::string_view handler);
+
     [[nodiscard]] bool queryAction_(std::string_view action, int phase) const;
     [[nodiscard]] eng::ni::NiExecContext::Params params() const;
 
@@ -109,6 +141,12 @@ private:
     bool (*actionQuery_)(std::string_view, int, void*) = nullptr;
     void* actionQueryUser_ = nullptr;
     NiScriptStats stats_{};
+    /// P4.7.0 Bloco 1: inscrições RAII nos eventos da cena (canceladas no
+    /// shutdown — antes do bus morrer com a cena de Play).
+    std::vector<eng::events::Subscription> eventSubscriptions_;
+    /// Recursão: handler de evento pode emitir contato (spawn/move) →
+    /// publicar de novo? Guarda de profundidade (um nível de script).
+    bool dispatching_ = false;
 };
 
 } // namespace eng::editor

@@ -79,6 +79,24 @@ const std::map<std::string, ComponentEntry>& componentEntries()
     return componentRegistry();
 }
 
+void registerComponentContract(
+    std::string_view typeName, ComponentContract contract,
+    HookAttach onAttach, HookDetach onDetach, HookValidate onValidate,
+    void* hookUser)
+{
+    auto& registry = componentRegistry();
+    const auto it = registry.find(std::string(typeName));
+    if (it == registry.end()) {
+        return; // tipo não registrado: contrato ignorado (o chamador
+                // que re-registrar o tipo obterá o contrato completo)
+    }
+    it->second.contract = std::move(contract);
+    it->second.onAttach = onAttach;
+    it->second.onDetach = onDetach;
+    it->second.onValidate = onValidate;
+    it->second.hookUser = hookUser;
+}
+
 } // namespace eng::scene::detail
 
 namespace eng::scene {
@@ -98,6 +116,30 @@ const bool eng_scene_builtin_components_registered = [] {
     // re-registra só sobrescreve a mesma entrada).
     (void)SceneSerializer::registerComponentType<eng::scene::LayerMember>(
         "eng::scene::LayerMember");
+
+    // P4.7.0 Bloco 1 — contratos dos built-ins (categoria do Inspector;
+    // LayerMember é organização de tick/camadas → "Lógica"; Name é
+    // rótulo → "Transform"). Sem hooks nativos aqui (nada a registrar).
+    using eng::scene::detail::ComponentContract;
+    {
+        ComponentContract c;
+        c.category = "Transform";
+        eng::scene::detail::registerComponentContract(
+            "eng::math::Transform", std::move(c));
+    }
+    {
+        ComponentContract c;
+        c.category = "Transform";
+        eng::scene::detail::registerComponentContract(
+            "eng::scene::Name", std::move(c));
+    }
+    {
+        ComponentContract c;
+        c.category = "Lógica";
+        c.scriptAlias = "layer";
+        eng::scene::detail::registerComponentContract(
+            "eng::scene::LayerMember", std::move(c));
+    }
     return true;
 }();
 

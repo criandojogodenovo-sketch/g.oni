@@ -6,6 +6,7 @@
 /// como QUALQUER struct refletida. Valores trafegam como string (boundary
 /// neutra — JNI recebe texto; §4 da auditoria).
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -14,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 #include "eng/log/Macros.hpp"
@@ -36,6 +38,22 @@ ENG_LOG_CATEGORY("editor");
 [[nodiscard]] Error inspectorError(StatusCode code, std::string message)
 {
     return Error{code, "Inspector: " + std::move(message)};
+}
+
+/// Ordem FIXA de categorias do painel Add/Inspector (P4.7.0 Bloco 1).
+/// Categorias desconhecidas/vazias caem no fim ("Outros").
+[[nodiscard]] std::size_t categoryOrder(std::string_view category)
+{
+    static constexpr std::string_view kOrder[] = {
+        "Transform", "Render", "Física", "Lógica",
+        "Áudio", "Câmera", "FX",
+    };
+    for (std::size_t i = 0; i < std::size(kOrder); ++i) {
+        if (kOrder[i] == category) {
+            return i;
+        }
+    }
+    return std::size(kOrder);
 }
 
 const ComponentEntry* entryOf(std::string_view component)
@@ -488,6 +506,67 @@ std::vector<std::string> Inspector::catalog()
     return names;
 }
 
+std::vector<Inspector::CatalogEntry> Inspector::catalogEntries()
+{
+    std::vector<CatalogEntry> entries;
+    for (const auto& [name, entry] : eng::scene::detail::componentEntries()) {
+        entries.push_back(CatalogEntry{name, entry.contract.category,
+                                       entry.contract.scriptAlias});
+    }
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const CatalogEntry& a, const CatalogEntry& b) {
+                         const std::size_t oa = categoryOrder(a.category);
+                         const std::size_t ob = categoryOrder(b.category);
+                         if (oa != ob) {
+                             return oa < ob;
+                         }
+                         return a.name < b.name;
+                     });
+    return entries;
+}
+
+const eng::scene::detail::ComponentContract* Inspector::contractOf(
+    std::string_view component)
+{
+    const ComponentEntry* entry = entryOf(component);
+    return entry == nullptr ? nullptr : &entry->contract;
+}
+
+namespace {
+
+/// P4.7.0 Bloco 1: onValidate APÓS escrita (Inspector::setField).
+/// Contrato violado → ROLLBACK pelo valor anterior (capturado ANTES da
+/// escrita — round-trip string neutro por tipo) e erro preciso. O
+/// rollback usa Inspector::setField com `allowRollback=false` (sem
+/// recursão). Sem onValidate registrado → no-op.
+[[nodiscard]] Result<void> validateAfterWrite(
+    eng::scene::Scene& scene, eng::ecs::Entity entity,
+    const ComponentEntry& entry, std::string_view component,
+    std::string_view fieldPath, const std::optional<std::string>& previous,
+    bool allowRollback)
+{
+    if (entry.onValidate == nullptr) {
+        return {};
+    }
+    auto validated = entry.onValidate(scene, entity, entry);
+    if (!validated.isError()) {
+        return {};
+    }
+    if (allowRollback && previous.has_value()) {
+        // Restaura o estado anterior (era válido por construção — falha
+        // de validação no restore é ignorada: o erro ORIGINAL é o que
+        // importa para o autor).
+        (void)Inspector::setField(scene, entity, component, fieldPath,
+                                  *previous);
+    }
+    return makeUnexpected(inspectorError(
+        StatusCode::InvalidArgument,
+        "valor rejeitado pelo contrato do componente: "
+        + validated.error().message));
+}
+
+} // namespace
+
 std::vector<std::string> Inspector::componentsOf(const eng::scene::Scene& scene,
                                                  eng::ecs::Entity entity)
 {
@@ -763,6 +842,15 @@ Result<void> Inspector::setField(eng::scene::Scene& scene,
         return makeUnexpected(inspectorError(StatusCode::Internal,
                                              "componente sumiu entre has/get"));
     }
+    // Valor ANTES da escrita — rollback do onValidate (P4.7.0 B1).
+    // Falha de leitura (campo novo sem representação) = sem rollback.
+    std::optional<std::string> previousValue;
+    if (entry->onValidate != nullptr) {
+        auto previous = getField(scene, entity, component, fieldPath);
+        if (!previous.isError()) {
+            previousValue = std::move(previous.value());
+        }
+    }
     // Grupo de cor (P0-6): valida TUDO antes de escrever qualquer canal.
     if (fieldPath.find(',') != std::string_view::npos) {
         const auto parts = splitCommaPath(fieldPath);
@@ -804,7 +892,9 @@ Result<void> Inspector::setField(eng::scene::Scene& scene,
         for (std::size_t i = 0; i < parts.size(); ++i) {
             *targets[i].member = parsed.value()[i];
         }
-        return {};
+        return validateAfterWrite(scene, entity, *entry, component,
+                                  fieldPath, previousValue,
+                                  /*allowRollback=*/true);
     }
     auto resolved = resolveFieldImpl(base, *entry->info, fieldPath);
     if (resolved.isError()) {
@@ -815,7 +905,8 @@ Result<void> Inspector::setField(eng::scene::Scene& scene,
     if (written.isError()) {
         return makeUnexpected(written.error());
     }
-    return {};
+    return validateAfterWrite(scene, entity, *entry, component, fieldPath,
+                              previousValue, /*allowRollback=*/true);
 }
 
 bool Inspector::isRemovable(std::string_view component)
@@ -828,7 +919,8 @@ bool Inspector::isRemovable(std::string_view component)
 
 Result<void> Inspector::addComponent(eng::scene::Scene& scene,
                                       eng::ecs::Entity entity,
-                                      std::string_view component)
+                                      std::string_view component,
+                                      void* attachUser)
 {
     const ComponentEntry* entry = entryOf(component);
     if (entry == nullptr) {
@@ -845,12 +937,75 @@ Result<void> Inspector::addComponent(eng::scene::Scene& scene,
             StatusCode::AlreadyExists,
             "entidade já possui '" + std::string(component) + "'"));
     }
-    return entry->emplaceDefault(*entry, scene.world(), entity);
+
+    // --- P4.7.0 Bloco 1: ComponentContract -----------------------------
+    const eng::scene::detail::ComponentContract& contract = entry->contract;
+    for (const std::string& needed : contract.required) {
+        const ComponentEntry* req = entryOf(needed);
+        if (req == nullptr) {
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "contrato de '" + std::string(component) +
+                "' exige tipo desconhecido '" + needed + "'"));
+        }
+        if (!req->has(scene.world(), entity)) {
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "'" + std::string(component) + "' exige '" + needed +
+                "' — adicione '" + needed + "' antes"));
+        }
+    }
+    for (const std::string& conflicting : contract.conflicts) {
+        const ComponentEntry* conf = entryOf(conflicting);
+        if (conf != nullptr && conf->has(scene.world(), entity)) {
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "'" + std::string(component) + "' conflita com '" +
+                conflicting + "' na mesma entidade — remova '" +
+                conflicting + "' primeiro"));
+        }
+    }
+    if (contract.single && entry->count != nullptr
+        && entry->count(scene.world()) != 0) {
+        return makeUnexpected(inspectorError(
+            StatusCode::AlreadyExists,
+            "'" + std::string(component) +
+            "' é único na cena (single) — só uma entidade pode tê-lo"));
+    }
+
+    auto added = entry->emplaceDefault(*entry, scene.world(), entity);
+    if (added.isError()) {
+        return added;
+    }
+
+    // Hook de anexo (registro NATIVO de efeitos colaterais — luz casa
+    // com camada, física informa runtime, etc. — P4.7.0 Bloco 1).
+    if (entry->onAttach != nullptr) {
+        entry->onAttach(scene, entity, *entry, attachUser);
+    }
+    // Validação pós-anexo (estado default deve ser consistente).
+    if (entry->onValidate != nullptr) {
+        auto validated = entry->onValidate(scene, entity, *entry);
+        if (validated.isError()) {
+            // Contrato default violado: rollback do anexo (o componente
+            // default-construído nunca deve nascer inválido).
+            (void)entry->removeFrom(scene.world(), entity);
+            if (entry->onDetach != nullptr) {
+                entry->onDetach(scene, entity, *entry, attachUser);
+            }
+            return makeUnexpected(inspectorError(
+                StatusCode::InvalidArgument,
+                "'" + std::string(component) + "' default inválido: "
+                + validated.error().message));
+        }
+    }
+    return {};
 }
 
 Result<void> Inspector::removeComponent(eng::scene::Scene& scene,
                                          eng::ecs::Entity entity,
-                                         std::string_view component)
+                                         std::string_view component,
+                                         void* detachUser)
 {
     const ComponentEntry* entry = entryOf(component);
     if (entry == nullptr) {
@@ -868,7 +1023,29 @@ Result<void> Inspector::removeComponent(eng::scene::Scene& scene,
             StatusCode::NotFound,
             "entidade não possui '" + std::string(component) + "'"));
     }
+
+    // --- P4.7.0 Bloco 1: dependência reversa ----------------------------
+    // Outro componente PRESENTE na entidade exige o removido? Recusa com
+    // o nome do dependente (autor decide a ordem — nada some de surpresa).
+    for (const auto& [name, other] : eng::scene::detail::componentEntries()) {
+        if (name == component || !other.has(scene.world(), entity)) {
+            continue;
+        }
+        for (const std::string& needed : other.contract.required) {
+            if (needed == component) {
+                return makeUnexpected(inspectorError(
+                    StatusCode::InvalidArgument,
+                    "não é possível remover '" + std::string(component) +
+                    "': '" + name + "' exige este componente — remova '" +
+                    name + "' primeiro"));
+            }
+        }
+    }
+
     (void)entry->removeFrom(scene.world(), entity);
+    if (entry->onDetach != nullptr) {
+        entry->onDetach(scene, entity, *entry, detachUser);
+    }
     return {};
 }
 

@@ -182,6 +182,12 @@ public:
 
 private:
     std::vector<ContactEvent> contacts_;
+
+    /// P4.7.0 Bloco 1: pares de trigger sobrepostos NO ÚLTIMO passo
+    /// (canônicos menor-índice primeiro) — diff publica on_enter/on_exit
+    /// (TriggerEvent) no barramento da cena. Vazio = nenhum par antes.
+    std::vector<std::pair<eng::ecs::Entity, eng::ecs::Entity>>
+        triggerPairsPrev_;
 };
 
 /// Acumulador de timestep fixo (§7.6 — frame dt variável → passos fixos).
