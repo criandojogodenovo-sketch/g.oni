@@ -150,6 +150,38 @@ public:
     /// cena vazia; ADR-033).
     [[nodiscard]] eng::core::Result<void> loadScene(std::string_view scenePath);
 
+    // --- Ticks/Camadas (P4.3 — Bloco 2; ADR-051 exposto ao autor) ------------
+    //
+    // A engine JÁ tem LayerRegistry (timeScale + participação update/física/
+    // render por camada) e TimestepAccumulator (física de passo fixo) — nada
+    // disso era AUTORÁVEL. A sheet de Ticks toca este estado REAL.
+    struct LayerInfo {
+        std::string name;
+        float timeScale = 1.f;
+        bool update = true;
+        bool physics = true;
+        bool render = true;
+    };
+    /// Camadas em ordem da registry (GAME, SUBGAME, nomeadas — estável).
+    [[nodiscard]] eng::core::Result<std::vector<LayerInfo>> layerList() const;
+    /// Camada nomeada nova (participação total, timeScale 1). Erros: nome
+    /// vazio/duplicado/built-in.
+    [[nodiscard]] eng::core::Result<void> addLayer(std::string_view name);
+    /// timeScale da camada (>= 0; 0 = pausada). Erro: camada inexistente/valor.
+    [[nodiscard]] eng::core::Result<void> setLayerTimeScale(
+        std::string_view name, float timeScale);
+    /// Participação da camada nos estágios (update/física/render).
+    [[nodiscard]] eng::core::Result<void> setLayerParticipation(
+        std::string_view name, bool update, bool physics, bool render);
+    /// Timestep FIXO da física em segundos (PhysicsTick no Play). Persiste
+    /// na cena (chave aditiva "physicsFixedDt" — arquivo antigo = 1/60).
+    [[nodiscard]] float physicsFixedDt() const noexcept
+    {
+        return physicsAccumulator_.fixedDt();
+    }
+    /// Erro se não finito, <= 0 ou > 0.25 s (honesto — sem clamp calado).
+    [[nodiscard]] eng::core::Result<void> setPhysicsFixedDt(float fixedDt);
+
     [[nodiscard]] bool sceneDirty() const noexcept { return sceneDirty_; }
     [[nodiscard]] bool projectDirty() const noexcept { return projectDirty_; }
     /// Path da cena ATUAL relativo ao projeto ("main.json") — definido por

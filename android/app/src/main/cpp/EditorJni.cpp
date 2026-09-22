@@ -2161,6 +2161,118 @@ Java_com_goni_runtime_EditorJni_nativeEditorAudioPreviewPlaying(
                : JNI_FALSE;
 }
 
+// --- P4.3 (Bloco 2): Ticks/Camadas — ADR-051 autorável ---------------------
+
+/// Camadas em TSV: name\ttimescale\tupdate\tphysics\trender (ordem da registry).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorLayerList(JNIEnv* env,
+                                                      jobject /*thiz*/,
+                                                      jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    auto layers = host->document().layerList();
+    if (layers.isError()) {
+        record(handle, layers);
+        return nullptr;
+    }
+    std::string tsv;
+    char line[512];
+    for (const auto& layer : layers.value()) {
+        std::snprintf(line, sizeof(line), "%s\t%.6g\t%d\t%d\t%d\n",
+                      layer.name.c_str(),
+                      static_cast<double>(layer.timeScale),
+                      layer.update ? 1 : 0, layer.physics ? 1 : 0,
+                      layer.render ? 1 : 0);
+        tsv += line;
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return stringToJni(env, tsv);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorLayerAdd(JNIEnv* env,
+                                                     jobject /*thiz*/,
+                                                     jlong handle,
+                                                     jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().addLayer(nameBuf)) ? JNI_TRUE
+                                                              : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorLayerSetTimeScale(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name, jfloat ts)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().setLayerTimeScale(nameBuf, ts))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorLayerSetParticipation(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name, jboolean update,
+    jboolean physics, jboolean render)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().setLayerParticipation(
+                      nameBuf, update == JNI_TRUE, physics == JNI_TRUE,
+                      render == JNI_TRUE))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorPhysicsDt(JNIEnv* /*env*/,
+                                                      jobject /*thiz*/,
+                                                      jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr ? host->document().physicsFixedDt() : 0.f;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorPhysicsSetDt(JNIEnv* /*env*/,
+                                                         jobject /*thiz*/,
+                                                         jlong handle,
+                                                         jfloat dt)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    return record(handle, host->document().setPhysicsFixedDt(dt)) ? JNI_TRUE
+                                                                  : JNI_FALSE;
+}
+
 /// Nomes dos assets de ÁUDIO (linhas \n) — picker do Inspector (kind audio).
 JNIEXPORT jstring JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorListAudio(JNIEnv* env,

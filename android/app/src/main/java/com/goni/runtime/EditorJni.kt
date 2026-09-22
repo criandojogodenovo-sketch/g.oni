@@ -238,6 +238,16 @@ object EditorJni {
     external fun nativeEditorAudioPreviewStop(handle: Long)
     /** P4.3 (N1): há voice de preview viva? (fonte de verdade do botão). */
     external fun nativeEditorAudioPreviewPlaying(handle: Long): Boolean
+
+    // --- P4.3 (Bloco 2): Ticks/Camadas — ADR-051 autorável ---------------------
+    /** Camadas em TSV: name\ttimescale\tupdate\tphysics\trender. */
+    external fun nativeEditorLayerList(handle: Long): String?
+    external fun nativeEditorLayerAdd(handle: Long, name: String): Boolean
+    external fun nativeEditorLayerSetTimeScale(handle: Long, name: String, ts: Float): Boolean
+    external fun nativeEditorLayerSetParticipation(handle: Long, name: String, update: Boolean, physics: Boolean, render: Boolean): Boolean
+    /** Timestep fixo da física em segundos (config da cena). */
+    external fun nativeEditorPhysicsDt(handle: Long): Float
+    external fun nativeEditorPhysicsSetDt(handle: Long, dt: Float): Boolean
     /** Nomes dos assets de áudio (linhas \n) — picker do Inspector (kind audio). */
     external fun nativeEditorListAudio(handle: Long): String?
 

@@ -7400,3 +7400,122 @@ TEST_CASE("editor: P4.3/Bloco 1 — duplicar preserva a SUBÁRVORE por toque",
     CHECK(scene->isNode(cloneG1));
     CHECK(scene->parentOf(cloneC2) == r1.value());
 }
+
+// =============================================================================
+// P4.3 — BLOCO 2: Ticks/Camadas — timeScale por camada, participação
+// (update/física/render) e timestep fixo da física autoráveis (ADR-051).
+// =============================================================================
+
+TEST_CASE("editor: P4.3/Bloco 2 — camadas: listar, criar, timeScale e participação",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Defaults: GAME/SUBGAME, timeScale 1, participação total.
+    auto initial = f.doc->layerList();
+    REQUIRE(initial.ok());
+    REQUIRE(initial.value().size() == 2);
+    CHECK(initial.value()[0].name == "GAME");
+    CHECK(initial.value()[1].name == "SUBGAME");
+    for (const auto& layer : initial.value()) {
+        CHECK(layer.timeScale == Catch::Approx(1.f));
+        CHECK(layer.update);
+        CHECK(layer.physics);
+        CHECK(layer.render);
+    }
+
+    // Criar por toque: nova camada entra na lista; duplicados/vazios são
+    // rejeitados com erro explícito.
+    REQUIRE(f.doc->addLayer("UI").ok());
+    CHECK(f.doc->addLayer("UI").isError());
+    CHECK(f.doc->addLayer("").isError());
+    CHECK(f.doc->addLayer("GAME").isError());
+    initial = f.doc->layerList();
+    REQUIRE(initial.ok());
+    REQUIRE(initial.value().size() == 3);
+    CHECK(initial.value()[2].name == "UI");
+
+    // timeScale da camada vira o timeScale POR ENTIDADE (ADR-051 real —
+    // o que a sheet edita é o que o tick usa).
+    auto node = f.doc->createEntity("NaUI", eng::scene::kNoEntity);
+    REQUIRE(node.ok());
+    REQUIRE(f.doc->addComponent(node.value(),
+                                "eng::scene::LayerMember").ok());
+    REQUIRE(f.doc->setInspectorField(node.value(),
+                                     "eng::scene::LayerMember", "layer",
+                                     "UI").ok());
+    REQUIRE(f.doc->setLayerTimeScale("UI", 0.25f).ok());
+    CHECK(f.doc->sceneInFocus()->timeScaleOf(node.value()) ==
+          Catch::Approx(0.25f));
+    auto listed = f.doc->layerList();
+    REQUIRE(listed.ok());
+    CHECK(listed.value()[2].timeScale == Catch::Approx(0.25f));
+
+    // Participação: desligar update/render da camada desliga para as
+    // entidades dela (física continua).
+    REQUIRE(f.doc->setLayerParticipation("UI", false, true, false).ok());
+    CHECK_FALSE(f.doc->sceneInFocus()->participatesIn(
+        node.value(), eng::scene::LayerStage::Update));
+    CHECK(f.doc->sceneInFocus()->participatesIn(
+        node.value(), eng::scene::LayerStage::Physics));
+    CHECK_FALSE(f.doc->sceneInFocus()->participatesIn(
+        node.value(), eng::scene::LayerStage::Render));
+
+    // Erros honestos: camada inexistente e valores inválidos.
+    CHECK(f.doc->setLayerTimeScale("NaoExiste", 1.f).isError());
+    CHECK(f.doc->setLayerTimeScale("UI", -1.f).isError());
+    CHECK(f.doc->setLayerTimeScale("UI", std::nanf("")).isError());
+    CHECK(f.doc->setLayerParticipation("NaoExiste", true, true, true)
+              .isError());
+
+    // Round-trip: a config de camadas persiste na cena (serializador P0-5).
+    REQUIRE(f.doc->saveScene("camadas.json").ok());
+    REQUIRE(f.doc->setLayerTimeScale("UI", 1.f).ok());
+    REQUIRE(f.doc->loadScene("camadas.json").ok());
+    auto reloaded = f.doc->layerList();
+    REQUIRE(reloaded.ok());
+    REQUIRE(reloaded.value().size() == 3);
+    CHECK(reloaded.value()[2].name == "UI");
+    CHECK(reloaded.value()[2].timeScale == Catch::Approx(0.25f));
+    CHECK_FALSE(reloaded.value()[2].update);
+    CHECK(reloaded.value()[2].physics);
+    CHECK_FALSE(reloaded.value()[2].render);
+}
+
+TEST_CASE("editor: P4.3/Bloco 2 — timestep da física: validar, aplicar e persistir",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Default honesto: 1/60.
+    CHECK(f.doc->physicsFixedDt() == Catch::Approx(1.f / 60.f).margin(1e-6f));
+
+    // Aplicar: o acumulador REAL usado pelo PhysicsTick no Play.
+    REQUIRE(f.doc->setPhysicsFixedDt(1.f / 120.f).ok());
+    CHECK(f.doc->physicsFixedDt() == Catch::Approx(1.f / 120.f).margin(1e-7f));
+    REQUIRE(f.doc->play().ok());
+    CHECK(f.doc->physicsFixedDt() == Catch::Approx(1.f / 120.f).margin(1e-7f));
+    f.doc->stop();
+
+    // Erros honestos (sem clamp calado): 0, negativo, NaN, acima do teto.
+    CHECK(f.doc->setPhysicsFixedDt(0.f).isError());
+    CHECK(f.doc->setPhysicsFixedDt(-1.f).isError());
+    CHECK(f.doc->setPhysicsFixedDt(std::nanf("")).isError());
+    CHECK(f.doc->setPhysicsFixedDt(0.5f).isError());
+    CHECK(f.doc->physicsFixedDt() == Catch::Approx(1.f / 120.f).margin(1e-7f));
+
+    // Persistência: a chave aditiva "physicsFixedDt" da cena sobrevive ao
+    // save/load (arquivo antigo sem a chave = default 1/60).
+    REQUIRE(f.doc->saveScene("ticks.json").ok());
+    REQUIRE(f.doc->setPhysicsFixedDt(1.f / 30.f).ok());
+    REQUIRE(f.doc->loadScene("ticks.json").ok());
+    CHECK(f.doc->physicsFixedDt() == Catch::Approx(1.f / 120.f).margin(1e-7f));
+
+    // Play rejeita edição (guard requireEditMode do Bloco 2).
+    REQUIRE(f.doc->play().ok());
+    CHECK(f.doc->setPhysicsFixedDt(1.f / 60.f).isError());
+    CHECK(f.doc->addLayer("EmPlay").isError());
+    f.doc->stop();
+}

@@ -626,6 +626,8 @@ Result<void> EditorDocument::newScene()
     scene_.emplace(); // constrói in place (Scene não é movível — ADR-025)
     selection_.reset();
     sceneDirty_ = false;
+    // P4.3 (Bloco 2): cena nova = config de ticks de fábrica (timestep 1/60).
+    physicsAccumulator_.setFixedDt(1.f / 60.f);
     // P4.2 (B-A): cena nova = nada a restaurar no próximo open — o path
     // corrente e o marker morrem JUNTOS (best-effort no marker).
     currentScenePath_.clear();
@@ -655,6 +657,21 @@ Result<void> EditorDocument::saveScene(std::string_view scenePath)
     auto text = eng::scene::SceneSerializer::save(*scene_);
     if (text.isError()) {
         return makeUnexpected(text.error());
+    }
+    // P4.3 (Bloco 2): timestep da física viaja na CENA (chave aditiva do
+    // documento — o serializer ignora chaves desconhecidas, arquivos antigos
+    // carregam com 1/60). Parse do próprio output: falhar aqui é bug grave
+    // (serializer emitiu JSON inválido) — erro explícito, sem silêncio.
+    {
+        auto root = eng::serial::parseJson(text.value());
+        if (root.isError()) {
+            return makeUnexpected(root.error());
+        }
+        root.value().set(
+            "physicsFixedDt",
+            eng::serial::JsonValue::real(
+                static_cast<double>(physicsAccumulator_.fixedDt())));
+        text = eng::serial::dumpJson(root.value());
     }
     const eng::fs::Path full = scenesRootOf(*project_) / path;
     auto made = fs_->mkdirs(full.parent());
@@ -703,6 +720,22 @@ Result<void> EditorDocument::loadScene(std::string_view scenePath)
     auto fresh = newScene();
     if (fresh.isError()) {
         return makeUnexpected(fresh.error());
+    }
+    // P4.3 (Bloco 2): extrai o timestep da física ANTES do load (chave
+    // aditiva do documento; arquivo antigo/ausente = default 1/60). Valor
+    // inválido presente no arquivo é IGNORADO (config default) — o load da
+    // cena nunca falha por config de ticks.
+    {
+        auto parsed = eng::serial::parseJson(text.value());
+        if (parsed.ok() && parsed.value().isObject()) {
+            const auto field = parsed.value().find("physicsFixedDt");
+            if (field.has_value() && field->isNumber()) {
+                const double v = field->asF64();
+                if (std::isfinite(v) && v > 0.0 && v <= 0.25) {
+                    physicsAccumulator_.setFixedDt(static_cast<float>(v));
+                }
+            }
+        }
     }
     auto loaded = eng::scene::SceneSerializer::load(*scene_, text.value());
     if (loaded.isError()) {
@@ -3068,6 +3101,96 @@ void EditorDocument::audioPreviewStop() noexcept
 bool EditorDocument::audioPreviewPlaying() const noexcept
 {
     return previewVoice_.isValid() && audioMixer_.isPlaying(previewVoice_);
+}
+
+// =============================================================================
+// Ticks/Camadas (P4.3 — Bloco 2; ADR-051)
+// =============================================================================
+
+Result<std::vector<EditorDocument::LayerInfo>> EditorDocument::layerList()
+    const
+{
+    std::vector<LayerInfo> layers;
+    for (const eng::scene::LayerDefinition& layer :
+         scene_->layers().definitions()) {
+        LayerInfo info;
+        info.name = layer.name;
+        info.timeScale = layer.timeScale;
+        info.update = layer.participation.update;
+        info.physics = layer.participation.physics;
+        info.render = layer.participation.render;
+        layers.push_back(std::move(info));
+    }
+    return layers;
+}
+
+Result<void> EditorDocument::addLayer(std::string_view name)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    if (name.empty()) {
+        return makeUnexpected(documentError(StatusCode::InvalidArgument,
+                                            "nome de camada vazio"));
+    }
+    return scene_->layers().addLayer(name);
+}
+
+Result<void> EditorDocument::setLayerTimeScale(std::string_view name,
+                                               float timeScale)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    if (!std::isfinite(timeScale) || timeScale < 0.f) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "timeScale deve ser finito e >= 0 (0 = camada pausada)"));
+    }
+    auto applied = scene_->layers().setTimeScale(name, timeScale);
+    if (applied.isError()) {
+        return applied;
+    }
+    sceneDirty_ = true;
+    return {};
+}
+
+Result<void> EditorDocument::setLayerParticipation(std::string_view name,
+                                                   bool update, bool physics,
+                                                   bool render)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    eng::scene::LayerParticipation participation;
+    participation.update = update;
+    participation.physics = physics;
+    participation.render = render;
+    auto applied = scene_->layers().setParticipation(name, participation);
+    if (applied.isError()) {
+        return applied;
+    }
+    sceneDirty_ = true;
+    return {};
+}
+
+Result<void> EditorDocument::setPhysicsFixedDt(float fixedDt)
+{
+    auto guard = requireEditMode();
+    if (guard.isError()) {
+        return makeUnexpected(guard.error());
+    }
+    if (!std::isfinite(fixedDt) || fixedDt <= 0.f || fixedDt > 0.25f) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "timestep da física deve ser finito, > 0 e <= 0.25 s"));
+    }
+    physicsAccumulator_.setFixedDt(fixedDt);
+    sceneDirty_ = true;
+    return {};
 }
 
 }  // namespace eng::editor

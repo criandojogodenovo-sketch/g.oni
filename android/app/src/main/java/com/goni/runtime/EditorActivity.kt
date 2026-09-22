@@ -383,6 +383,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolButton("Animação") { togglePanel(PANEL_ANIM) },
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
+        bottomBar.addView(
+            toolButton("Ticks") { togglePanel(PANEL_TICKS) },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
 
         // ---- host de painel (sheet inferior / drawer lateral) ----
         panelHost = FrameLayout(this)
@@ -583,6 +587,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_ASSETS -> "Assets"
             PANEL_SCRIPTS -> "Scripts"
             PANEL_ANIM -> "Animação"
+            PANEL_TICKS -> "Ticks & Camadas"
             else -> ""
         }
         // Cabeçalho do sheet: título + fechar (padrão de drawer moderno).
@@ -618,6 +623,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_ASSETS -> panelContainer.addView(assetsRoot)
             PANEL_SCRIPTS -> buildScriptsPanel()
             PANEL_ANIM -> buildAnimPanel()
+            PANEL_TICKS -> buildTicksPanel()
         }
         panelContainer.visibility = View.VISIBLE
         // P4.3 (N2): altura ADAPTATIVA (viewport atual, teclado incluído) —
@@ -706,7 +712,182 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_ASSETS -> refreshAssets()
             PANEL_SCRIPTS -> refreshScripts()
             PANEL_ANIM -> refreshAnim()
+            PANEL_TICKS -> refreshTicks()
         }
+    }
+
+    // --- P4.3 (Bloco 2): sheet Ticks & Camadas (ADR-051 autorável) -------------
+
+    private data class LayerRow(
+        val name: String,
+        val timeScale: Float,
+        val update: Boolean,
+        val physics: Boolean,
+        val render: Boolean
+    )
+
+    private val tickLayerRows = mutableListOf<LayerRow>()
+    private lateinit var ticksList: ListView
+    private lateinit var physicsDtField: EditText
+
+    private fun buildTicksPanel() {
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bar.addView(
+            toolButton("+ Camada") { addLayerDialog() },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        // Timestep FIXO da física (s) — configura o PhysicsTick do Play.
+        // Aplica no IME_ACTION_DONE (campo vivo — zero UI morta).
+        bar.addView(
+            TextView(this).apply {
+                text = "Dt física (s):"
+                setTextColor(Ui.TEXT_DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setPadding(dp(8), 0, dp(4), 0)
+                gravity = Gravity.CENTER_VERTICAL
+            },
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)
+            )
+        )
+        physicsDtField = EditText(this).apply {
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(fmtFloat(EditorJni.nativeEditorPhysicsDt(handle)))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Ui.TEXT)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            setOnEditorActionListener { _, _, _ ->
+                applyPhysicsDt()
+                true
+            }
+        }
+        bar.addView(physicsDtField, LinearLayout.LayoutParams(dp(84), dp(36)))
+        ticksList = ListView(this).apply {
+            onItemClickListener =
+                AdapterView.OnItemClickListener { _, _, position, _ ->
+                    tickLayerRows.getOrNull(position)?.let { layerEditDialog(it) }
+                }
+        }
+        panelContainer.addView(
+            bar,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        panelContainer.addView(
+            ticksList,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+    }
+
+    private fun refreshTicks() {
+        if (handle == 0L || !::ticksList.isInitialized) return
+        val tsv = EditorJni.nativeEditorLayerList(handle) ?: return
+        tickLayerRows.clear()
+        val display = mutableListOf<String>()
+        for (line in tsv.lines().filter { it.isNotBlank() }) {
+            val p = line.split('\t')
+            val name = p.getOrNull(0) ?: continue
+            val ts = p.getOrNull(1)?.toFloatOrNull() ?: 1f
+            val u = p.getOrNull(2) == "1"
+            val f = p.getOrNull(3) == "1"
+            val r = p.getOrNull(4) == "1"
+            tickLayerRows.add(LayerRow(name, ts, u, f, r))
+            val flags = listOfNotNull(
+                if (u) "update" else null,
+                if (f) "física" else null,
+                if (r) "render" else null
+            ).joinToString(" · ")
+            display.add("$name — timeScale ${fmtFloat(ts)}\n$flags")
+        }
+        ticksList.adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1, display
+        )
+    }
+
+    private fun applyPhysicsDt() {
+        val v = physicsDtField.text.toString().toFloatOrNull()
+        if (v == null) {
+            toast("Valor inválido (ex.: 0.0167)")
+            return
+        }
+        if (!EditorJni.nativeEditorPhysicsSetDt(handle, v)) {
+            toast(lastErrorText())
+        } else {
+            toast("Timestep da física: ${fmtFloat(v)} s")
+        }
+    }
+
+    private fun addLayerDialog() {
+        inputDialog("Nome da camada", "UI") { name ->
+            if (!EditorJni.nativeEditorLayerAdd(handle, name.trim())) {
+                toast(lastErrorText())
+            }
+            refreshTicks()
+        }
+    }
+
+    /** Edita timeScale + participação (update/física/render) da camada —
+     *  toca o estado REAL da LayerRegistry (ADR-051). */
+    private fun layerEditDialog(row: LayerRow) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        container.addView(
+            TextView(this).apply {
+                text = "timeScale (0 = camada pausada)"
+                setTextColor(Ui.TEXT_DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            }
+        )
+        val tsField = EditText(this).apply {
+            setSingleLine()
+            inputType = InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setText(fmtFloat(row.timeScale))
+        }
+        container.addView(tsField)
+        val swUpdate = Switch(this).apply {
+            text = "Participa do UPDATE"
+            isChecked = row.update
+            setTextColor(Ui.TEXT)
+        }
+        val swPhysics = Switch(this).apply {
+            text = "Participa da FÍSICA"
+            isChecked = row.physics
+            setTextColor(Ui.TEXT)
+        }
+        val swRender = Switch(this).apply {
+            text = "Participa do RENDER"
+            isChecked = row.render
+            setTextColor(Ui.TEXT)
+        }
+        container.addView(swUpdate)
+        container.addView(swPhysics)
+        container.addView(swRender)
+        AlertDialog.Builder(this)
+            .setTitle("Camada: ${row.name}")
+            .setView(container)
+            .setPositiveButton("Aplicar") { _, _ ->
+                val ts = tsField.text.toString().toFloatOrNull() ?: Float.NaN
+                if (!EditorJni.nativeEditorLayerSetTimeScale(handle, row.name, ts) ||
+                    !EditorJni.nativeEditorLayerSetParticipation(
+                        handle, row.name,
+                        swUpdate.isChecked, swPhysics.isChecked, swRender.isChecked
+                    )
+                ) {
+                    toast(lastErrorText())
+                }
+                refreshTicks()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun buildHierarchyPanel() {
@@ -3687,6 +3868,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         private const val PANEL_ASSETS = 3
         private const val PANEL_SCRIPTS = 4
         private const val PANEL_ANIM = 5
+        private const val PANEL_TICKS = 6
         private const val REQUEST_IMPORT = 4101
     }
 }
