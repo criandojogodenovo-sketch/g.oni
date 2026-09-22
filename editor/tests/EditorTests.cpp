@@ -7519,3 +7519,54 @@ TEST_CASE("editor: P4.3/Bloco 2 — timestep da física: validar, aplicar e pers
     CHECK(f.doc->addLayer("EmPlay").isError());
     f.doc->stop();
 }
+
+// =============================================================================
+// P4.3 — BLOCO 3: Materiais & Luzes — o authoring de .mat (criar/editar/
+// atribuir, lit/unlit + tint) existe desde o P3 com readback; aqui fica o
+// contrato de DADOS do novo PREVIEW visual da luz no viewport (anel px).
+// =============================================================================
+
+TEST_CASE("editor: P4.3/Bloco 3 — preview de Light2D: dados do marker",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+    f.doc->viewport().setScreenSize(720.f, 1600.f);
+    f.doc->viewport().setUiScale(2.f);
+
+    auto lamp = f.doc->createEntity("Lampada", eng::scene::kNoEntity);
+    REQUIRE(lamp.ok());
+    REQUIRE(f.doc->addComponent(lamp.value(), "eng::render::Light2D").ok());
+    REQUIRE(f.doc->setInspectorField(lamp.value(), "eng::render::Light2D",
+                                     "radius", "3").ok());
+    REQUIRE(f.doc->setInspectorField(lamp.value(), "eng::render::Light2D",
+                                     "intensity", "2").ok());
+
+    const auto quads = f.doc->viewport().buildQuads(*f.doc->sceneInFocus(),
+                                                    f.doc->selection());
+    bool found = false;
+    for (const auto& quad : quads) {
+        if (quad.entity != lamp.value()) {
+            continue;
+        }
+        found = true;
+        CHECK(quad.hasLight);
+        CHECK(quad.lightRadius == Catch::Approx(3.f));
+        CHECK(quad.lightIntensity == Catch::Approx(2.f));
+        // Contrato do marker: raio px = raio mundo × zoom (anel do alcance).
+        CHECK(quad.lightRadius * f.doc->viewport().effectiveCamera().zoom ==
+              Catch::Approx(144.f));
+    }
+    CHECK(found);
+
+    // Luz desligada NÃO desenha marker (nem entra no bloco PerFrame).
+    REQUIRE(f.doc->setInspectorField(lamp.value(), "eng::render::Light2D",
+                                     "enabled", "false").ok());
+    const auto off = f.doc->viewport().buildQuads(*f.doc->sceneInFocus(),
+                                                  f.doc->selection());
+    for (const auto& quad : off) {
+        if (quad.entity == lamp.value()) {
+            CHECK_FALSE(quad.hasLight);
+        }
+    }
+}

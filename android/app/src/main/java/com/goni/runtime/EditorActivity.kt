@@ -2916,7 +2916,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     private fun entityMenuDialog(packed: Long) {
         val items = arrayOf(
-            "Renomear…", "Duplicar", "Apagar", "Adicionar filho…", "Reparent…"
+            "Renomear…", "Duplicar", "Apagar", "Adicionar filho…", "Reparent…",
+            "＋ Luz 2D"
         )
         AlertDialog.Builder(this)
             .setTitle(currentEntityName(packed))
@@ -2943,6 +2944,19 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         if (child == 0L) toast(lastErrorText()) else selectEntity(child)
                     }
                     4 -> reparentDialog(packed)
+                    5 -> {
+                        // P4.3 (Bloco 3): Light2D em 1 toque — o preview do
+                        // alcance aparece no viewport (anel âmbar); cor/
+                        // raio/falloff editáveis no Inspector.
+                        if (!EditorJni.nativeEditorAddComponent(
+                                handle, packed, "eng::render::Light2D")
+                        ) {
+                            toast(lastErrorText())
+                        } else {
+                            selectEntity(packed)
+                            toast("Luz 2D adicionada — veja o anel no viewport")
+                        }
+                    }
                 }
             }
             .show()

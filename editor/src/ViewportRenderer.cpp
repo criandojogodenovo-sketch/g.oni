@@ -715,6 +715,42 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         }
     }
 
+    // --- LUZ 2D (P4.3/Bloco 3 — preview no viewport): o autor VÊ onde a
+    // luz está e QUANTO alcança — anel de raio light*zoom px (círculo
+    // PERFEITO em px pela OverlayMath — a família do N3) + dot central.
+    // A iluminação REAL continua no fragment dos sprites lit (mesma fonte
+    // de dados: EntityQuad.hasLight ← Light2D).
+    {
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr int kSides = 24;
+        const float kLightR = 0.98f, kLightG = 0.87f, kLightB = 0.55f;
+        const float kHalfThickPx = 0.6f;  // 1.2 px constantes
+        for (const EntityQuad& quad : quads) {
+            if (!quad.hasLight) {
+                continue;
+            }
+            const float cx = w2sX(quad.worldX);
+            const float cy = w2sY(quad.worldY);
+            // Alcance em px (mínimo 12px para continuar agarrável visível).
+            const float rPx = std::max(quad.lightRadius * zoom, 12.f);
+            for (int i = 0; i < kSides; ++i) {
+                const float a0 = (2.f * kPi * static_cast<float>(i)) /
+                                 static_cast<float>(kSides);
+                const float a1 = (2.f * kPi * static_cast<float>(i + 1)) /
+                                 static_cast<float>(kSides);
+                pushSegmentPx(frameVertices_, mapper,
+                              cx + rPx * std::cos(a0),
+                              cy + rPx * std::sin(a0),
+                              cx + rPx * std::cos(a1),
+                              cy + rPx * std::sin(a1),
+                              kHalfThickPx, kLightR, kLightG, kLightB);
+            }
+            // Dot central (3px — posição da luz).
+            pushQuadPx(frameVertices_, mapper, cx, cy, 3.f, 3.f, 0.f,
+                       kLightR, kLightG, kLightB);
+        }
+    }
+
     // --- EMISSOR de partículas (P2 §10): marcador editável ------------------
     // Quad roxo + SETA na direção de emissão: o authoring tem feedback
     // visual do que o ParticleTick fará no Play (direção do emitter no
