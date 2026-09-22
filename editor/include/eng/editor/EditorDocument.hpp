@@ -22,6 +22,8 @@
 /// sempre via eng::fs (paths RELATIVOS ao root — §8.1; absolutos são
 /// rejeitados pelo próprio ProjectFile/Path).
 
+#include <chrono>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <array>
@@ -150,8 +152,46 @@ public:
     /// cena vazia; ADR-033).
     [[nodiscard]] eng::core::Result<void> loadScene(std::string_view scenePath);
 
-    // --- Ticks/Camadas (P4.3 — Bloco 2; ADR-051 exposto ao autor) ------------
+    // --- P4.5: undo/redo (command pattern por SNAPSHOTS de cena) ------------
     //
+    // Estratégia: cada operação mutante captura o estado ANTES via
+    // SceneSerializer::save (o MESMO codec do saveScene — round-trip
+    // testado). Isto dá undo/redo CORRETO para create/delete/attach sem
+    // remapeamento de IDs: restaurar recria a cena inteira (IDs novos são
+    // internos — a seleção é limpa com honestidade). Gestos contínuos
+    // (drag de gizmo / move por scroll) coalescem numa ÚNICA entrada por
+    // janela de tempo + label (1 gesto = 1 undo).
+    //
+    // P4.5 restringe o escopo do prompt: move/rotate/scale/create/delete/
+    // attach (+ rename/reparent/componentes/campos que são o mesmo gesto
+    // de autoria). Assets no disco (scripts/materiais) NÃO participam.
+
+    /// Há passos a desfazer?
+    [[nodiscard]] bool canUndo() const noexcept { return !undoStack_.empty(); }
+    /// Há passos a refazer?
+    [[nodiscard]] bool canRedo() const noexcept { return !redoStack_.empty(); }
+    /// Restaura o snapshot anterior (erro explícito em Play/vazio).
+    [[nodiscard]] eng::core::Result<void> undo();
+    /// Restaura o estado anterior a um undo (erro explícito em Play/vazio).
+    [[nodiscard]] eng::core::Result<void> redo();
+
+    // --- P4.5: snap do gizmo (chips da tool sheet) ----------------------------
+
+    /// Snap de TRANSLAÇÃO para a grade (0.5 unidades de mundo).
+    void setSnapTranslate(bool on) noexcept { snapTranslate_ = on; }
+    /// Snap de ROTAÇÃO para múltiplos de 15°.
+    void setSnapRotate(bool on) noexcept { snapRotate_ = on; }
+    [[nodiscard]] bool snapTranslate() const noexcept { return snapTranslate_; }
+    [[nodiscard]] bool snapRotate() const noexcept { return snapRotate_; }
+
+    // --- P4.5: fit do viewport (cluster de zoom) -------------------------------
+
+    /// Enquadra a SELEÇÃO (bounds desenhados reais) ou, sem seleção, a cena
+    /// inteira (AABB dos quads desenhados). Cena vazia → reset (origem,
+    /// zoom default). Erro nunca (cena vazia é caso válido).
+    void viewportFit(class TextureCache* textures);
+
+    // --- Ticks/Camadas (P4.3 — Bloco 2; ADR-051 exposto ao autor) ------------
     // A engine JÁ tem LayerRegistry (timeScale + participação update/física/
     // render por camada) e TimestepAccumulator (física de passo fixo) — nada
     // disso era AUTORÁVEL. A sheet de Ticks toca este estado REAL.
@@ -683,6 +723,36 @@ private:
 
     /// Garantia de modo: TODA escrita de edição passa por aqui.
     [[nodiscard]] eng::core::Result<void> requireEditMode() const;
+
+    // --- P4.5 (internos do histórico) ------------------------------------------
+
+    /// Entrada do histórico: snapshot JSON + rótulo do gesto + instante
+    /// (para coalescer gestos contínuos num único passo de undo).
+    struct HistoryEntry {
+        std::string snapshot;
+        std::string label;
+        std::chrono::steady_clock::time_point time{};
+    };
+    /// Captura o estado ANTES da mutação (chamar NO INÍCIO de cada op
+    /// mutante, após requireEditMode). Coalesce por (label, janela).
+    /// `suppressed` (interno) desliga a captura para ops aninhadas
+    /// (createSprite→createEntity etc. — a entrada entra UMA vez).
+    bool pushHistory(std::string_view label) noexcept;
+    /// Copia a cena atual para JSON (SceneSerializer::save). False em erro
+    /// (log + sem entrada — o undo daquela op não existe; honesto).
+    bool captureScene(std::string& out) noexcept;
+    /// Limpa o histórico (newScene/loadScene/openProject/newProject).
+    void clearHistory() noexcept;
+
+    std::deque<HistoryEntry> undoStack_;
+    std::deque<HistoryEntry> redoStack_;
+    bool suppressHistory_ = false;
+    /// P4.5: undo do GESTO de gizmo — armado no begin, limpo no end
+    /// (drag sem mudança real remove a própria entrada).
+    bool gizmoUndoArmed_ = false;
+    std::uint64_t revisionAtDragBegin_ = 0;
+    bool snapTranslate_ = false;
+    bool snapRotate_ = false;
 
     /// Escrita de campo TRS do Transform pela UI do Inspector (P1.9):
     /// "position.x" | "rotation.y" (GRAUS) | "scale.z" → API TRS — nunca

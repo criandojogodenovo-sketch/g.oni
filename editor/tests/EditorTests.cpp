@@ -7570,3 +7570,329 @@ TEST_CASE("editor: P4.3/Bloco 3 — preview de Light2D: dados do marker",
         }
     }
 }
+
+// =============================================================================
+// P4.5 — undo/redo por snapshots, snap do gizmo, fit do viewport
+// =============================================================================
+
+TEST_CASE("p45: undo/redo de transform (move/rotate/scale) restaura TRS",
+          "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto created = f.doc->createEntity("Hero", eng::scene::kNoEntity);
+    REQUIRE(created.ok());
+    const auto hero = created.value();
+
+    eng::editor::TransformDesc before{};
+    before.position = {1.f, 2.f, 0.f};
+    before.rotationDegrees = {0.f, 0.f, 15.f};
+    before.scale = {2.f, 3.f, 1.f};
+    REQUIRE(f.doc->setTransform(hero, before).ok());
+
+    eng::editor::TransformDesc after{};
+    after.position = {5.f, 7.f, 0.f};
+    after.rotationDegrees = {0.f, 0.f, 45.f};
+    after.scale = {1.f, 1.f, 1.f};
+    REQUIRE(f.doc->setTransform(hero, after).ok());
+    CHECK(f.doc->canUndo());
+
+    // Undo → volta ao estado ANTES do último setTransform.
+    REQUIRE(f.doc->undo().ok());
+    {
+        auto tr = f.doc->transform(hero);
+        // IDs mudaram (cena recriada) — localiza pelo nome.
+        auto nodes = f.doc->hierarchySnapshot();
+        REQUIRE(nodes.size() == 1);
+        auto restored = f.doc->transform(nodes[0].entity);
+        REQUIRE(restored.ok());
+        CHECK(restored.value().position.x == Catch::Approx(1.f));
+        CHECK(restored.value().position.y == Catch::Approx(2.f));
+        CHECK(restored.value().rotationDegrees.z == Catch::Approx(15.f));
+        CHECK(restored.value().scale.y == Catch::Approx(3.f));
+    }
+    CHECK(f.doc->canRedo());
+    // Por-op: resta undo do "create" e do primeiro transform.
+    CHECK(f.doc->canUndo());
+
+    // Redo → volta ao DEPOIS.
+    REQUIRE(f.doc->redo().ok());
+    auto nodes = f.doc->hierarchySnapshot();
+    REQUIRE(nodes.size() == 1);
+    auto redone = f.doc->transform(nodes[0].entity);
+    REQUIRE(redone.ok());
+    CHECK(redone.value().position.x == Catch::Approx(5.f));
+    CHECK(redone.value().rotationDegrees.z == Catch::Approx(45.f));
+}
+
+TEST_CASE("p45: undo de CREATE apaga entidade; redo recria com o mesmo nome",
+          "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto created = f.doc->createSprite("Inimigo");
+    REQUIRE(created.ok());
+    CHECK(f.doc->hierarchySnapshot().size() == 1);
+
+    REQUIRE(f.doc->undo().ok());
+    CHECK(f.doc->hierarchySnapshot().empty());
+
+    REQUIRE(f.doc->redo().ok());
+    auto nodes = f.doc->hierarchySnapshot();
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0].name == "Inimigo");
+}
+
+TEST_CASE("p45: undo de DELETE restaura a SUBÁRVORE (nome + filho)",
+          "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto parent = f.doc->createEntity("Pai", eng::scene::kNoEntity);
+    REQUIRE(parent.ok());
+    auto child = f.doc->createEntity("Filho", parent.value());
+    REQUIRE(child.ok());
+    REQUIRE(f.doc->hierarchySnapshot().size() == 2);
+
+    REQUIRE(f.doc->deleteEntity(parent.value()).ok());
+    CHECK(f.doc->hierarchySnapshot().empty());
+
+    REQUIRE(f.doc->undo().ok());
+    auto nodes = f.doc->hierarchySnapshot();
+    REQUIRE(nodes.size() == 2);
+    CHECK(nodes[0].name == "Pai");
+    CHECK(nodes[1].name == "Filho");
+    CHECK(nodes[1].depth == 1);
+
+    // Redo do delete → subárvore some de novo.
+    REQUIRE(f.doc->redo().ok());
+    CHECK(f.doc->hierarchySnapshot().empty());
+}
+
+TEST_CASE("p45: undo de ATTACH (componente) remove; redo repõe", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Lamp", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    const auto lamp = e.value();
+
+    REQUIRE(f.doc->addComponent(lamp, "eng::render::Light2D").ok());
+    auto comps = f.doc->addableComponents(lamp);
+    // Prova indireta: Light2D não é mais addable (já está lá).
+    for (const auto& meta : comps) {
+        CHECK(meta.name != "eng::render::Light2D");
+    }
+
+    REQUIRE(f.doc->undo().ok());
+    comps = f.doc->addableComponents(f.doc->hierarchySnapshot()[0].entity);
+    bool hasLight = false;
+    for (const auto& meta : comps) {
+        if (meta.name == "eng::render::Light2D") hasLight = true;
+    }
+    CHECK(hasLight);
+
+    REQUIRE(f.doc->redo().ok());
+    comps = f.doc->addableComponents(f.doc->hierarchySnapshot()[0].entity);
+    for (const auto& meta : comps) {
+        CHECK(meta.name != "eng::render::Light2D");
+    }
+}
+
+TEST_CASE("p45: attach de script é 1 passo de undo (create+assign)", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Torreta", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->scriptCreate("Giro").ok());
+    REQUIRE(f.doc->scriptAssign(e.value(), "Giro.nis").ok());
+
+    REQUIRE(f.doc->undo().ok());
+    // Undo do assign: o componente NiScript sai da entidade (estado ANTES
+    // do attach — entidade continuava lá, criada antes).
+    auto nodes = f.doc->hierarchySnapshot();
+    REQUIRE(nodes.size() == 1);
+    auto fields = f.doc->inspectorFields(
+        nodes[0].entity, "eng::editor::NiScriptComponent");
+    CHECK(fields.empty());
+
+    REQUIRE(f.doc->redo().ok());
+    fields = f.doc->inspectorFields(
+        f.doc->hierarchySnapshot()[0].entity,
+        "eng::editor::NiScriptComponent");
+    CHECK_FALSE(fields.empty());
+}
+
+TEST_CASE("p45: gesto contínuo (N moves) = UM passo de undo", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Runner", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    const auto runner = e.value();
+
+    // 60 eventos de move (simula drag contínuo por scroll — 1 s de jogo).
+    for (int i = 0; i < 60; ++i) {
+        REQUIRE(f.doc->moveEntityScreen(runner, 1.0f, 0.f).ok());
+    }
+    // Coalescência: os 60 eventos dentro da janela = 1 entrada "move".
+    REQUIRE(f.doc->undo().ok());
+    // 1º undo desfaz O GESTO INTEIRO (voltou à origem) — a criação
+    // (passo próprio) ainda está no histórico.
+    {
+        auto nodes = f.doc->hierarchySnapshot();
+        REQUIRE(nodes.size() == 1);
+        auto restored = f.doc->transform(nodes[0].entity);
+        REQUIRE(restored.ok());
+        CHECK(restored.value().position.x == Catch::Approx(0.f).margin(1e-4));
+    }
+    CHECK(f.doc->canUndo());  // resta o passo "create"
+}
+
+TEST_CASE("p45: undo em Play é recusado com erro explícito", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("A", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->canUndo());
+    REQUIRE(f.doc->play().ok());
+    auto undone = f.doc->undo();
+    REQUIRE(undone.isError());
+    CHECK(f.doc->isPlaying());  // estado do Play intacto
+    f.doc->stop();
+}
+
+TEST_CASE("p45: loadScene/newScene limpam o histórico", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Temp", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->canUndo());
+    REQUIRE(f.doc->newScene().ok());
+    CHECK_FALSE(f.doc->canUndo());
+    CHECK_FALSE(f.doc->canRedo());
+
+    // loadScene também (caminho de restore do openProject).
+    REQUIRE(f.doc->createEntity("Temp2", eng::scene::kNoEntity).ok());
+    REQUIRE(f.doc->saveScene("hist.json").ok());
+    REQUIRE(f.doc->createEntity("Depois", eng::scene::kNoEntity).ok());
+    REQUIRE(f.doc->canUndo());
+    REQUIRE(f.doc->loadScene("hist.json").ok());
+    CHECK_FALSE(f.doc->canUndo());
+}
+
+TEST_CASE("p45: histórico respeita o limite (kHistoryMax)", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    // 50 renames > kHistoryMax (40) — o stack satura sem crescer infinito.
+    auto e = f.doc->createEntity("N", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    const auto target = e.value();
+    for (int i = 0; i < 50; ++i) {
+        REQUIRE(f.doc->renameEntity(target, "Nome" + std::to_string(i)).ok());
+    }
+    CHECK(f.doc->canUndo());
+    // Desfaz os 40 guardados; depois esgota com erro explícito.
+    int steps = 0;
+    while (f.doc->canUndo()) {
+        REQUIRE(f.doc->undo().ok());
+        ++steps;
+        if (steps > 45) FAIL("histórico passou do limite");
+    }
+    CHECK(steps <= 40);
+    auto undone = f.doc->undo();
+    REQUIRE(undone.isError());
+}
+
+TEST_CASE("p45: snap de translação e rotação no gizmo", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createSprite("Box");
+    REQUIRE(e.ok());
+    const auto box = e.value();
+
+    f.doc->setSnapTranslate(true);
+    f.doc->setSnapRotate(true);
+    CHECK(f.doc->snapTranslate());
+    CHECK(f.doc->snapRotate());
+
+    f.doc->setTool(eng::editor::EditorTool::Move);
+    REQUIRE(f.doc->select(box).ok());
+    // Drag do gizmo: começa no corpo da entidade (handle centro) e arrasta
+    // para uma posição FORA da grade — o alvo deve cair na grade de 0.5.
+    f.doc->viewport().setScreenSize(720.f, 1600.f);
+    const auto handle =
+        f.doc->gizmoDragBegin(360.f, 800.f, nullptr);
+    REQUIRE(handle != eng::editor::GizmoHandle::None);
+    REQUIRE(f.doc->gizmoDragTo(400.f, 830.f).ok());
+    f.doc->gizmoDragEnd();
+    {
+        auto tr = f.doc->transform(box);
+        REQUIRE(tr.ok());
+        // O alvo cai na GRADE: múltiplo de 0.5 unidades de mundo.
+        CHECK(std::fmod(std::abs(tr.value().position.x), 0.5f) ==
+              Catch::Approx(0.f).margin(1e-4));
+        CHECK(std::fmod(std::abs(tr.value().position.y), 0.5f) ==
+              Catch::Approx(0.f).margin(1e-4));
+    }
+
+    // Rotação: tool Rotate, drag grande → ângulo é múltiplo de 15°.
+    f.doc->setTool(eng::editor::EditorTool::Rotate);
+    const auto ring = f.doc->gizmoDragBegin(360.f, 800.f, nullptr);
+    if (ring != eng::editor::GizmoHandle::None) {
+        REQUIRE(f.doc->gizmoDragTo(360.f + 200.f, 800.f).ok());
+        f.doc->gizmoDragEnd();
+        auto tr = f.doc->transform(box);
+        REQUIRE(tr.ok());
+        const float deg = tr.value().rotationDegrees.z;
+        // Snap: ângulo múltiplo exato de 15° (float-safe — round-trip
+        // quat degrada ~1e-5).
+        // remainder() normaliza ao múltiplo de 15° mais próximo
+        // (150°, -30°, 15° — qualquer k*15 passa).
+        CHECK(std::remainder(deg, 15.f) == Catch::Approx(0.f).margin(0.01f));
+    }
+    f.doc->setSnapTranslate(false);
+    f.doc->setSnapRotate(false);
+    CHECK_FALSE(f.doc->snapTranslate());
+    CHECK_FALSE(f.doc->snapRotate());
+}
+
+TEST_CASE("p45: viewportFit enquadra a cena (e a seleção)", "[p45]")
+{
+    DocFixture f;
+    f.withProject();
+    f.doc->viewport().setScreenSize(720.f, 1600.f);
+
+    // Cena vazia → reset honesto (sem crash).
+    f.doc->viewportFit(nullptr);
+    CHECK(f.doc->viewport().camera().zoom == Catch::Approx(48.f));
+
+    auto a = f.doc->createSprite("A");
+    REQUIRE(a.ok());
+    auto b = f.doc->createSprite("B");
+    REQUIRE(b.ok());
+    // Entidades longe: sprite default 1×1 em (0,0) e (60, 0).
+    eng::editor::TransformDesc far{};
+    far.position = {60.f, 0.f, 0.f};
+    REQUIRE(f.doc->setTransform(b.value(), far).ok());
+
+    // Sem seleção → enquadra a CENA inteira: câmera vai para o meio.
+    (void)f.doc->select(eng::scene::kNoEntity);
+    f.doc->viewportFit(nullptr);
+    const auto& cam = f.doc->viewport().camera();
+    CHECK(cam.posX == Catch::Approx(30.f).margin(0.5f));
+    // Zoom cabe os ~61 unidades de largura em 720px (com margem 25%).
+    CHECK(cam.zoom < 720.f / (61.f * 1.25f) + 1.f);
+    CHECK(cam.zoom >= eng::editor::Viewport::kMinZoom);
+
+    // Com SELEÇÃO → enquadra só a selecionada (zoom volta a crescer).
+    REQUIRE(f.doc->select(a.value()).ok());
+    f.doc->viewportFit(nullptr);
+    CHECK(f.doc->viewport().camera().posX == Catch::Approx(0.f).margin(0.1f));
+    CHECK(f.doc->viewport().camera().zoom > 48.f);
+}

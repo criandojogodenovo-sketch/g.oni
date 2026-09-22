@@ -2448,3 +2448,96 @@ Java_com_goni_runtime_EditorJni_nativeEditorListMaterials(JNIEnv* env,
 }
 
 }  // extern "C"
+
+// --- P4.5: snap do gizmo / fit do viewport / undo-redo ---------------------
+
+JNIEXPORT void JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetSnap(JNIEnv* /*env*/,
+                                                    jobject /*thiz*/,
+                                                    jlong handle,
+                                                    jboolean translate,
+                                                    jboolean rotate)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host != nullptr) {
+        host->document().setSnapTranslate(translate == JNI_TRUE);
+        host->document().setSnapRotate(rotate == JNI_TRUE);
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGetSnapTranslate(JNIEnv* /*env*/,
+                                                             jobject /*thiz*/,
+                                                             jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr && host->document().snapTranslate() ? JNI_TRUE
+                                                               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGetSnapRotate(JNIEnv* /*env*/,
+                                                          jobject /*thiz*/,
+                                                          jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr && host->document().snapRotate() ? JNI_TRUE
+                                                            : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorViewportFit(JNIEnv* /*env*/,
+                                                        jobject /*thiz*/,
+                                                        jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    host->document().viewportFit(&host->textureCache());
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorCanUndo(JNIEnv* /*env*/,
+                                                    jobject /*thiz*/,
+                                                    jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr && host->document().canUndo() ? JNI_TRUE
+                                                         : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorCanRedo(JNIEnv* /*env*/,
+                                                    jobject /*thiz*/,
+                                                    jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    return host != nullptr && host->document().canRedo() ? JNI_TRUE
+                                                         : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorUndo(JNIEnv* /*env*/,
+                                                 jobject /*thiz*/,
+                                                 jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    return host->document().undo().ok() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorRedo(JNIEnv* /*env*/,
+                                                 jobject /*thiz*/,
+                                                 jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    return host->document().redo().ok() ? JNI_TRUE : JNI_FALSE;
+}

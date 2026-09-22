@@ -41,6 +41,12 @@ using eng::core::Result;
 using eng::core::StatusCode;
 using eng::core::makeUnexpected;
 
+// P4.5 — histórico/snap (constantes do documento)
+constexpr std::size_t kHistoryMax = 40;            ///< passos guardados
+constexpr float kHistoryCoalesceSec = 1.2f;        ///< janela de 1 gesto
+constexpr float kSnapTranslateStep = 0.5f;         ///< grade (mundo)
+constexpr float kSnapRotateDeg = 15.f;             ///< ângulo do snap
+
 ENG_LOG_CATEGORY("editor");
 
 [[nodiscard]] Error documentError(StatusCode code, std::string message)
@@ -623,6 +629,7 @@ Result<void> EditorDocument::newScene()
         return makeUnexpected(documentError(
             StatusCode::InvalidState, "cena é somente-leitura em Play"));
     }
+    clearHistory();  // P4.5: nova cena = novo documento de undo
     scene_.emplace(); // constrói in place (Scene não é movível — ADR-025)
     selection_.reset();
     sceneDirty_ = false;
@@ -775,6 +782,7 @@ Result<eng::ecs::Entity> EditorDocument::createEntity(
     if (guard.isError()) {
         return makeUnexpected(guard.error());
     }
+    pushHistory("create");
     const eng::ecs::Entity entity = scene_->createNode();
     auto placed = scene_->world().emplace<eng::scene::Name>(
         entity, eng::scene::Name{name.empty() ? "Entity" : std::string(name)});
@@ -804,6 +812,7 @@ Result<void> EditorDocument::deleteEntity(eng::ecs::Entity entity)
         return makeUnexpected(documentError(StatusCode::NotFound,
                                            "entidade obsoleta"));
     }
+    pushHistory("delete");
     if (!scene_->destroyNode(entity)) {
         return makeUnexpected(
             documentError(StatusCode::Internal, "destroyNode falhou"));
@@ -827,6 +836,7 @@ Result<void> EditorDocument::renameEntity(eng::ecs::Entity entity,
         return makeUnexpected(
             documentError(StatusCode::InvalidArgument, "nome vazio"));
     }
+    pushHistory("rename");
     auto* current = scene_->world().get<eng::scene::Name>(entity);
     if (current == nullptr) {
         current = scene_->world().emplace<eng::scene::Name>(
@@ -872,6 +882,7 @@ Result<eng::ecs::Entity> EditorDocument::duplicateEntity(
         cloneName = originalName + "2";
     }
 
+    pushHistory("create");
     // Mapa velho→novo preservando a hierarquia.
     std::unordered_map<eng::ecs::Entity, eng::ecs::Entity> remap;
     for (const eng::ecs::Entity source : subtree) {
@@ -934,6 +945,7 @@ Result<void> EditorDocument::reparentEntity(eng::ecs::Entity entity,
         return makeUnexpected(documentError(StatusCode::InvalidArgument,
                                            "novo pai obsoleto"));
     }
+    pushHistory("reparent");
     if (parent == eng::scene::kNoEntity) {
         // Raiz = detach (Scene::attach exige pai válido; já-raiz é no-op).
         if (!scene_->detach(entity) &&
@@ -977,6 +989,11 @@ Result<void> EditorDocument::setTransform(eng::ecs::Entity entity,
     if (local == nullptr) {
         return makeUnexpected(documentError(StatusCode::NotFound,
                                            "entidade obsoleta"));
+    }
+    if (!gizmo_.dragging()) {
+        // Drag do gizmo captura no BEGIN (1 gesto = 1 undo); fora de
+        // drag (Inspector TRS, applyTransform) cada apply = 1 passo.
+        pushHistory("transform");
     }
     local->position = desc.position;
     local->rotation = quatFromDegrees(desc.rotationDegrees);
@@ -1117,6 +1134,9 @@ GizmoHandle EditorDocument::gizmoDragBegin(float screenX, float screenY,
     start.rotationDeg = transform.value().rotationDegrees.z;
     start.scaleX = transform.value().scale.x;
     start.scaleY = transform.value().scale.y;
+    pushHistory("transform");       // 1 gesto de gizmo = 1 undo
+    gizmoUndoArmed_ = true;         // limpeza de no-op no end
+    revisionAtDragBegin_ = selectionRevision_;
     gizmo_.beginDrag(handle, start, viewport_, bounds, screenX, screenY);
 
     // Contexto do drag (vivo até gizmoDragEnd): mesmas texturas do begin
@@ -1147,8 +1167,21 @@ Result<void> EditorDocument::gizmoDragTo(float screenX, float screenY)
         return makeUnexpected(
             documentError(StatusCode::NotFound, "entidade obsoleta"));
     }
-    const GizmoTransform target =
-        gizmo_.dragTo(viewport_, bounds, screenX, screenY);
+    GizmoTransform target = gizmo_.dragTo(viewport_, bounds, screenX, screenY);
+    // P4.5 (chips de snap da tool sheet): translação → grade de 0.5
+    // unidades; rotação → múltiplos de 15°. Aplica ao ALVO EM MUNDO
+    // (raiz: posição local == mundo; filho: snap é aproximação — a
+    // inversa do pai preserva o resto do gesto).
+    if (snapTranslate_) {
+        target.posX = std::round(target.posX / kSnapTranslateStep) *
+                      kSnapTranslateStep;
+        target.posY = std::round(target.posY / kSnapTranslateStep) *
+                      kSnapTranslateStep;
+    }
+    if (snapRotate_) {
+        target.rotationDeg = std::round(target.rotationDeg / kSnapRotateDeg) *
+                             kSnapRotateDeg;
+    }
 
     // Aplica ao ECS REAL. R2 (bug §5): o alvo do MOVE está em MUNDO —
     // converte o delta pela INVERSA do pai (raiz: identidade). Somar o
@@ -1183,6 +1216,14 @@ void EditorDocument::gizmoDragEnd() noexcept
     gizmo_.endDrag();
     dragTextures_ = nullptr;     // contexto do drag morre com o drag (§5)
     dragParentInv_ = {1.f, 0.f, 0.f, 1.f};
+    if (gizmoUndoArmed_) {
+        gizmoUndoArmed_ = false;
+        // Toque no handle sem arrastar (ou drag falhou): a entrada era
+        // no-op — sai do histórico (undo não vira "passo fantasma").
+        if (selectionRevision_ == revisionAtDragBegin_ && !undoStack_.empty()) {
+            undoStack_.pop_back();
+        }
+    }
 }
 
 /// Inversa 2x2 da parte LINEAR do world matrix do PAI (identidade na
@@ -1250,7 +1291,10 @@ Result<eng::ecs::Entity> EditorDocument::createSprite(std::string_view name)
             }
         }
     }
+    pushHistory("create");
+    suppressHistory_ = true;   // createEntity aninhado não duplica entrada
     auto entity = createEntity(base, eng::scene::kNoEntity);
+    suppressHistory_ = false;
     if (entity.isError()) {
         return makeUnexpected(entity.error());
     }
@@ -1309,6 +1353,7 @@ Result<void> EditorDocument::setInspectorField(eng::ecs::Entity entity,
     if (component == "eng::math::Transform") {
         return setTransformField(entity, fieldPath, value);
     }
+    pushHistory("field");
     auto written =
         Inspector::setField(*scene_, entity, component, fieldPath, value);
     if (written.isError()) {
@@ -1414,6 +1459,7 @@ Result<void> EditorDocument::addComponent(eng::ecs::Entity entity,
     if (guard.isError()) {
         return makeUnexpected(guard.error());
     }
+    pushHistory("component");
     auto added = Inspector::addComponent(*scene_, entity, component);
     if (added.isError()) {
         return makeUnexpected(added.error());
@@ -1430,6 +1476,7 @@ Result<void> EditorDocument::removeComponent(eng::ecs::Entity entity,
     if (guard.isError()) {
         return makeUnexpected(guard.error());
     }
+    pushHistory("remove");
     auto removed = Inspector::removeComponent(*scene_, entity, component);
     if (removed.isError()) {
         return makeUnexpected(removed.error());
@@ -1505,7 +1552,10 @@ EditorDocument::addComponentWithDependencies(eng::ecs::Entity entity,
     if (guard.isError()) {
         return makeUnexpected(guard.error());
     }
+    pushHistory("component");
+    suppressHistory_ = true;  // o addComponent aninhado não duplica entrada
     auto added = addComponent(entity, component);
+    suppressHistory_ = false;
     if (added.isError()) {
         return makeUnexpected(added.error());
     }
@@ -1926,6 +1976,9 @@ Result<void> EditorDocument::moveEntityScreen(eng::ecs::Entity entity,
     // P2 (bug §5 R2): mesmo fixo do gizmo — delta de MUNDO convertido
     // para o espaço LOCAL do pai (filho de pai girado/escalado segue o
     // eixo de TELA, não o eixo local do pai).
+    if (mode_ == Mode::Edit) {
+        pushHistory("move");
+    }
     const std::array<float, 4> inv = parentInverse2D(focusEntity);
     local->position.x += inv[0] * worldDx + inv[1] * worldDy;
     local->position.y += inv[2] * worldDx + inv[3] * worldDy;
@@ -2251,6 +2304,7 @@ Result<void> EditorDocument::scriptAssign(eng::ecs::Entity entity,
     if (content.isError()) {
         return makeUnexpected(content.error());
     }
+    pushHistory("attach");
     // Caminho pelo catálogo ÚNICO (mesma via do Inspector): componente
     // presente → escreve source; ausente → adiciona default e escreve.
     if (!scene_->world().has<eng::editor::NiScriptComponent>(entity)) {
@@ -2718,6 +2772,7 @@ Result<void> EditorDocument::animationAssign(eng::ecs::Entity entity,
     }
     const std::string clipName = decoded.value().clip.name;
 
+    pushHistory("attach");
     // Componente Animator (adiciona default quando ausente — §14).
     if (!scene_->world().has<eng::animation::Animator>(entity)) {
         auto added = Inspector::addComponent(
@@ -3191,6 +3246,240 @@ Result<void> EditorDocument::setPhysicsFixedDt(float fixedDt)
     physicsAccumulator_.setFixedDt(fixedDt);
     sceneDirty_ = true;
     return {};
+}
+
+
+// =============================================================================
+// P4.5 — undo/redo por SNAPSHOTS de cena + fit do viewport
+// =============================================================================
+
+// NOT const: SceneSerializer::save recebe Scene& (canonicaliza IDs —
+// o MESMO caminho do saveScene; capturar é um efeito documentado).
+bool EditorDocument::captureScene(std::string& out) noexcept
+{
+    if (!scene_.has_value()) {
+        return false;
+    }
+    auto saved = eng::scene::SceneSerializer::save(*scene_);
+    if (saved.isError()) {
+        ENG_WARN("histórico: serialização falhou: {}", saved.error().message);
+        return false;
+    }
+    out = std::move(saved.value());
+    return true;
+}
+
+bool EditorDocument::pushHistory(std::string_view label) noexcept
+{
+    if (suppressHistory_) {
+        return false;  // op aninhada (createSprite→createEntity etc.)
+    }
+    if (mode_ != Mode::Edit || !scene_.has_value()) {
+        return false;
+    }
+    std::string snapshot;
+    if (!captureScene(snapshot)) {
+        return false;  // sem snapshot → sem undo desta op (honesto)
+    }
+    const auto now = std::chrono::steady_clock::now();
+    // Coalescência SÓ do gesto "move" (stream de scroll sem begin/end):
+    // eventos dentro da janela renovam o instante (1 gesto = 1 undo).
+    // Todas as outras ops capturam a PRÓPRIA entrada (editar A e B
+    // seguidos = 2 undos — cada apply do autor é um passo).
+    if (label == "move" && !undoStack_.empty() &&
+        undoStack_.back().label == label) {
+        const auto dt = std::chrono::duration<float>(
+            now - undoStack_.back().time).count();
+        if (dt < kHistoryCoalesceSec) {
+            undoStack_.back().time = now;
+            redoStack_.clear();
+            return true;
+        }
+    }
+    undoStack_.push_back(
+        HistoryEntry{std::move(snapshot), std::string(label), now});
+    while (undoStack_.size() > kHistoryMax) {
+        undoStack_.pop_front();
+    }
+    redoStack_.clear();
+    return true;
+}
+
+void EditorDocument::clearHistory() noexcept
+{
+    undoStack_.clear();
+    redoStack_.clear();
+}
+
+Result<void> EditorDocument::undo()
+{
+    if (mode_ == Mode::Play) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidState, "undo indisponível em Play"));
+    }
+    if (undoStack_.empty()) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nada a desfazer"));
+    }
+    // 1. Estado ATUAL vai para o redo (best-effort).
+    std::string currentState;
+    const bool haveRedo = captureScene(currentState);
+    // 2. Restaura o ANTES (valida o JSON ANTES de tocar na cena).
+    HistoryEntry entry = std::move(undoStack_.back());
+    undoStack_.pop_back();
+    auto preparse = eng::serial::parseJson(entry.snapshot);
+    if (preparse.isError()) {
+        undoStack_.push_back(std::move(entry));  // devolve: nada mudou
+        return makeUnexpected(documentError(
+            StatusCode::Internal, "snapshot ilegível (bug)"));
+    }
+    scene_.emplace();  // cena limpa (não-movível — ADR-025); layers voltam
+                       // pelo próprio snapshot (secção "layers")
+    auto applied = eng::scene::SceneSerializer::load(*scene_, entry.snapshot);
+    if (applied.isError()) {
+        // Snapshot autogerado — caminho de bug; erro EXPLÍCITO (nunca
+        // silêncio), cena vazia + histórico intacto para diagnóstico.
+        selection_.reset();
+        ++selectionRevision_;
+        sceneDirty_ = true;
+        gizmoDragEnd();
+        previewStop();
+        return makeUnexpected(documentError(
+            StatusCode::Internal,
+            "restaurar snapshot falhou: " + applied.error().message));
+    }
+    if (haveRedo) {
+        redoStack_.push_back(HistoryEntry{
+            std::move(currentState), entry.label,
+            std::chrono::steady_clock::now()});
+        while (redoStack_.size() > kHistoryMax) {
+            redoStack_.pop_front();
+        }
+    }
+    // IDs mudaram (cena recriada) — seleção morre com honestidade.
+    gizmoDragEnd();
+    previewStop();
+    selection_.reset();
+    ++selectionRevision_;
+    sceneDirty_ = true;
+    return {};
+}
+
+Result<void> EditorDocument::redo()
+{
+    if (mode_ == Mode::Play) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidState, "redo indisponível em Play"));
+    }
+    if (redoStack_.empty()) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                            "nada a refazer"));
+    }
+    std::string currentState;
+    const bool haveUndo = captureScene(currentState);
+    HistoryEntry entry = std::move(redoStack_.back());
+    redoStack_.pop_back();
+    auto preparse = eng::serial::parseJson(entry.snapshot);
+    if (preparse.isError()) {
+        redoStack_.push_back(std::move(entry));
+        return makeUnexpected(documentError(
+            StatusCode::Internal, "snapshot ilegível (bug)"));
+    }
+    scene_.emplace();
+    auto applied = eng::scene::SceneSerializer::load(*scene_, entry.snapshot);
+    if (applied.isError()) {
+        selection_.reset();
+        ++selectionRevision_;
+        sceneDirty_ = true;
+        gizmoDragEnd();
+        previewStop();
+        return makeUnexpected(documentError(
+            StatusCode::Internal,
+            "restaurar snapshot falhou: " + applied.error().message));
+    }
+    if (haveUndo) {
+        undoStack_.push_back(HistoryEntry{
+            std::move(currentState), entry.label,
+            std::chrono::steady_clock::now()});
+        while (undoStack_.size() > kHistoryMax) {
+            undoStack_.pop_front();
+        }
+    }
+    gizmoDragEnd();
+    previewStop();
+    selection_.reset();
+    ++selectionRevision_;
+    sceneDirty_ = true;
+    return {};
+}
+
+void EditorDocument::viewportFit(TextureCache* textures)
+{
+    if (mode_ != Mode::Edit || !scene_.has_value()) {
+        return;
+    }
+    // AABB dos quads DESENHADOS (mesma fórmula do renderer/bounds —
+    // textura/ppu quando resolvível; sem textura → quad da escala).
+    float minX = 0.f, minY = 0.f, maxX = 0.f, maxY = 0.f;
+    bool any = false;
+    auto quads = viewport_.buildQuads(*scene_, selection_);
+    for (const EntityQuad& quad : quads) {
+        // Com seleção: só a selecionada; sem: a cena inteira.
+        if (selection_.has_value() && quad.entity != *selection_) {
+            continue;
+        }
+        float halfW = quad.sizeX * 0.5f;
+        float halfH = quad.sizeY * 0.5f;
+        if (!quad.textureAsset.empty() && textures != nullptr &&
+            assets_ != nullptr) {
+            const auto info = textures->imageInfo(*assets_, quad.textureAsset);
+            if (info.valid) {
+                const float regionPx =
+                    static_cast<float>(info.width) * (quad.u1 - quad.u0);
+                const float regionPy =
+                    static_cast<float>(info.height) * (quad.v1 - quad.v0);
+                const float ppu =
+                    quad.spritePpu > 0.f ? quad.spritePpu : 1.f;
+                halfW = quad.sizeX * regionPx / ppu * 0.5f;
+                halfH = quad.sizeY * regionPy / ppu * 0.5f;
+            }
+        }
+        // AABB conservador do quad RODADO (expande pelos eixos).
+        const float c = std::abs(std::cos(quad.rotation));
+        const float s = std::abs(std::sin(quad.rotation));
+        const float ex = c * halfW + s * halfH;
+        const float ey = s * halfW + c * halfH;
+        if (!any) {
+            minX = quad.worldX - ex; maxX = quad.worldX + ex;
+            minY = quad.worldY - ey; maxY = quad.worldY + ey;
+            any = true;
+        } else {
+            minX = std::min(minX, quad.worldX - ex);
+            maxX = std::max(maxX, quad.worldX + ex);
+            minY = std::min(minY, quad.worldY - ey);
+            maxY = std::max(maxY, quad.worldY + ey);
+        }
+    }
+    auto& cam = viewport_.camera();
+    if (!any) {
+        // Cena vazia: reset honesto (origem, zoom de fábrica).
+        cam.posX = 0.f;
+        cam.posY = 0.f;
+        cam.zoom = 48.f;
+        ++selectionRevision_;
+        return;
+    }
+    // Margem de 25% para o conteúdo respirar (não colado nas arestas).
+    const float halfW = std::max((maxX - minX) * 0.5f * 1.25f, 0.5f);
+    const float halfH = std::max((maxY - minY) * 0.5f * 1.25f, 0.5f);
+    const float screenW = viewport_.screenWidth();
+    const float screenH = viewport_.screenHeight();
+    const float zoom = std::min(screenW / (2.f * halfW),
+                                screenH / (2.f * halfH));
+    cam.posX = (minX + maxX) * 0.5f;
+    cam.posY = (minY + maxY) * 0.5f;
+    cam.zoom = std::clamp(zoom, Viewport::kMinZoom, Viewport::kMaxZoom);
+    ++selectionRevision_;  // Inspector/viewport sincronizam
 }
 
 }  // namespace eng::editor

@@ -147,6 +147,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     internal var importButton: android.widget.Button? = null
     internal var importTmpDir: File? = null
 
+    // P4.5 (Bloco B/C): zoom cluster, undo/redo FABs, snap chips.
+    internal var zoomCluster: LinearLayout? = null
+    internal var undoCluster: LinearLayout? = null
+    private var btnUndo: TextView? = null
+    private var btnRedo: TextView? = null
+    private var snapGradeChip: TextView? = null
+    private var snapAngleChip: TextView? = null
+
     // --- ciclo de vida ---------------------------------------------------------
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -327,7 +335,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        val chromeRow = FrameLayout(this)
+        val chromeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
 
         // Tool switcher — segmented pill flutuante (§2), thumb zone.
         val toolPill = LinearLayout(this).apply {
@@ -351,10 +362,33 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolPill.addView(seg, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(40), 1f))
         }
-        chromeRow.addView(toolPill, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER
+        chromeRow.addView(toolPill, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
         ))
+
+        // Snap chips (§2 — toggleáveis): grade 0.5u / ângulo 15°.
+        val snapRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = Oni.pill(this@EditorActivity, 0xE61A2029.toInt())
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        snapGradeChip = Oni.chip(this, "Grade", textSizeSp = 11f).apply {
+            minimumHeight = dp(36)
+            setOnClickListener { toggleSnap(translate = true) }
+        }
+        snapAngleChip = Oni.chip(this, "15°", mono = true, textSizeSp = 11f).apply {
+            minimumHeight = dp(36)
+            setOnClickListener { toggleSnap(translate = false) }
+        }
+        snapRow.addView(snapGradeChip, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+        snapRow.addView(snapAngleChip, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+        chromeRow.addView(snapRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(6) })
 
         // Tab bar card (§2): ativa = pill filled acento.
         val tabCard = LinearLayout(this).apply {
@@ -421,6 +455,51 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+        // P4.5 (§2): zoom cluster pill vertical bottom-left (+/−/fit).
+        zoomCluster = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Oni.pill(this@EditorActivity, 0xF21A2029.toInt())
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        fun zoomChip(label: String, monoGlyph: Boolean, onClick: () -> Unit): TextView =
+            Oni.chip(this, label, mono = monoGlyph, textSizeSp = 16f).apply {
+                minimumWidth = dp(44)
+                setOnClickListener { onClick() }
+            }
+        zoomCluster?.addView(zoomChip("+", true) { zoomBy(1.25f) },
+            LinearLayout.LayoutParams(dp(44), dp(44)))
+        zoomCluster?.addView(zoomChip("−", true) { zoomBy(0.8f) },
+            LinearLayout.LayoutParams(dp(44), dp(44)))
+        zoomCluster?.addView(zoomChip("⛶", false) { fitViewport() },
+            LinearLayout.LayoutParams(dp(44), dp(44)))
+        root.addView(zoomCluster, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.START
+        ).apply { setMargins(dp(10), 0, 0, dp(178)) })
+
+        // P4.5 (§2): undo/redo — FABs circulares bottom-right (command
+        // pattern NATIVO — snapshots de cena; disabled sem histórico).
+        undoCluster = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        btnUndo = Oni.button(this, "↶", kind = Oni.BTN_GHOST, textSizeSp = 18f).apply {
+            minimumWidth = dp(48)
+            setOnClickListener { runUndo() }
+        }
+        btnRedo = Oni.button(this, "↷", kind = Oni.BTN_GHOST, textSizeSp = 18f).apply {
+            minimumWidth = dp(48)
+            setOnClickListener { runRedo() }
+        }
+        undoCluster?.addView(btnUndo, LinearLayout.LayoutParams(dp(48), dp(48)))
+        undoCluster?.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
+        undoCluster?.addView(btnRedo, LinearLayout.LayoutParams(dp(48), dp(48)))
+        root.addView(undoCluster, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.END
+        ).apply { setMargins(0, 0, dp(10), dp(178)) })
+
         root.addView(
             panelHost,
             FrameLayout.LayoutParams(
@@ -511,6 +590,90 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         updatePanelPlacement()
         updateToolSegments()
         updateTabStates()
+        zoomCluster?.visibility = View.VISIBLE
+        undoCluster?.visibility = View.VISIBLE
+        syncSnapChips()
+        updateUndoRedo()
+    }
+
+    /** Zoom por botão (cluster): fator no CENTRO do viewport. */
+    private fun zoomBy(factor: Float) {
+        if (handle == 0L) return
+        val cx = surfaceView.width * 0.5f
+        val cy = surfaceView.height * 0.5f
+        EditorJni.nativeEditorViewportZoom(handle, factor, cx, cy)
+    }
+
+    /** Fit: enquadra a seleção (ou a cena inteira) — chamada nativa. */
+    private fun fitViewport() {
+        if (handle == 0L) return
+        if (!EditorJni.nativeEditorViewportFit(handle)) {
+            toastErr(lastErrorText())
+        }
+    }
+
+    /** Chip de snap → nativo (fonte de verdade: o documento). */
+    private fun toggleSnap(translate: Boolean) {
+        if (handle == 0L) return
+        if (translate) {
+            EditorJni.nativeEditorSetSnap(
+                handle, !EditorJni.nativeEditorGetSnapTranslate(handle),
+                EditorJni.nativeEditorGetSnapRotate(handle))
+        } else {
+            EditorJni.nativeEditorSetSnap(
+                handle, EditorJni.nativeEditorGetSnapTranslate(handle),
+                !EditorJni.nativeEditorGetSnapRotate(handle))
+        }
+        syncSnapChips()
+    }
+
+    private fun syncSnapChips() {
+        if (handle == 0L || snapGradeChip == null) return
+        val g = EditorJni.nativeEditorGetSnapTranslate(handle)
+        val r = EditorJni.nativeEditorGetSnapRotate(handle)
+        snapGradeChip?.setTextColor(if (g) Oni.ACCENT else Oni.TEXT_DIM)
+        snapAngleChip?.setTextColor(if (r) Oni.ACCENT else Oni.TEXT_DIM)
+        snapGradeChip?.background =
+            if (g) Oni.ripplePill(this, 0x2E8AB4F8.toInt()) else Oni.rippleOnly(this)
+        snapAngleChip?.background =
+            if (r) Oni.ripplePill(this, 0x2E8AB4F8.toInt()) else Oni.rippleOnly(this)
+    }
+
+    /** Undo (FAB): restaura o snapshot anterior — erros explícitos. */
+    private fun runUndo() {
+        if (handle == 0L) return
+        if (EditorJni.nativeEditorUndo(handle)) {
+            selection = 0L  // IDs mudaram — seleção morre honestamente
+            refreshAll()
+            refreshPanel()
+            toast("Desfeito")
+        } else {
+            toastErr(lastErrorText())
+        }
+        updateUndoRedo()
+    }
+
+    private fun runRedo() {
+        if (handle == 0L) return
+        if (EditorJni.nativeEditorRedo(handle)) {
+            selection = 0L
+            refreshAll()
+            refreshPanel()
+            toast("Refeito")
+        } else {
+            toastErr(lastErrorText())
+        }
+        updateUndoRedo()
+    }
+
+    /** Estado visual dos FABs (disabled sem histórico — §2). */
+    internal fun updateUndoRedo() {
+        val canU = handle != 0L && EditorJni.nativeEditorCanUndo(handle)
+        val canR = handle != 0L && EditorJni.nativeEditorCanRedo(handle)
+        btnUndo?.isEnabled = canU
+        btnRedo?.isEnabled = canR
+        btnUndo?.alpha = if (canU) 1f else 0.35f
+        btnRedo?.alpha = if (canR) 1f else 0.35f
     }
 
     /** Estado visual do segmented pill (ativo = acento — §1.4). */
@@ -1049,6 +1212,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         bottomBar.visibility = if (playing) View.GONE else View.VISIBLE
         playHud.visibility = View.GONE
         gameHudBar?.visibility = if (playing) View.VISIBLE else View.GONE
+        zoomCluster?.visibility = if (playing) View.GONE else View.VISIBLE
+        undoCluster?.visibility = if (playing) View.GONE else View.VISIBLE
         if (playing && activePanel != PANEL_NONE) {
             togglePanel(activePanel)  // fecha o painel (toggle → NONE)
         }
@@ -1364,6 +1529,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     if (activePanel == PANEL_INSPECTOR) refreshInspector()
                 }
                 updateTransformFieldsLive()
+                updateUndoRedo()  // P4.5: FABs vivem com o histórico
             }
         }
         choreographer?.postFrameCallback(this)

@@ -267,4 +267,20 @@ object EditorJni {
     // --- erro da última operação (toasts/diálogos) ----------------------------------------
 
     external fun nativeEditorLastError(handle: Long): String?
+
+    // --- P4.5: snap do gizmo / fit do viewport ---------------------------------------
+
+    /** Chips de snap da tool sheet: translação na grade / rotação 15°. */
+    external fun nativeEditorSetSnap(handle: Long, translate: Boolean, rotate: Boolean)
+    external fun nativeEditorGetSnapTranslate(handle: Long): Boolean
+    external fun nativeEditorGetSnapRotate(handle: Long): Boolean
+    /** Enquadra a seleção (ou a cena inteira) — cluster de zoom. */
+    external fun nativeEditorViewportFit(handle: Long): Boolean
+
+    // --- P4.5: undo/redo (command pattern por snapshots de cena) ----------------------
+
+    external fun nativeEditorCanUndo(handle: Long): Boolean
+    external fun nativeEditorCanRedo(handle: Long): Boolean
+    external fun nativeEditorUndo(handle: Long): Boolean
+    external fun nativeEditorRedo(handle: Long): Boolean
 }

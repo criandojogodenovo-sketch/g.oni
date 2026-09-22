@@ -1237,69 +1237,10 @@ internal fun EditorActivity.animJsonEditorDialog(name: String) {
  * (Bloco B substitui pela JANELA DEDICADA — ScriptWindow.kt.)
  */
 internal fun EditorActivity.scriptEditorDialog(name: String) {
-    val act = this
-    val content = EditorJni.nativeEditorScriptRead(handle, name) ?: run {
-        toastErr(lastErrorText()); return
-    }
-
-    val container = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-    }
-    val edit = Oni.field(this, mono = true).apply {
-        setText(content)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        setHorizontallyScrolling(false)
-        inputType = InputType.TYPE_CLASS_TEXT or
-            InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        gravity = Gravity.TOP
-        minLines = 12
-    }
-    val scroller = ScrollView(this).apply { addView(edit) }
-    container.addView(
-        scroller,
-        LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-        ).apply { height = dp(320) }
-    )
-    container.addView(
-        Oni.rowText(this, "Compilar valida · Anexar usa a seleção · Salvar grava",
-            dim = true, sizeSp = 11f).apply {
-            setPadding(0, dp(8), 0, dp(4))
-        }
-    )
-
-    OniDialog.custom(
-        this, name, container,
-        listOf(
-            OniDialog.Btn("Compilar") {
-                val tsv = EditorJni.nativeEditorScriptCompile(
-                    handle, edit.text.toString())
-                if (tsv == null) {
-                    toastErr(lastErrorText())
-                } else {
-                    showCompileDiags(tsv)
-                }
-            },
-            OniDialog.Btn("Anexar") {
-                if (selection == 0L) {
-                    toastErr("Selecione uma entidade antes de anexar")
-                } else if (EditorJni.nativeEditorScriptAssign(handle, selection, name)) {
-                    toastOk("Anexado a ${currentEntityName(selection)}")
-                } else {
-                    toastErr(lastErrorText())
-                }
-            },
-            OniDialog.Btn("Salvar") {
-                if (EditorJni.nativeEditorScriptWrite(
-                        handle, name, edit.text.toString())) {
-                    toastOk("Salvo")
-                } else {
-                    toastErr(lastErrorText())
-                }
-            }
-        )
-    )
+    // P4.5 (Bloco B): JANELA DEDICADA (ScriptWindow) — card curvo, código
+    // #0D1117, syntax coloring, numeração, toolbar flutuante, painéis
+    // vars/funcs, auto-indent. Mesmo JNI do P0-7.
+    ScriptWindow(this).open(name)
 }
 
 /** Diagnósticos do Compilar: TSV "1|0" + linhas "line\tcol\tmessage". */

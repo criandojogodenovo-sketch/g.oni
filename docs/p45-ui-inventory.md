@@ -36,17 +36,36 @@
 | 7 | Inputs | `EditText` default (Material underline cinza) | Campos filled curvos 14dp (`#1A2029`), foco = borda acento (única borda), ≥44dp, numéricos com mono | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
 | 8 | Sliders/toggles | `SeekBar`/`Switch`/`CheckBox` Material default | Track curva + thumb acento 20dp (hit ≥48dp); Switch com track/thumb tint acento; sem CheckBox cinza | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
 | 9 | Spinner (categoria de assets) | `Spinner` com `simple_spinner_dropdown_item` default | Chip pill que abre picker curvo (lista temática) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 10 | Janela de script próprio | `AlertDialog` com `EditText` mono 12sp dentro de ScrollView | Janela dedicada fullscreen: card curvo, superfície código `#0D1117`, mono 13sp, syntax coloring (keywords acento/strings success/comentários secundário/números warn), numeração de linhas, toolbar flutuante Compilar/Anexar/Salvar, painéis laterais colapsáveis (variables/functions), auto-indent | PENDENTE | — |
+| 10 | Janela de script próprio | `AlertDialog` com `EditText` mono 12sp dentro de ScrollView | Janela dedicada fullscreen: card curvo, superfície código `#0D1117`, mono 13sp, syntax coloring (keywords acento/strings success/comentários secundário/números warn), numeração de linhas, toolbar flutuante Compilar/Anexar/Salvar, painéis laterais colapsáveis (variables/functions), auto-indent | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
 | 11 | Toasts | `Toast.makeText` default | Pill raised `#222933` raio total + ícone de severidade (info/ok/erro) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
 | 12 | HUD Play (editor) | `TextView` retângulo `0x99000000` canto inferior esquerdo | Pill translúcida curva (raio 16dp) com mono nos números | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
 | 13 | HUD Modo Jogo | Barra full-width flat `0xE0101010` | Pill flutuante translúcida: STOP (danger) / PAUSE (warn) / fps mono | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 14 | Zoom | Inexistente visível (só pinch) | Cluster pill vertical bottom-left (+/−/fit) — fit = enquadra seleção/cena (nativo novo) | PENDENTE | — |
-| 15 | Undo/redo | Inexistente | FABs circulares bottom-right (command pattern NATIVO — snapshots de cena), disabled sem histórico, regressões [p45] (move/rotate/scale/create/delete/attach) | PENDENTE | — |
-| 16 | Snap | Inexistente | Chips pill toggleáveis na tool sheet (grade / 15°) — nativo no gizmo, regressões [p45] | PENDENTE | — |
+| 14 | Zoom | Inexistente visível (só pinch) | Cluster pill vertical bottom-left (+/−/fit) — fit = enquadra seleção/cena (nativo novo) | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
+| 15 | Undo/redo | Inexistente | FABs circulares bottom-right (command pattern NATIVO — snapshots de cena), disabled sem histórico, regressões [p45] (move/rotate/scale/create/delete/attach) | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
+| 16 | Snap | Inexistente | Chips pill toggleáveis na tool sheet (grade / 15°) — nativo no gizmo, regressões [p45] | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
 | 17 | Project switcher | `AlertDialog` com lista de nomes | Sheet curva com thumbnail (1ª textura do projeto) + nome + data (mono) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
 | 18 | Empty states | `TextView` dim ("Nenhuma entidade selecionada") / listas vazias em branco | Card curvo com ícone 48dp + dica + ação (ex.: "+ Sprite") | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
 | 19 | Splash/ícone | Robô Android default (sem `android:icon`; windowBackground preto) | Ícone adaptativo gerado do prompt verbatim (arco G + nó, `#8AB4F8` em `#0B0E13`) + splash carvão com logo 96dp + wordmark | PENDENTE | — |
 | 20 | Tema/base | `Theme.Material.NoActionBar.Fullscreen`, windowBackground preto | Mesmo tema + windowBackground splash carvão; edge effect tint acento | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
+
+### 1.1 Notas dos Blocos B/C
+
+- **Bloco B** — janela de script dedicada (`ScriptWindow.kt`): card curvo,
+  código `#0D1117` mono 13sp, syntax coloring com debounce 250 ms (spans de
+  cor APENAS — cursor/IME intocados), numeração de linhas, toolbar flutuante
+  Compilar/Anexar/Salvar, painéis colapsáveis vars/funcs (inserem no cursor),
+  auto-indent (herda indent + 4 espaços após `:`). Zoom cluster (+/−/fit) —
+  `fit` = chamada nativa nova `viewportFit` (enquadra seleção/cena, AABB dos
+  quads desenhados). Snap chips (Grade 0.5u / 15°) → nativo no alvo do gizmo
+  (`gizmoDragTo`), testes [p45].
+- **Bloco C** — undo/redo NATIVO (command pattern por snapshots de cena via
+  `SceneSerializer::save/load`): 1 gesto de gizmo = 1 passo (captura no
+  `gizmoDragBegin`, limpeza de no-op no `gizmoDragEnd`); scroll-move coalesce
+  por janela 1.2 s; cada apply do Inspector = 1 passo; create/delete/attach/
+  rename/reparent/componentes = 1 passo cada; histórico ≤ 40; recusado em
+  Play com erro explícito; `newScene/loadScene/openProject` limpam. FABs
+  circulares ↶↷ (disabled sem histórico, alpha 0.35), atualizam no poll de
+  revisão (P1.9).
 
 ## 2. Superfícies FORA do escopo (com razão)
 

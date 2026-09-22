@@ -69,6 +69,8 @@ object Oni {
 
     // --- superfície de código (§2 janela de script) -------------------------------
     val CODE_BG = 0xFF0D1117.toInt()
+    val CODE_STRING = SUCCESS          // strings — success (§2)
+    val CODE_NUMBER = WARN             // números — warn (§2)
 
     // --- raio (§1.2) ---------------------------------------------------------------
     const val R_BTN = 16        // dp
