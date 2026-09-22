@@ -151,6 +151,13 @@ public:
     {
         return lastFrameTexturedSprites_;
     }
+    /// P4.7.0 Bloco 6: quantos frame.draw() o último frame emitiu
+    /// (métrica do overlay — o batching por (shader+textura+layer) já
+    /// existe desde a P3; isto MEDe o efeito dele).
+    [[nodiscard]] std::size_t lastFrameDrawCalls() const noexcept
+    {
+        return lastFrameDrawCalls_;
+    }
 
 private:
     void destroyResources() noexcept;
@@ -180,6 +187,7 @@ private:
     std::size_t spriteCapacity_ = 0;
     std::vector<SpriteVertex> spriteVertices_{};
     std::size_t lastFrameTexturedSprites_ = 0;
+    std::size_t lastFrameDrawCalls_ = 0;  ///< P4.7.0 B6: frame.draw() do frame
 
     // --- sprite LIT (P3 §5 — iluminação 2D por fragmento) --------------------
     eng::rhi::BufferHandle litSpriteBuffer_{};    ///< VBO lit (48B)

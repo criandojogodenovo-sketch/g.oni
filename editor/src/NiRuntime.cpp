@@ -630,6 +630,15 @@ void NiRuntime::tick(float deltaSeconds)
     delta_ = deltaSeconds;
     const eng::ni::NiExecContext::Params p = params();
     for (const auto& instance : set_.asVector()) {
+        // P4.7.0 Bloco 6: LOGIC LOD — filtro (opcional) decide se o
+        // script roda neste frame. O callback vê CENA e câmera (o host
+        // instala); um script opt-out (lodOptOut do NiScriptComponent)
+        // é responsabilidade DO FILTRO (ele tem a cena) — o runtime é
+        // burro de propósito: filter false = pula SEM contar tick.
+        if (lodFilter_ != nullptr && !lodFilter_(lodFilterUser_,
+                                                 instance->self())) {
+            continue;
+        }
         (void)vm_.run(*instance, "update", p);
         // P4.1 (T2/D5): contagem VISÍVEL de ticks + faults — o editor
         // mostra "N scripts, T ticks" e o ÚLTIMO fault do runtime; com

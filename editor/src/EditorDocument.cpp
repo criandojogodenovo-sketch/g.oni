@@ -826,6 +826,9 @@ Result<void> EditorDocument::saveScene(std::string_view scenePath)
         // P4.7.0 B5: varredura do kinematic persistida (default ON).
         root.value().set("physicsKinematicSweep",
                          eng::serial::JsonValue::boolean(kinematicSweep_));
+        // P4.7.0 B6: logic LOD (default OFF — opt-in do autor).
+        root.value().set("logicLodEnabled",
+                         eng::serial::JsonValue::boolean(logicLodEnabled_));
         text = eng::serial::dumpJson(root.value());
     }
     const eng::fs::Path full = scenesRootOf(*project_) / path;
@@ -897,6 +900,15 @@ namespace {
                                            eng::serial::JsonValue& data)
 {
     using eng::serial::JsonValue;
+    if (type == "eng::editor::NiScriptComponent") {
+        // P4.7.0 Bloco 6: opt-out do logic LOD (additive — ausente =
+        // false: o script PARTICIPA do LOD quando o setting liga).
+        if (!data.find("lodOptOut").has_value()) {
+            data.set("lodOptOut", JsonValue::boolean(false));
+            return true;
+        }
+        return false;
+    }
     if (type != "eng::tick::CameraData") {
         return false;
     }
@@ -1030,6 +1042,13 @@ Result<void> EditorDocument::loadScene(std::string_view scenePath)
                     "physicsKinematicSweep");
                 sweep.has_value() && sweep->isBool()) {
                 kinematicSweep_ = sweep->asBool();
+            }
+            // P4.7.0 B6: logic LOD (arquivo antigo/ausente = OFF — a
+            // semântica pré-P4.7 de scripts é preservada; opt-in).
+            logicLodEnabled_ = false;
+            if (const auto lod = parsed.value().find("logicLodEnabled");
+                lod.has_value() && lod->isBool()) {
+                logicLodEnabled_ = lod->asBool();
             }
             // P4.6 (Blocos 1/2): MIGRAÇÃO ADITIVA — campos refletidos
             // novos não existem em cenas pré-P4.6 e o decode é ESTRITO
@@ -2088,6 +2107,11 @@ Result<void> EditorDocument::play()
         &runtimeInput_);
     // P4.7.0 B5: o setting da cena dirige a varredura do kinematic.
     niRuntime_->setKinematicSweep(kinematicSweep_);
+    // P4.7.0 B6: logic LOD — filtro instalado SÓ com o setting ON
+    // (default OFF: comportamento pré-P4.7 preservado).
+    niRuntime_->setLodFilter(
+        logicLodEnabled_ ? &EditorDocument::lodFilterThunk : nullptr,
+        this);
     niRuntime_->start(*runtimeScene_);
     niRuntime_->fireStart();
 
@@ -2243,6 +2267,47 @@ void EditorDocument::tick(float deltaSeconds) noexcept
         cameraSystem != nullptr
             ? cameraSystem->activeCamera()
             : eng::tick::resolveActiveCamera(*runtimeScene_));
+}
+
+// P4.7.0 Bloco 6: thunk do logic LOD (ponteiro de função não captura —
+// o user é o documento). false = pulo o `up update` deste frame.
+bool EditorDocument::lodFilterThunk(void* user, eng::ecs::Entity self)
+{
+    return static_cast<EditorDocument*>(user)->lodFilter(self);
+}
+
+bool EditorDocument::lodFilter(eng::ecs::Entity self) const
+{
+    const eng::scene::Scene* scene = sceneInFocus();
+    if (scene == nullptr) {
+        return true; // sem cena: nunca pula (honesto)
+    }
+    // Opt-out: gameplay crítico (spawner/placar/IA global) roda sempre.
+    if (const auto* script =
+            scene->world().get<eng::editor::NiScriptComponent>(self);
+        script != nullptr && script->lodOptOut) {
+        return true;
+    }
+    // AABB da entidade (escala pelas normas das colunas — mesma matemática
+    // dos quads) contra a VISTA (câmera de jogo ativa) + a MESMA margem
+    // do culling de render (coerente: o que desenha roda).
+    const eng::math::Mat4 world = scene->computeWorldMatrix(self);
+    const float x = world.at(3, 0);
+    const float y = world.at(3, 1);
+    const float sx = std::sqrt(world.at(0, 0) * world.at(0, 0) +
+                               world.at(0, 1) * world.at(0, 1) +
+                               world.at(0, 2) * world.at(0, 2));
+    const float sy = std::sqrt(world.at(1, 0) * world.at(1, 0) +
+                               world.at(1, 1) * world.at(1, 1) +
+                               world.at(1, 2) * world.at(1, 2));
+    const float rot = std::atan2(world.at(0, 1), world.at(0, 0));
+    const float cosR = std::abs(std::cos(rot));
+    const float sinR = std::abs(std::sin(rot));
+    const float halfX = (cosR * sx + sinR * sy) * 0.5f;
+    const float halfY = (sinR * sx + cosR * sy) * 0.5f;
+    auto rect = viewport_.worldViewRect();
+    rect.margin = Viewport::kCullMarginWorld;
+    return rect.overlaps(halfX, halfY, x, y);
 }
 
 void EditorDocument::syncGameCamera(

@@ -13,6 +13,7 @@
 /// Nada aqui conhece RHI/Android (§7 intro).
 
 #include <cstdint>
+#include <unordered_map>
 #include <span>
 #include <vector>
 
@@ -208,6 +209,14 @@ private:
     /// (TriggerEvent) no barramento da cena. Vazio = nenhum par antes.
     std::vector<std::pair<eng::ecs::Entity, eng::ecs::Entity>>
         triggerPairsPrev_;
+
+    /// P4.7.0 Bloco 6: broad phase SPATIAL HASH — células (chave = cx<<32
+    /// | cy) → índices de collidable. Reconstruído por passo (buckets
+    /// reusam capacidade do map — pooling); pares candidatos ordenados na
+    /// ordem canônica do laço O(n²) antigo (determinismo 1:1).
+    std::unordered_map<std::uint64_t, std::vector<std::uint32_t>>
+        hashBuckets_;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> candidatePairs_;
 };
 
 /// Acumulador de timestep fixo (§7.6 — frame dt variável → passos fixos).

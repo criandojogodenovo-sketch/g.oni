@@ -160,6 +160,32 @@ public:
         float rotation{0.f};
     };
 
+    /// P4.7.0 Bloco 6: retângulo de CULLING em MUNDO (AABB — a rotação da
+    /// vista já vem expandida pelos cantos). `margin` cobre sprites que
+    /// renderizam MAIORES que a escala da entidade (região px/ppu não é
+    /// conhecida na camada de dados): quem toca o rect expandido DESENHA
+    /// (culling conservador — nunca some sprite visível por margem curta).
+    struct CullRect {
+        float minX{0.f};
+        float minY{0.f};
+        float maxX{0.f};
+        float maxY{0.f};
+        float margin{0.f};
+
+        [[nodiscard]] bool overlaps(float halfX, float halfY, float x,
+                                    float y) const noexcept
+        {
+            return x + halfX + margin >= minX && x - halfX - margin <= maxX
+                   && y + halfY + margin >= minY
+                   && y - halfY - margin <= maxY;
+        }
+    };
+
+    /// AABB da VISTA em MUNDO (câmera de jogo quando ativa, senão a do
+    /// editor) — rotação expandida pelos cantos (half' = half*|cos| +
+    /// half*|sin| cruzado). Margem NÃO incluída (o chamador soma).
+    [[nodiscard]] CullRect worldViewRect() const noexcept;
+
     // --- conversões --------------------------------------------------------
 
     [[nodiscard]] float worldToScreenX(float wx) const noexcept;
@@ -224,6 +250,12 @@ public:
     static constexpr float kMinZoom = 8.f;
     static constexpr float kMaxZoom = 512.f;
 
+    /// P4.7.0 B6: margem do culling (render e logic LOD) em unidades de
+    /// MUNDO — sprites que renderizam maiores que a escala da entidade
+    /// (região px/ppu não é conhecida na camada de dados) somem nas
+    /// bordas sem ela. Conservador e documentado.
+    static constexpr float kCullMarginWorld = 8.f;
+
     // --- conteúdo -----------------------------------------------------------
 
     /// Quads de TODOS os nós da cena, em ordem depth-first estável (a ordem
@@ -231,6 +263,25 @@ public:
     [[nodiscard]] std::vector<EntityQuad> buildQuads(
         const eng::scene::Scene& scene,
         const std::optional<eng::ecs::Entity>& selection) const;
+
+    /// P4.7.0 Bloco 6: overload com CULLING — quads FORA do rect (com
+    /// margem) não entram na lista; `culledOut` (opcional) recebe quantos
+    /// foram cortados (métrica do round 7: cull ≈ 180 com 200 entidades,
+    /// 180 off-screen). Pais culled CONTINUAM visitando filhos (filho em
+    /// vista desenha mesmo com pai fora — hierarquia não é poda).
+    [[nodiscard]] std::vector<EntityQuad> buildQuads(
+        const eng::scene::Scene& scene,
+        const std::optional<eng::ecs::Entity>& selection,
+        const CullRect& cull, std::uint32_t* culledOut) const;
+
+    /// P4.7.0 Bloco 6 (pooling): preenche `out` — o host reutiliza o
+    /// buffer entre frames (clear() interno preserva capacidade; o frame
+    /// quente não realoca). Cull opcional (null = sem culling).
+    void buildQuadsInto(std::vector<EntityQuad>& out,
+                        const eng::scene::Scene& scene,
+                        const std::optional<eng::ecs::Entity>& selection,
+                        const CullRect* cull,
+                        std::uint32_t* culledOut) const;
 
     /// Quads de TODAS as partículas vivas (uma por Particle de cada
     /// ParticlePool/emitter da cena). Desenhados POR CIMA das entidades —

@@ -1060,3 +1060,86 @@ TEST_CASE("p47: physicsKinematicSweep persiste e o ausente volta a ON",
     REQUIRE(loaded.ok());
     CHECK(f.doc->kinematicSweep());
 }
+
+// =============================================================================
+// P4.7.0 Bloco 6 — logic LOD: off-screen pula, opt-out roda sempre
+// =============================================================================
+
+TEST_CASE("p47: logic LOD — script off-screen pula o update; opt-out roda; "
+          "OFF restaura o comportamento",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+
+    // Dois scripts IDÊNTICOS (movem +1/tick) em x=10000 (FORA da vista —
+    // a câmera do editor default fica perto da origem nos testes).
+    const char* source = "up update:\n"
+                         "    move(1, 0)\n"
+                         "stop\n";
+    auto normal = f.doc->createEntity("Longe", eng::scene::kNoEntity);
+    REQUIRE(normal.ok());
+    REQUIRE(f.doc
+                ->setInspectorField(normal.value(),
+                                    "eng::math::Transform",
+                                    "position.x", "10000")
+                .ok());
+    REQUIRE(f.doc->addComponent(normal.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(normal.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    auto critical = f.doc->createEntity("Crítico", eng::scene::kNoEntity);
+    REQUIRE(critical.ok());
+    REQUIRE(f.doc
+                ->setInspectorField(critical.value(),
+                                    "eng::math::Transform",
+                                    "position.x", "10000")
+                .ok());
+    REQUIRE(f.doc->addComponent(critical.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(critical.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+    // OPT-OUT: gameplay crítico roda SEMPRE.
+    REQUIRE(f.doc
+                ->setInspectorField(critical.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "lodOptOut", "true")
+                .ok());
+
+    // LOD ON (o default é OFF — opt-in honesto).
+    REQUIRE(f.doc->logicLodEnabled() == false);
+    f.doc->setLogicLodEnabled(true);
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+
+    auto xOf = [&](eng::ecs::Entity e) {
+        const auto fields = f.doc->inspectorFields(
+            e, "eng::math::Transform");
+        for (const auto& field : fields) {
+            if (field.path == "position.x") {
+                return std::stof(field.value);
+            }
+        }
+        return -1.f;
+    };
+    CHECK(xOf(normal.value()) == Catch::Approx(10000.f).margin(1e-3f));
+    CHECK(xOf(critical.value()) == Catch::Approx(10001.f).margin(1e-3f));
+    f.doc->stop();
+
+    // LOD OFF (default): os DOIS rodam (semântica pré-P4.7 1:1).
+    f.doc->setLogicLodEnabled(false);
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+    CHECK(xOf(normal.value()) == Catch::Approx(10001.f).margin(1e-3f));
+    CHECK(xOf(critical.value()) == Catch::Approx(10001.f).margin(1e-3f));
+    f.doc->stop();
+}

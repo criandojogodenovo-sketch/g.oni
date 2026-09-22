@@ -308,3 +308,71 @@ autor ingênuo não anexa). B5: o KINEMATIC com Collider varre por DEFAULT.
 | sem Collider = cru; mask do corpo decide | VERIFIED (PhysicsTests) |
 | persistência + ausente = ON (JSON strip real) | VERIFIED (ContractTests) |
 | hint dos três verbos no painel Scripts | VERIFIED (código; visual round 7) |
+
+## Bloco 6 — cérebro de performance: culling, spatial hash, governor, LOD
+
+Feedback driver (round 6): 200 entidades travavam o C33 — sem culling
+(desenhava tudo), física O(n²), sem governor térmico e sem métricas
+visíveis. B6 instala o cérebro; cada peça é testável no Linux.
+
+### Peças
+
+- **Culling de render (Play)**: `Viewport::worldViewRect()` (AABB da
+  vista — câmera de jogo quando ativa; rotação expande os cantos) +
+  `buildQuads(..., CullRect, &culled)` — quads fora do rect+margin não
+  entram no draw; `culled` é EXPORTADO (métrica do round 7: 180/200).
+  Pais culled continuam visitando filhos (hierarquia nunca poda).
+  Margem conservadora `kCullMarginWorld = 8u` (sprites maiores que a
+  escala não somem nas bordas — documentado). SÓ no Play: no Edit o
+  autor vê a cena INTEIRA (culling de editor seria ferramenta
+  mentirosa).
+- **Spatial hash (física)**: broad phase substitui o laço O(n²) — AABB
+  por células (célula ≥ 2× a maior extensão), pares candidatos
+  DEDUPLICADOS e ordenados na ordem canônica do laço antigo
+  (determinismo 1:1 — a ordem dos contatos é contrato). Narrow phase
+  intacto. Reconstruído por passo com buckets reutilizados (pooling);
+  incremental por dirty-tracking é extensão documentada.
+- **PerfGovernor** (puro, testável): EMA do frame time + térmico ADPF →
+  escada High/Med/Low (renderScale 1.0/0.85/0.7, lightTextureRes
+  512/256/128, post on/off, bloomHalfRes, maxLights 8/4/2) com
+  HISTERESE: 30 frames ruins para descer, 120 bons para subir, térmico
+  severo desce NA HORA e bloqueia a volta até esfriar. Desce-sobe SEM
+  oscilar (prova no CI).
+- **Térmico ADPF**: `AThermal_acquireManager` no JNI (Android); sem
+  ADPF (Linux/devices antigos) = Unknown → governor só frame time
+  (honesto).
+- **Logic LOD (opt-in por cena, opt-out por script)**: setting
+  `"logicLodEnabled"` (default OFF — semântica pré-P4.7 preservada);
+  ON: scripts fora da vista pulam `up update`; opt-out por script via
+  `NiScriptComponent::lodOptOut` (additive, migration pre-pass —
+  ausente = false). Filtro no `NiRuntime::setLodFilter` (o runtime é
+  burro; a política é do documento).
+- **Métricas visíveis**: `perfSummaryLine()` (emaMs, fps, drawCalls,
+  culled/total, térmico, preset, renderScale) → JNI
+  `nativeEditorPerfStats` → linha "Perf:" no HUD do Play (Kotlin).
+  Draw calls contados por frame no renderer (`lastFrameDrawCalls`).
+- **Batching**: por (shader+textura+layer) já existia (P3 SpriteRun);
+  agora MEDIDO (o overlay mostra o efeito).
+- **Pooling**: buffers de quads do host reutilizados entre frames
+  (`buildQuadsInto` — clear() preserva capacidade; zero realloc no
+  frame quente).
+- **On-demand rendering (editor)**: EXTENSÃO DECLARADA — a
+  invalidação completa (visualRevision em toda mutação visível) tem
+  risco de frame stale maior que o ganho no C33; adiado com
+  honestidade (o render do editor já é barato — o custo está no Play,
+  onde o culling/governor agem).
+
+### Evidência
+
+| Item | Status |
+|---|---|
+| cull = 180 com 200 entidades (180 off-screen) | VERIFIED (PerfTests, vista+margin e tight) |
+| culling conserva filho em vista (pai fora) | VERIFIED (PerfTests) |
+| worldViewRect com rotação (AABB de cantos) | VERIFIED (PerfTests 45°) |
+| governor desce-sobe SEM oscilar (jitter no limite) | VERIFIED (PerfTests) |
+| térmico severo desce na hora e bloqueia volta | VERIFIED (PerfTests) |
+| frame inválido não conta; EMA móvel | VERIFIED (PerfTests) |
+| spatial hash = mesma ordem de contatos do O(n²) | VERIFIED (suite de física inteira 1:1) |
+| logic LOD: off-screen pula / opt-out roda / OFF restaura | VERIFIED (ContractTests e2e) |
+| draw calls + cull no HUD do Play | VERIFIED (código; visual round 7) |
+| térmico real no device (ADPF) | round 7 (JNI instalado; Linux = Unknown) |

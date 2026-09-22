@@ -27,10 +27,18 @@ namespace eng::editor {
 
 struct NiScriptComponent {
     std::string source; ///< fonte .nis completa
+
+    /// P4.7.0 Bloco 6: OPT-OUT do logic LOD — com o setting da cena ON
+    /// (default OFF), scripts off-screen pulam o `up update`; um script
+    /// marcado (gameplay crítico: spawner, placar, IA global) roda
+    /// SEMPRE. Additive (default false = participa) — cenas antigas
+    /// migram pelo pre-pass (mesmo padrão da câmera do B4).
+    bool lodOptOut = false;
 };
 
 } // namespace eng::editor
 
 ENG_REFLECT_BEGIN(eng::editor::NiScriptComponent)
     ENG_REFLECT_FIELD(source)
+    ENG_REFLECT_FIELD(lodOptOut)
 ENG_REFLECT_END()

@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -718,14 +720,48 @@ bool EditorHost::renderFrame(float deltaSeconds)
     // 1) tick do runtime (Play) — FASE 8: contrato; FASES 9/10 preenchem.
     document_->tick(deltaSeconds);
 
+    // P4.7.0 B6: o CÉREBRO observa o frame (EMA + térmico → preset com
+    // histerese). Roda mesmo sem surface? NÃO — sem surface não há
+    // frame (return acima): métrica honesta mede frames reais.
+    const int thermalRaw =
+        thermalFn_ != nullptr ? thermalFn_(thermalUser_) : -1;
+    const auto thermal = thermalRaw < 0
+                             ? ThermalLevel::Unknown
+                             : static_cast<ThermalLevel>(
+                                   std::clamp(thermalRaw, 0, 6));
+    governor_.onFrame(deltaSeconds * 1000.f, thermal);
+
     // 2) render do foco (edição em Edit; clone em Play — §8.7). Sprites
     // com textura real via TextureCache (evolução P0-3 — o documento é a
     // fonte dos dados; o host é o dono do renderer/upload). Sem projeto →
     // assets nulos: sprites caem no caminho de cor (honesto). Gizmo P1:
     // desenhado por cima (tool ativa + seleção; Edit apenas).
     const eng::scene::Scene* scene = document_->sceneInFocus();
-    auto quads = document_->viewport().buildQuads(*scene,
-                                                   document_->selection());
+
+    // P4.7.0 B6 (pooling): buffers REUTILIZADOS — clear() preserva a
+    // capacidade conquistada; o frame quente não realoca.
+    quadsScratch_.clear();
+    particlesScratch_.clear();
+
+    // P4.7.0 B6: CULLING por câmera — SÓ no Play (no Edit o autor vê a
+    // cena INTEIRA por definição; culling de editor seria ferramenta
+    // mentirosa). Rect = vista do frame (câmera de jogo ativa) + margem
+    // conservadora para sprites maiores que a escala (documentado).
+    std::uint32_t culled = 0;
+    if (document_->isPlaying()) {
+        auto cull = document_->viewport().worldViewRect();
+        cull.margin = Viewport::kCullMarginWorld;
+        document_->viewport().buildQuadsInto(
+            quadsScratch_, *scene, document_->selection(), &cull, &culled);
+    } else {
+        document_->viewport().buildQuadsInto(
+            quadsScratch_, *scene, document_->selection(), nullptr,
+            nullptr);
+    }
+    lastCulled_ = culled;
+    lastQuads_ = static_cast<std::uint32_t>(quadsScratch_.size());
+    auto& quads = quadsScratch_;
+
     // P3 §3: material do sprite → shader/tint do quad (cache do documento;
     // sem projeto/default os quads já saem "lit" com tint intacto).
     document_->resolveMaterials(quads);
@@ -761,6 +797,52 @@ eng::rhi::BackendType EditorHost::selectedBackend() const noexcept
 {
     return viewportRenderer_.has_value() ? viewportRenderer_->activeBackend()
                                         : eng::rhi::BackendType::Auto;
+}
+
+// P4.7.0 B6: uma linha de performance para o HUD do Play (o padrão
+// tab-separated dos getters — o Kotlin faz split('\t')).
+std::string EditorHost::perfSummaryLine() const
+{
+    const PerfPreset preset = governor_.preset();
+    const char* thermalName = "unknown";
+    switch (governor_.thermal()) {
+    case ThermalLevel::None: thermalName = "ok"; break;
+    case ThermalLevel::Light: thermalName = "leve"; break;
+    case ThermalLevel::Moderate: thermalName = "moderado"; break;
+    case ThermalLevel::Severe: thermalName = "severo"; break;
+    case ThermalLevel::Critical: thermalName = "crítico"; break;
+    case ThermalLevel::Emergency: thermalName = "emergência"; break;
+    case ThermalLevel::Shutdown: thermalName = "shutdown"; break;
+    case ThermalLevel::Unknown: thermalName = "unknown"; break;
+    }
+    const char* presetName =
+        governor_.presetIndex() == 0
+            ? "High"
+            : (governor_.presetIndex() == 1 ? "Med" : "Low");
+    const float emaMs = governor_.emaMs();
+    const float fps = emaMs > 0.0001f ? 1000.f / emaMs : 0.f;
+    const std::size_t drawCalls =
+        viewportRenderer_.has_value()
+            ? viewportRenderer_->lastFrameDrawCalls()
+            : 0;
+    // "perf:\t<emaMs>\t<fps>\t<drawCalls>\t<culled>/<quads>\t<thermal>\t
+    //  <preset>\t<renderScale>" — 7 campos tab-separated (padrão JNI).
+    std::string line = "perf:";
+    line += '\t';
+    line += std::to_string(emaMs);
+    line += '\t';
+    line += std::to_string(fps);
+    line += '\t';
+    line += std::to_string(drawCalls);
+    line += '\t';
+    line += std::to_string(lastCulled_) + "/" + std::to_string(lastQuads_);
+    line += '\t';
+    line += thermalName;
+    line += '\t';
+    line += presetName;
+    line += '\t';
+    line += std::to_string(preset.renderScale);
+    return line;
 }
 
 const eng::rhi::RendererCapabilities* EditorHost::capabilities() const noexcept

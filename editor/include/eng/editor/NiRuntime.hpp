@@ -108,6 +108,18 @@ public:
         return kinematicSweep_;
     }
 
+    /// P4.7.0 B6: LOGIC LOD — filtro de visibilidade por script (nullptr =
+    /// sempre roda, comportamento pré-P4.7). O filtro retorna "roda?";
+    /// a política (off-screen pula; opt-out sempre roda) é do HOST do
+    /// filtro — o runtime só obedece. Instalado no play() com a cena do
+    /// clone; morre com o stop (o ponteiro aponta para o documento).
+    void setLodFilter(bool (*filter)(void* user, eng::ecs::Entity self),
+                      void* user) noexcept
+    {
+        lodFilter_ = filter;
+        lodFilterUser_ = user;
+    }
+
 private:
     struct HostImpl;
 
@@ -161,6 +173,9 @@ private:
     bool dispatching_ = false;
     /// P4.7.0 B5: varredura do kinematic no `move` (default ON).
     bool kinematicSweep_ = true;
+    /// P4.7.0 B6: filtro do logic LOD (nullptr = sempre roda).
+    bool (*lodFilter_)(void* user, eng::ecs::Entity self) = nullptr;
+    void* lodFilterUser_ = nullptr;
 };
 
 } // namespace eng::editor

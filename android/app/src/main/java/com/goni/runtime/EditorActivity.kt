@@ -230,6 +230,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             finish()
             return
         }
+        // P4.7.0 B6: fonte térmica ADPF UMA vez por host (sem ADPF o
+        // governor roda só com frame time — honesto).
+        EditorJni.nativeEditorInstallThermalProvider(handle)
 
         // P4.5.1 (R3 — JANELA DA MORTE #1: pós-EDITOR_DOCUMENT → UI P4.5):
         // as 4 sessões (pid 24087…24618) morreram EXATAMENTE aqui dentro
@@ -1542,7 +1545,18 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         } else {
             "Scripts: —"
         }
-        playHud.text = "$scriptsLine\nÁudio: $audio"
+        val perf = EditorJni.nativeEditorPerfStats(handle)
+        val perfLine = if (perf != null && perf.startsWith("perf:")) {
+            val q = perf.split('\t')
+            // perf:\temaMs\tfps\tdraws\tculled/quads\ttérmico\tpreset\tscale
+            if (q.size >= 8) {
+                val ema = q[1].toFloatOrNull()?.let { "%.1f".format(it) } ?: q[1]
+                val fps = q[2].toFloatOrNull()?.let { "%.0f".format(it) } ?: q[2]
+                "Perf: ${fps} fps · ${ema}ms · ${q[3]} draws · cull ${q[4]} · ${q[6]}"
+            } else null
+        } else null
+        playHud.text = "$scriptsLine\nÁudio: $audio" +
+            (if (perfLine != null) "\n$perfLine" else "")
     }
 
     // --- gestos do viewport (§8.6/§8.8 — eventos do EDITOR, não do jogo) ------------------

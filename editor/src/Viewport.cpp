@@ -146,6 +146,54 @@ std::vector<EntityQuad> Viewport::buildQuads(
     const std::optional<eng::ecs::Entity>& selection) const
 {
     std::vector<EntityQuad> quads;
+    buildQuadsInto(quads, scene, selection, nullptr, nullptr);
+    return quads;
+}
+
+std::vector<EntityQuad> Viewport::buildQuads(
+    const eng::scene::Scene& scene,
+    const std::optional<eng::ecs::Entity>& selection,
+    const CullRect& cull, std::uint32_t* culledOut) const
+{
+    std::vector<EntityQuad> quads;
+    buildQuadsInto(quads, scene, selection, &cull, culledOut);
+    return quads;
+}
+
+Viewport::CullRect Viewport::worldViewRect() const noexcept
+{
+    // AABB da VISTA (câmera de jogo quando ativa — P0-5): centro + tela/
+    // zoom. Rotação expande o AABB pelos cantos (half' = half*|cos| +
+    // half*|sin| cruzado — cobre TUDO que a vista rotacionada enxerga).
+    const Camera2D& cam = effectiveCamera();
+    const float zoom = cam.zoom > 0.f ? cam.zoom : 48.f;
+    const float halfW = screenW_ / zoom * 0.5f;
+    const float halfH = screenH_ / zoom * 0.5f;
+    const float cosR = std::cos(cam.rotation);
+    const float sinR = std::sin(cam.rotation);
+    const float halfX = halfW * std::abs(cosR) + halfH * std::abs(sinR);
+    const float halfY = halfW * std::abs(sinR) + halfH * std::abs(cosR);
+    CullRect rect;
+    rect.minX = cam.posX - halfX;
+    rect.maxX = cam.posX + halfX;
+    rect.minY = cam.posY - halfY;
+    rect.maxY = cam.posY + halfY;
+    rect.margin = 0.f;
+    return rect;
+}
+
+void Viewport::buildQuadsInto(std::vector<EntityQuad>& out,
+                              const eng::scene::Scene& scene,
+                              const std::optional<eng::ecs::Entity>& selection,
+                              const CullRect* cull,
+                              std::uint32_t* culledOut) const
+{
+    if (culledOut != nullptr) {
+        *culledOut = 0;
+    }
+    // Pooling (B6): clear() preserva a capacidade já conquistada.
+    std::vector<EntityQuad>& quads = out;
+    quads.clear();
     quads.reserve(scene.nodeCount());
 
     // Caminhada depth-first estável (mesma ordem do hierarchySnapshot — a
@@ -177,6 +225,28 @@ std::vector<EntityQuad> Viewport::buildQuads(
         quad.rotation = std::atan2(world.at(0, 1), world.at(0, 0));
         quad.tint = hueOf(node);
         quad.selected = selection.has_value() && *selection == node;
+
+        // P4.7.0 Bloco 6: CULLING por retângulo de vista (Play) — quad
+        // FORA do rect (AABB do quad girado + margem) NÃO entra; os
+        // FILHOS continuam sendo visitados (filho em vista desenha — a
+        // hierarquia nunca poda). Contagem exporta a métrica do round 7.
+        if (cull != nullptr) {
+            const float cosR = std::abs(std::cos(quad.rotation));
+            const float sinR = std::abs(std::sin(quad.rotation));
+            const float halfX =
+                (cosR * quad.sizeX + sinR * quad.sizeY) * 0.5f;
+            const float halfY =
+                (sinR * quad.sizeX + cosR * quad.sizeY) * 0.5f;
+            if (!cull->overlaps(halfX, halfY, quad.worldX, quad.worldY)) {
+                if (culledOut != nullptr) {
+                    ++*culledOut;
+                }
+                scene.eachChild(node, [&](eng::ecs::Entity child) {
+                    self(self, child, depth + 1);
+                });
+                return;
+            }
+        }
         // Camada da entidade (P3): agrupa o draw no conjunto de luzes
         // da camada (Light2D.layer). Sem LayerMember = GAME.
         if (const auto* member =
@@ -318,7 +388,6 @@ std::vector<EntityQuad> Viewport::buildQuads(
     for (const eng::ecs::Entity root : roots) {
         visit(visit, root, 0);
     }
-    return quads;
 }
 
 std::vector<ParticleQuad> Viewport::buildParticleQuads(

@@ -183,6 +183,14 @@ object EditorJni {
      * "running:<backend> <device>" | "null:<motivo>". */
     external fun nativeEditorAudioStatus(handle: Long): String?
 
+    /** P4.7.0 B6: métricas de performance do último frame —
+     *  "perf:\temaMs\tfps\tdraws\tculled/quads\ttérmico\tpreset\trenderScale". */
+    external fun nativeEditorPerfStats(handle: Long): String?
+
+    /** P4.7.0 B6: instala a fonte térmica ADPF (Android; retorna 1
+     *  quando instalada — sem ADPF o governor usa só frame time). */
+    external fun nativeEditorInstallThermalProvider(handle: Long): Int
+
     // --- imagens/texturas (evolução P0) -----------------------------------------------------
 
     /** "WxH rgba|rgb" quando o asset é imagem válida (decode REAL); null caso contrário. */

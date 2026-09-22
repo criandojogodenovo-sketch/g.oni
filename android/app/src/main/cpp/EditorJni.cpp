@@ -1018,6 +1018,70 @@ Java_com_goni_runtime_EditorJni_nativeEditorAudioStatus(JNIEnv* env,
     return env->NewStringUTF(status.c_str());
 }
 
+/// P4.7.0 Bloco 6 — métricas de performance para o HUD do Play (uma
+/// linha tab-separated; o Kotlin faz split('\t')).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorPerfStats(JNIEnv* env,
+                                                       jobject /*thiz*/,
+                                                       jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    return env->NewStringUTF(host->perfSummaryLine().c_str());
+}
+
+#ifdef __ANDROID__
+#include <android/thermal.h>
+
+/// P4.7.0 Bloco 6: wrapper do AThermal (ADPF). Manager adquirido UMA vez
+/// (vivo no processo inteiro); devices sem ADPF devolvem manager nulo →
+/// status −1 = desconhecido (o governor roda só com frame time — honesto).
+namespace android::thermal {
+class ThermalProvider final {
+public:
+    ThermalProvider() : manager_(AThermal_acquireManager()) {}
+    [[nodiscard]] int currentStatus() const noexcept
+    {
+        return manager_ != nullptr
+                   ? AThermal_getCurrentThermalStatus(manager_)
+                   : -1;
+    }
+
+private:
+    AThermalManager* manager_ = nullptr;
+};
+} // namespace android::thermal
+#endif // __ANDROID__
+
+/// P4.7.0 Bloco 6 — fonte do TÉRMICO via ADPF (android/thermal.h). O
+/// host roda a ESCADA de presets com térmico REAL no device; no Linux
+/// (testes/CI) ninguém instala a fonte e o governor usa só frame time.
+JNIEXPORT jint JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorInstallThermalProvider(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle)
+{
+#ifdef __ANDROID__
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return 0;
+    }
+    static android::thermal::ThermalProvider provider;
+    host->setThermalProvider(
+        [](void* user) -> int {
+            auto* self = static_cast<android::thermal::ThermalProvider*>(
+                user);
+            return self->currentStatus();
+        },
+        &provider);
+    return 1;
+#else
+    (void)handle;
+    return 0; // sem ADPF fora do Android — governor só frame time
+#endif
+}
+
 JNIEXPORT jint JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorGetTool(JNIEnv* /*env*/,
                                                     jobject /*thiz*/,

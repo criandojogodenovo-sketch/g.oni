@@ -237,6 +237,21 @@ public:
         sceneDirty_ = true; // persiste no próximo save (como fixedDt)
     }
 
+    // --- P4.7.0 (Bloco 6): logic LOD -------------------------------------
+    /// OFF (default): TODOS os scripts rodam sempre (semântica pré-P4.7).
+    /// ON: scripts fora da vista pulam o `up update` (opt-out por script
+    /// via NiScriptComponent::lodOptOut — gameplay crítico roda sempre).
+    /// Persiste na cena (chave aditiva "logicLodEnabled"; ausente = OFF).
+    [[nodiscard]] bool logicLodEnabled() const noexcept
+    {
+        return logicLodEnabled_;
+    }
+    void setLogicLodEnabled(bool enabled) noexcept
+    {
+        logicLodEnabled_ = enabled;
+        sceneDirty_ = true;
+    }
+
     // --- P4.6 (Bloco 1): camadas de COLISÃO nomeadas (project settings) ---
     // ≠ camadas de cena/tick (LayerInfo/ADR-051): estes bitfields filtram
     // PARES de colisão — (A.mask & B.layer) && (B.mask & A.layer) — e são
@@ -923,11 +938,18 @@ private:
     /// a câmera do editor quando a cena não tem câmera ativa.
     void syncGameCamera(const eng::tick::ActiveCamera& active) noexcept;
 
+    /// P4.7.0 B6: filtro do logic LOD (thunk para o ponteiro de função —
+    /// sem captura). false = o `up update` do script pula este frame.
+    static bool lodFilterThunk(void* user, eng::ecs::Entity self);
+    [[nodiscard]] bool lodFilter(eng::ecs::Entity self) const;
+
     eng::input::InputSystem runtimeInput_{}; ///< input do JOGO (§6.4)
     eng::physics::PhysicsWorld physicsWorld_{};      ///< §7.1–§7.6
     eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
     /// P4.7.0 B5: varredura do kinematic (default ON — ver kinematicSweep()).
     bool kinematicSweep_ = true;
+    /// P4.7.0 B6: logic LOD (default OFF — ver logicLodEnabled()).
+    bool logicLodEnabled_ = false;
     eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
     eng::audio::AudioMixer audioMixer_{};      ///< P2 §12 — mixer REAL
     /// P4.3 (N1): voice/asset do PREVIEW (uma única; bus isolado do jogo).

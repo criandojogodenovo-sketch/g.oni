@@ -500,6 +500,7 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     frameUniformsSent_.clear();    // P3: blocos PerFrame enviados
     gizmoVertices_.clear();  // P1: acessores de teste não vazam frame velho
     lastFrameTexturedSprites_ = 0;
+    lastFrameDrawCalls_ = 0;  // P4.7.0 B6: métrica do frame
 
     // --- sprites resolvidos ANTES (agrupamento por textura p/ batching) -------
     // Resolve cada sprite com textura via TextureCache; os que falham caem
@@ -1142,6 +1143,7 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             vertexBuffer_, 0,
             {reinterpret_cast<const std::byte*>(frameVertices_.data()),
              frameVertices_.size() * sizeof(Vertex)});
+        lastFrameDrawCalls_ = lastFrameDrawCalls_ + 1;
         auto drawn = frame.draw(
             static_cast<std::uint32_t>(frameVertices_.size()), 0);
         frameOk = pipelined.ok() && bound.ok() && uploaded.ok() && drawn.ok();
@@ -1220,8 +1222,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                 frameOk = frameOk && boundTexture.ok();
                 boundGpu = run.gpu;
             }
-            auto drawn =
-                frame.draw(run.vertexCount, run.firstVertex);
+            auto drawn = frame.draw(run.vertexCount, run.firstVertex);
+            lastFrameDrawCalls_ = lastFrameDrawCalls_ + 1;
             frameOk = frameOk && drawn.ok();
         }
     }
@@ -1289,6 +1291,7 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                  gizmoVertices_.size() * sizeof(Vertex)});
             auto drawn = frame.draw(
                 static_cast<std::uint32_t>(gizmoVertices_.size()), 0);
+            lastFrameDrawCalls_ = lastFrameDrawCalls_ + 1;
             frameOk = pipelined.ok() && bound.ok() && uploaded.ok() &&
                       drawn.ok();
         } else if (!gizmoVertices_.empty()) {

@@ -32,6 +32,7 @@
 #include "eng/audio/Audio.hpp"
 #include "eng/core/Result.hpp"
 #include "eng/editor/EditorDocument.hpp"
+#include "eng/editor/PerfGovernor.hpp"
 #include "eng/editor/TextureCache.hpp"
 #include "eng/editor/ViewportRenderer.hpp"
 #include "eng/fs/NativeFileSystem.hpp"
@@ -122,6 +123,21 @@ public:
     /// tick do runtime (Play) + render do viewport (foco do modo).
     /// false quando não desenhou (sem surface/paused/minimized).
     bool renderFrame(float deltaSeconds);
+
+    /// P4.7.0 Bloco 6: fonte do TÉRMICO (ADPF — android/thermal.h).
+    /// O JNI Android instala `fn` (AThermal_getCurrentThermalStatus →
+    /// 0..6); no Linux/testes NINGUÉM instala — o governor roda só com
+    /// frame time (ThermalLevel::Unknown). Thread do render (main).
+    void setThermalProvider(int (*fn)(void* user), void* user) noexcept
+    {
+        thermalFn_ = fn;
+        thermalUser_ = user;
+    }
+    /// Resumo de performance do último frame (uma linha, \t separado —
+    /// o padrão dos getters do JNI): emaMs, fps, drawCalls, culled,
+    /// térmico (nome), preset (High/Med/Low), renderScale.
+    [[nodiscard]] std::string perfSummaryLine() const;
+
 
     // --- acesso ao documento (JNI opera por aqui) ------------------------------
 
@@ -291,6 +307,17 @@ private:
     /// descarta e tenta device real de novo). audioOpMutex_.
     bool audioNullFallback_{false};
     HostStats stats_{};
+    /// P4.7.0 Bloco 6: cérebro de performance (EMA de frame + térmico →
+    /// preset com histerese) e métricas do último frame (overlay HUD).
+    PerfGovernor governor_{};
+    int (*thermalFn_)(void* user) = nullptr;  ///< ADPF (Android) — opcional
+    void* thermalUser_ = nullptr;
+    std::uint32_t lastCulled_{0};   ///< quads cortados pelo culling (Play)
+    std::uint32_t lastQuads_{0};    ///< quads que ENTRARAM no draw
+    /// Pooling (B6): buffers de quads REUTILIZADOS entre frames (clear()
+    /// preserva capacidade — sem realloc por frame no caminho quente).
+    std::vector<EntityQuad> quadsScratch_{};
+    std::vector<ParticleQuad> particlesScratch_{};
     /// Watchdog (P3 §0): frames já apresentados desde a (re)criação do
     /// renderer — usado p/ promover "trying:X" → "good:X".
     std::uint64_t watchdogBaseline_{0};

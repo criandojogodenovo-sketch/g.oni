@@ -361,8 +361,17 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
             }
         });
 
-    // 2) Broad/narrow: TODOS os pares com colisor (n² modesto — cenas de
-    //    editor/gameplay mobile; broad-phase é extensão documentada).
+    // 2) Broad/narrow (P4.7.0 Bloco 6 — SPATIAL HASH): a v1 varria TODOS
+    //    os pares (O(n²) — 200 corpos = 20k checagens por passo no C33).
+    //    Agora: AABB de cada colisor insere o índice nas células que
+    //    cobre (célula ≥ 2× a maior extensão da cena); pares candidatos
+    //    saem por bucket, DEDUPLICADOS e ordenados na ordem CANÔNICA do
+    //    laço antigo (i<j por índice) — determinismo 1:1 com o v1
+    //    (a ordem dos contatos é contrato: HitEvent/trigger diff). O
+    //    narrow phase não mudou — só QUEM chega a ele.
+    //    Honestidade: o hash é RECONSTRUÍDO por passo com buckets
+    //    reutilizados (pooling); incremental por dirty-tracking é
+    //    extensão documentada (a reconstrução é O(n) e barata).
     std::vector<eng::ecs::Entity> collidable;
     collidable.reserve(scene.nodeCount());
     scene.world().each<Collider>([&](eng::ecs::Entity e, const Collider&) {
@@ -372,12 +381,73 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
         }
     });
 
+    // Célula: ≥ 2× a maior meia-extensão (um AABB toca no máximo 4 células
+    // por eixo em cena normal — pares dentro do bucket são candidatos).
+    float maxExtent = 1.f;
+    for (const eng::ecs::Entity e : collidable) {
+        const Collider& c = *scene.world().get<Collider>(e);
+        const float extent =
+            c.shape == ColliderShape::Sphere
+                ? c.radius
+                : std::max(c.halfExtents.x,
+                           std::max(c.halfExtents.y, c.halfExtents.z));
+        maxExtent = std::max(maxExtent, extent);
+    }
+    const float cell = maxExtent * 2.f;
+    hashBuckets_.clear();
     for (std::size_t i = 0; i < collidable.size(); ++i) {
-        for (std::size_t j = i + 1; j < collidable.size(); ++j) {
-            const eng::ecs::Entity a = collidable[i];
-            const eng::ecs::Entity b = collidable[j];
-            const Collider& colliderA = *scene.world().get<Collider>(a);
-            const Collider& colliderB = *scene.world().get<Collider>(b);
+        const WorldShape s =
+            worldShapeOf(scene, collidable[i], *scene.world().get<Collider>(collidable[i]));
+        // AABB da forma (esfera: raio; box: meia-extensão REAL por eixo
+        // — box alongado NÃO cabe no raio da esfera circunscrita).
+        const Collider& c = *scene.world().get<Collider>(collidable[i]);
+        float ex = s.radius, ey = s.radius;
+        if (c.shape == ColliderShape::Box) {
+            ex = c.halfExtents.x;
+            ey = c.halfExtents.y;
+        }
+        const std::int64_t bx0 = static_cast<std::int64_t>(
+            std::floor((s.center.x - ex) / cell));
+        const std::int64_t bx1 = static_cast<std::int64_t>(
+            std::floor((s.center.x + ex) / cell));
+        const std::int64_t by0 = static_cast<std::int64_t>(
+            std::floor((s.center.y - ey) / cell));
+        const std::int64_t by1 = static_cast<std::int64_t>(
+            std::floor((s.center.y + ey) / cell));
+        for (std::int64_t cx = bx0; cx <= bx1; ++cx) {
+            for (std::int64_t cy = by0; cy <= by1; ++cy) {
+                hashBuckets_[static_cast<std::uint64_t>(cx) * 0x100000000ull
+                             + static_cast<std::uint64_t>(cy)]
+                    .push_back(static_cast<std::uint32_t>(i));
+            }
+        }
+    }
+    // Pares candidatos: por bucket, todos os pares dentro dele (i<j por
+    // POSIÇÃO no collidable — que segue a ordem de iteração do world,
+    // índice crescente); dedupe + ordenação canônica.
+    candidatePairs_.clear();
+    for (const auto& [key, bucket] : hashBuckets_) {
+        for (std::size_t bi = 0; bi < bucket.size(); ++bi) {
+            for (std::size_t bj = bi + 1; bj < bucket.size(); ++bj) {
+                std::uint32_t i = bucket[bi];
+                std::uint32_t j = bucket[bj];
+                if (i > j) {
+                    std::swap(i, j);
+                }
+                candidatePairs_.emplace_back(i, j);
+            }
+        }
+    }
+    std::sort(candidatePairs_.begin(), candidatePairs_.end());
+    candidatePairs_.erase(
+        std::unique(candidatePairs_.begin(), candidatePairs_.end()),
+        candidatePairs_.end());
+
+    for (const auto& [i, j] : candidatePairs_) {
+        const eng::ecs::Entity a = collidable[i];
+        const eng::ecs::Entity b = collidable[j];
+        const Collider& colliderA = *scene.world().get<Collider>(a);
+        const Collider& colliderB = *scene.world().get<Collider>(b);
             if (!masksOverlap(colliderA, colliderB)) {
                 continue;
             }
@@ -461,7 +531,6 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
                     bodyB->velocity =
                         bodyB->velocity - normal * vn;
                 }
-            }
         }
     }
 

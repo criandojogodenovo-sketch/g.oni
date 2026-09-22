@@ -22,6 +22,7 @@ add_library(eng_editor STATIC
     src/Viewport.cpp
     src/ViewportRenderer.cpp
     src/EditorHost.cpp
+    src/PerfGovernor.cpp
     src/ComponentRegistration.cpp
     src/NiRuntime.cpp
     src/TextureCache.cpp
@@ -75,6 +76,7 @@ endif()
 add_executable(eng_editor_tests
     tests/EditorTests.cpp
     tests/ContractTests.cpp
+    tests/PerfTests.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../android/app/src/main/cpp/EditorJni.cpp")
 target_include_directories(eng_editor_tests BEFORE PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/jni_shim"
