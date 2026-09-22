@@ -402,6 +402,127 @@ TEST_CASE("p47: bridge NI-Script — up on_hit roda no self atingido",
 }
 
 // =============================================================================
+// P4.7.0 Bloco 2 — Gizmos v3: setas reais + anti-sobreposição
+// =============================================================================
+
+TEST_CASE("p47: gizmo MOVE — centro DIAMANTE e 4 setas triangulares para fora",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Alvo", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->select(entity.value()).ok());
+    f.doc->setTool(eng::editor::EditorTool::Move);
+    REQUIRE(f.doc->tool() == eng::editor::EditorTool::Move);
+
+    const auto draw = f.doc->gizmoDraw(nullptr);
+    REQUIRE(draw.triangles.size() == 4); // setas REAIS (não quadrados)
+    // Centro é DIAMANTE: o único quad, rotação a 45° (π/4).
+    REQUIRE(draw.quads.size() == 1);
+    CHECK(draw.quads[0].rotation == Catch::Approx(0.7853981f).margin(1e-4f));
+
+    const auto& bounds = f.doc->selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+    const float axisLen = eng::editor::TransformGizmo::axisPx(
+                              f.doc->viewport().uiScale())
+                          / f.doc->viewport().camera().zoom;
+    // Setas nos QUATRO lados, na ponta do eixo, apontando PARA FORA
+    // (+X: rotação 0; −X: π; +Y: π/2; −Y: 3π/2 — Y de MUNDO para cima).
+    bool right = false;
+    bool left = false;
+    bool up = false;
+    bool down = false;
+    for (const auto& tri : draw.triangles) {
+        if (tri.worldX > bounds.worldX + axisLen * 0.9f
+            && tri.worldY == Catch::Approx(bounds.worldY).margin(1e-4f)) {
+            right = true;
+            CHECK(tri.rotation == Catch::Approx(0.f).margin(1e-4f));
+        }
+        if (tri.worldX < bounds.worldX - axisLen * 0.9f
+            && tri.worldY == Catch::Approx(bounds.worldY).margin(1e-4f)) {
+            left = true;
+        }
+        if (tri.worldY > bounds.worldY + axisLen * 0.9f) {
+            up = true;
+        }
+        if (tri.worldY < bounds.worldY - axisLen * 0.9f) {
+            down = true;
+        }
+    }
+    CHECK(right);
+    CHECK(left);
+    CHECK(up);
+    CHECK(down);
+
+    // Hastes terminam na BASE do triângulo (nunca através dele).
+    const float halfLen = eng::editor::TransformGizmo::headTriLenPx(
+                              f.doc->viewport().uiScale())
+                          * 0.5f / f.doc->viewport().camera().zoom;
+    for (const auto& segment : draw.segments) {
+        if (segment.y0 == Catch::Approx(bounds.worldY).margin(1e-4f)
+            && segment.y1 == Catch::Approx(bounds.worldY).margin(1e-4f)) {
+            const float end = std::max(segment.x0, segment.x1);
+            CHECK(end <= bounds.worldX + axisLen - halfLen + 1e-3f);
+        }
+    }
+}
+
+TEST_CASE("p47: gizmo SCALE — clamp anti-sobreposição em bounds minúsculo",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto entity = f.doc->createEntity("Pequeno", eng::scene::kNoEntity);
+    REQUIRE(entity.ok());
+    REQUIRE(f.doc->select(entity.value()).ok());
+    f.doc->setTool(eng::editor::EditorTool::Scale);
+
+    eng::editor::TransformGizmo gizmo;
+    const auto bounds = f.doc->selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+
+    // Bounds MINÚSCULO (meio-pixel de zoom): sem clamp os 8 handles
+    // colapsariam sobre o centro (o "cubo" do round 6).
+    auto points = gizmo.scaleHandlePoints(f.doc->viewport(), bounds);
+    const auto minDist = [&](const std::pair<float, float>& point) {
+        const float dx = f.doc->viewport().worldToScreenX(point.first)
+                         - f.doc->viewport().worldToScreenX(bounds.worldX);
+        const float dy = f.doc->viewport().worldToScreenY(point.second)
+                         - f.doc->viewport().worldToScreenY(bounds.worldY);
+        return std::sqrt(dx * dx + dy * dy);
+    };
+    const float minCorner =
+        eng::editor::TransformGizmo::kMinCornerCenterDp
+        * f.doc->viewport().uiScale();
+    CHECK(minDist(points.ne) >= minCorner - 1e-3f);
+    CHECK(minDist(points.sw) >= minCorner - 1e-3f);
+    CHECK(minDist(points.e) >=
+          eng::editor::TransformGizmo::kMinEdgeCenterDp
+              * f.doc->viewport().uiScale() - 1e-3f);
+
+    // O HIT usa a MESMA fonte: tocar no canto CLAMPADO acerta ScaleNE
+    // (gizmoDragBegin é o caminho do JNI — encerra o drag de seguida).
+    const float nePx = f.doc->viewport().worldToScreenX(points.ne.first);
+    const float nePy = f.doc->viewport().worldToScreenY(points.ne.second);
+    CHECK(f.doc->gizmoDragBegin(nePx, nePy, nullptr)
+          == eng::editor::GizmoHandle::ScaleNE);
+    f.doc->gizmoDragEnd();
+
+    // Bounds GRANDE (zoom alto): clamp não interfere — o canto fica MUITO
+    // além do mínimo (distância natural > 52dp).
+    f.doc->viewport().camera().zoom = 400.f;
+    REQUIRE(f.doc->select(entity.value()).ok());
+    const auto big = f.doc->selectionBounds(nullptr);
+    auto bigPoints = gizmo.scaleHandlePoints(f.doc->viewport(), big);
+    const float bigCornerPx =
+        f.doc->viewport().worldToScreenX(bigPoints.ne.first)
+        - f.doc->viewport().worldToScreenX(big.worldX);
+    CHECK(bigCornerPx > minCorner); // distância natural > mínimo
+    f.doc->viewport().camera().zoom = 48.f;
+}
+
+// =============================================================================
 // Event bus da cena + eventos de física (on_hit / triggers)
 // =============================================================================
 

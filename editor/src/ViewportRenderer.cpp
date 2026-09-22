@@ -148,6 +148,42 @@ void pushSegmentPx(std::vector<ViewportRenderer::Vertex>& out,
     out.insert(out.end(), std::begin(quad), std::end(quad));
 }
 
+/// P4.7.0 Bloco 2: TRIÂNGULO preenchido em PX — setas REAIS do gizmo
+/// (aponta para o +X local da rotação; halfLenPx = centro→ápice,
+/// halfBasePx = meia-base). Halo de 1dp SOB o triângulo (mesma forma
+/// escalada em bg) quando `rim` > 0 — contraste sobre qualquer sprite.
+void pushTrianglePx(std::vector<ViewportRenderer::Vertex>& out,
+                    const OverlayMapper& mapper, float cxPx, float cyPx,
+                    float halfLenPx, float halfBasePx, float rotation,
+                    float rim, float r, float g, float b)
+{
+    auto emit = [&](float len, float base, float cr, float cg, float cb) {
+        const float cosR = std::cos(rotation);
+        const float sinR = std::sin(rotation);
+        // Apice (+len, 0) e base (−len·0.5, ±base).
+        const float lx[3] = {len, -len * 0.5f, -len * 0.5f};
+        const float ly[3] = {0.f, base, -base};
+        float vx[3];
+        float vy[3];
+        for (int i = 0; i < 3; ++i) {
+            vx[i] = cxPx + lx[i] * cosR - ly[i] * sinR;
+            vy[i] = cyPx + lx[i] * sinR + ly[i] * cosR;
+        }
+        const ViewportRenderer::Vertex tri[3] = {
+            {mapper.toClipX(vx[0]), mapper.toClipY(vy[0]), 0.f, 1.f, cr, cg, cb, 1.f},
+            {mapper.toClipX(vx[1]), mapper.toClipY(vy[1]), 0.f, 1.f, cr, cg, cb, 1.f},
+            {mapper.toClipX(vx[2]), mapper.toClipY(vy[2]), 0.f, 1.f, cr, cg, cb, 1.f},
+        };
+        out.insert(out.end(), std::begin(tri), std::end(tri));
+    };
+    if (rim > 0.f) {
+        // Halo: mesma forma crescida sobre o CENTRO (mantém a ponta).
+        emit(halfLenPx + rim, halfBasePx + rim, kViewportBgR, kViewportBgG,
+             kViewportBgB);
+    }
+    emit(halfLenPx, halfBasePx, r, g, b);
+}
+
 /// Um quad de sprite LIT (2 triângulos, pos+cor+uv+MUNDO — P3 §5): o
 /// fragment ilumina por DISTÂNCIA MUNDIAL (luzes do bloco PerFrame).
 /// P4.3 (N3/N4): cantos em PX (rotação em px); o mundo per-vertex é
@@ -1114,17 +1150,20 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         }
     }
 
-    // Lote 3 (P1): GIZMO — quads preenchidos + segmentos de eixo/anel NO
-    // PIPELINE DE COR, POR CIMA de tudo (a entidade selecionada precisa
-    // dos handles visíveis sobre a própria arte). Sem blending: handles
-    // opacos com meia-borda de separação (painter's).
+    // Lote 3 (P1): GIZMO — quads preenchidos + segmentos + TRIÂNGULOS
+    // (setas reais, P4.7.0 B2) NO PIPELINE DE COR, POR CIMA de tudo (a
+    // entidade selecionada precisa dos handles visíveis sobre a própria
+    // arte). Ordem dentro do lote: quads → segmentos → triângulos — as
+    // pontas de seta nascem POR CIMA das hastes (seta limpa). Halo de
+    // 1dp (rim) sob CADA forma — contraste garantido sobre sprites claros.
     if (frameOk && gizmo != nullptr &&
-        (!gizmo->quads.empty() || !gizmo->segments.empty())) {
+        (!gizmo->quads.empty() || !gizmo->segments.empty()
+         || !gizmo->triangles.empty())) {
         gizmoVertices_.clear();
         // P4.6 (L4): OUTLINE subtil (rim escuro da cor do fundo) sob cada
         // handle — contraste garantido sobre sprites claros — e handles
         // CHAMFERADOS (octógono, "arredondados" no pipeline de quads).
-        const float rim = std::max(1.f, viewport.uiScale()) * 1.2f;
+        const float rim = TransformGizmo::haloPx(viewport.uiScale());
         for (const GizmoQuad& quad : gizmo->quads) {
             // P4.3 (N3/N4): half (mundo) × zoom = px; rotação em px —
             // handles quadrados em QUALQUER aspect (eram paralelogramos).
@@ -1143,11 +1182,27 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
             // P4.3 (N3) + P4.6 (L4): espessura 2dp CONSISTENTE (densidade —
             // 2px na densidade 1, 4px na densidade 2): o anel é círculo de
             // linha uniforme em qualquer surface.
+            const float halfThick =
+                std::max(1.f, viewport.uiScale());
+            // P4.7.0 B2: HALO de 1dp SOB o segmento (mesma linha mais
+            // grossa em bg) — o anel/haste não se perde sobre a arte.
             pushSegmentPx(gizmoVertices_, mapper, w2sX(segment.x0),
                           w2sY(segment.y0), w2sX(segment.x1),
-                          w2sY(segment.y1),
-                          std::max(1.f, viewport.uiScale()), segment.r,
+                          w2sY(segment.y1), halfThick + rim,
+                          kViewportBgR, kViewportBgG, kViewportBgB);
+            pushSegmentPx(gizmoVertices_, mapper, w2sX(segment.x0),
+                          w2sY(segment.y0), w2sX(segment.x1),
+                          w2sY(segment.y1), halfThick, segment.r,
                           segment.g, segment.b);
+        }
+        for (const GizmoTriangle& triangle : gizmo->triangles) {
+            // P4.7.0 B2: SETAS REAIS — triângulos com halo, rotação em
+            // px (isotrópica — regra única do overlay).
+            pushTrianglePx(gizmoVertices_, mapper,
+                           w2sX(triangle.worldX), w2sY(triangle.worldY),
+                           triangle.halfW * zoom, triangle.halfH * zoom,
+                           triangle.rotation, rim, triangle.r, triangle.g,
+                           triangle.b);
         }
         if (!gizmoVertices_.empty() && ensureCapacity(gizmoVertices_.size())) {
             auto pipelined = frame.setPipeline(shaders_.colorPipeline());

@@ -136,6 +136,44 @@ sem hooks, sem eventos tipados).
 | Dialog agrupado por categoria | VERIFIED (código; visual no round 7) |
 | on_visible/on_invisible (publisher no B6) | PARCIAL (bridge pronto) |
 
-## Bloco 2 — Gizmos v3 (setas reais, hit areas, camadas)
+## Bloco 2 — Gizmos v3: setas REAIS, hit ≥48dp, halo, anti-sobreposição
+
+Driver: round 6 — "o gizmo parece um cubo, não setas" (as pontas eram
+quadrados girados) e handles colapsando sobre o centro em bounds pequenos.
+
+- **Setas reais** (`GizmoTriangle` — novo primitivo do gizmo; renderer
+  emite 3 vértices): MOVE = 4 pontas triangulares apontando PARA FORA
+  (16dp de comprimento, 14dp de base, halo incluído), hastes 2dp
+  terminando na BASE do triângulo (nunca através). Rotate = anel + handle
+  TRIANGULAR tangente (aponta na direção de crescimento do ângulo; o
+  chevron de segmentos saiu — o triângulo É a seta). Scale = 4 cantos
+  (quadrados, escala XY) + 4 marcas de aresta + 4 setas triangulares de
+  aresta apontando para fora ao longo do eixo local.
+- **Centro DIAMANTE** no MOVE (quadrado a 45°) — affordance distinta dos
+  cantos quadrados do SCALE.
+- **Halo 1dp** sob TODA forma do gizmo (quads já tinham rim; agora
+  segmentos recebem linha bg mais grossa por baixo e triângulos halo
+  próprio) — contraste garantido sobre sprites claros.
+- **Anti-sobreposição clamp** (`scaleHandlePoints`, fonte ÚNICA de
+  hit-test e desenho): bounds pequenos empurram cantos para fora até
+  52dp do centro e arestas até 44dp — o cluster de cantos nunca mais
+  colapsa num "cubo" sobre a entidade. Drag continua 1:1 screen-space
+  (segue o POINTER, não o handle clampado).
+- **Hit ≥48dp mantido** (kHitDp 24 → ⌀48dp) e agora SEMPRE coincidente
+  com o visual desenhado (mesma `scaleHandlePoints`).
+- **Camada de desenho**: grid → sprites (+borda de seleção) → gizmo
+  (quads → segmentos → triângulos) → HUD do Play — inalterada na ordem
+  macro, triângulos por cima das hastes dentro do lote.
+
+| Item | Status |
+|---|---|
+| Setas triangulares reais (move/scale/rotate) | VERIFIED (3 testes de layout) |
+| Centro diamante | VERIFIED |
+| Hastes terminam na base do triângulo | VERIFIED |
+| Clamp anti-sobreposição (hit == visual) | VERIFIED (2 testes) |
+| Halo 1dp (quads+segmentos+triângulos) | VERIFIED (código; visual no round 7) |
+| Drag 1:1 preservado (regressões P1/P2 verdes) | VERIFIED (suite completa 3×) |
+
+## Bloco 3 — zero sobreposição (top bar / auditoria)
 
 (este bloco ainda não começou)

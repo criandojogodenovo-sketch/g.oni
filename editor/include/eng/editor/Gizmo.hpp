@@ -100,6 +100,21 @@ struct GizmoQuad {
     float b{1.f};
 };
 
+/// Triângulo preenchido do gizmo (P4.7.0 Bloco 2 — SETAS REAIS), em
+/// MUNDO. Aponta para o +X LOCAL da rotação (radianos): halfW =
+/// comprimento centro→ápice, halfH = meia-base. Substitui os "quadrados
+/// girados" que o round 6 leu como cubo.
+struct GizmoTriangle {
+    float worldX{0.f};
+    float worldY{0.f};
+    float halfW{1.f};
+    float halfH{1.f};
+    float rotation{0.f};
+    float r{1.f};
+    float g{1.f};
+    float b{1.f};
+};
+
 /// Segmento do gizmo (eixos/anel), em MUNDO.
 struct GizmoSegment {
     float x0{0.f};
@@ -111,10 +126,11 @@ struct GizmoSegment {
     float b{1.f};
 };
 
-/// Pacote de desenho do gizmo (quads + segmentos em MUNDO) — o documento
-/// produz, o renderer consome (P1).
+/// Pacote de desenho do gizmo (quads + triângulos + segmentos em MUNDO)
+/// — o documento produz, o renderer consome (P1).
 struct GizmoDrawData {
     std::vector<GizmoQuad> quads;
+    std::vector<GizmoTriangle> triangles;
     std::vector<GizmoSegment> segments;
 };
 
@@ -134,6 +150,13 @@ public:
     static constexpr float kRingPadDp = 26.f;  ///< folga do anel p/ fora
     static constexpr float kRingMinDp = 64.f;  ///< raio mínimo do anel
     static constexpr float kHitDp = 24.f;      ///< raio de acerto (48dp ⌀)
+    // P4.7.0 Bloco 2 — setas REAIS + anti-sobreposição:
+    static constexpr float kHeadTriLenDp = 16.f; ///< comprimento do triângulo (12–16dp)
+    static constexpr float kHeadTriBaseDp = 14.f; ///< base do triângulo
+    static constexpr float kShaftDp = 2.f;       ///< espessura da haste
+    static constexpr float kHaloDp = 1.f;        ///< halo/rim de 1dp
+    static constexpr float kMinCornerCenterDp = 52.f; ///< cantos: distância mínima do centro
+    static constexpr float kMinEdgeCenterDp = 44.f;   ///< arestas: distância mínima do centro
     /// Snap de rotação: 15° com ímã de 4° (opcional, previsível).
     static constexpr float kRotateSnapStepDeg = 15.f;
     static constexpr float kRotateSnapPullDeg = 4.f;
@@ -147,6 +170,22 @@ public:
     [[nodiscard]] static float handlePx(float uiScale) noexcept
     {
         return std::clamp(kHandleDp * uiScale, 28.f, 40.f);
+    }
+    /// Comprimento TOTAL do triângulo de seta (P4.7.0 B2) em px —
+    /// halfW do GizmoTriangle é a METADE disto (centro→ápice).
+    [[nodiscard]] static float headTriLenPx(float uiScale) noexcept
+    {
+        return std::clamp(kHeadTriLenDp * uiScale, 14.f, 20.f);
+    }
+    /// Base do triângulo de seta em px (meia-base = halfH).
+    [[nodiscard]] static float headTriBasePx(float uiScale) noexcept
+    {
+        return std::clamp(kHeadTriBaseDp * uiScale, 12.f, 18.f);
+    }
+    /// Halo/rim dos handles em px (P4.7.0 B2: 1dp mínimo).
+    [[nodiscard]] static float haloPx(float uiScale) noexcept
+    {
+        return std::max(kHaloDp * uiScale, 1.f);
     }
     /// Lado visual da ponta de seta (MOVE) em px.
     [[nodiscard]] static float arrowHeadPx(float uiScale) noexcept
@@ -246,9 +285,26 @@ public:
     [[nodiscard]] std::vector<GizmoQuad> layoutQuads(
         const Viewport& viewport, EditorTool tool,
         const GizmoBounds& bounds) const;
+    [[nodiscard]] std::vector<GizmoTriangle> layoutTriangles(
+        const Viewport& viewport, EditorTool tool,
+        const GizmoBounds& bounds) const;
     [[nodiscard]] std::vector<GizmoSegment> layoutSegments(
         const Viewport& viewport, EditorTool tool,
         const GizmoBounds& bounds) const;
+
+    /// P4.7.0 Bloco 2 — posições dos handles de SCALE com o CLAMP
+    /// anti-sobreposição: bounds pequenos colapsariam a esquina dos
+    /// cantos sobre o centro (round 6). Cantos/arestas são EMPURRADOS
+    /// para fora até a distância mínima do centro (kMinCornerCenterDp /
+    /// kMinEdgeCenterDp). Hit-test e desenho usam ESTA MESMA fonte — o
+    /// toque sempre coincide com o visual. Drag continua 1:1 (o drag
+    /// segue o POINTER, não a posição do handle).
+    struct HandlePoints {
+        std::pair<float, float> ne, nw, se, sw; ///< cantos
+        std::pair<float, float> e, w, n, s;     ///< arestas
+    };
+    [[nodiscard]] HandlePoints scaleHandlePoints(
+        const Viewport& viewport, const GizmoBounds& bounds) const;
 
     /// Cores canônicas (X vermelho, Y verde, centro amarelo, rotação
     /// ciano, escala âmbar — mesmas em hit-test, drag e desenho).

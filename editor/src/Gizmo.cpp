@@ -249,39 +249,40 @@ GizmoHandle TransformGizmo::hitTest(const Viewport& viewport, EditorTool tool,
     }
 
     if (tool == EditorTool::Scale) {
+        // P4.7.0 Bloco 2: MESMAS posições CLAMPADAS do desenho — o toque
+        // sempre coincide com o handle desenhado (anti-sobreposição).
         // Cantos primeiro (escala XY), depois arestas (um eixo) — P4.1.
-        const CornerPoints corners = cornersOf(bounds);
-        if (screenDistanceTo(viewport, corners.ne.first, corners.ne.second, screenX,
-                             screenY) <= hitScreenPx) {
+        const HandlePoints points = scaleHandlePoints(viewport, bounds);
+        if (screenDistanceTo(viewport, points.ne.first, points.ne.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleNE;
         }
-        if (screenDistanceTo(viewport, corners.nw.first, corners.nw.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.nw.first, points.nw.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleNW;
         }
-        if (screenDistanceTo(viewport, corners.se.first, corners.se.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.se.first, points.se.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleSE;
         }
-        if (screenDistanceTo(viewport, corners.sw.first, corners.sw.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.sw.first, points.sw.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleSW;
         }
-        const EdgePoints edges = edgesOf(bounds);
-        if (screenDistanceTo(viewport, edges.e.first, edges.e.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.e.first, points.e.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleEdgeE;
         }
-        if (screenDistanceTo(viewport, edges.w.first, edges.w.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.w.first, points.w.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleEdgeW;
         }
-        if (screenDistanceTo(viewport, edges.n.first, edges.n.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.n.first, points.n.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleEdgeN;
         }
-        if (screenDistanceTo(viewport, edges.s.first, edges.s.second, screenX,
-                             screenY) <= hitScreenPx) {
+        if (screenDistanceTo(viewport, points.s.first, points.s.second,
+                             screenX, screenY) <= hitScreenPx) {
             return GizmoHandle::ScaleEdgeS;
         }
         return GizmoHandle::None;
@@ -444,83 +445,172 @@ std::vector<GizmoQuad> TransformGizmo::layoutQuads(const Viewport& viewport,
     }
     const float scale = viewport.uiScale();
     const float handleHalf = pxToWorld(viewport, handlePx(scale)) * 0.5f;
-    const float headHalf = pxToWorld(viewport, arrowHeadPx(scale)) * 0.5f;
-    const float edgeHalf = pxToWorld(viewport, edgePx(scale)) * 0.5f;
 
     if (tool == EditorTool::Move) {
-        // P4.1 (D1/D2): 4 SETAS (±X, ±Y) + quadrado central — affordance
-        // completa; a ponta é maior que o handle (alvo óbvio).
-        const float axisLen = pxToWorld(viewport, axisPx(scale));
-        quads.push_back({bounds.worldX, bounds.worldY, handleHalf, handleHalf,
-                         0.f, kCenterR, kCenterG, kCenterB});
-        quads.push_back({bounds.worldX + axisLen, bounds.worldY, headHalf,
-                         headHalf, 0.f, kXAxisR, kXAxisG, kXAxisB});
-        quads.push_back({bounds.worldX - axisLen, bounds.worldY, headHalf,
-                         headHalf, 0.f, kXAxisR, kXAxisG, kXAxisB});
-        quads.push_back({bounds.worldX, bounds.worldY + axisLen, headHalf,
-                         headHalf, 0.f, kYAxisR, kYAxisG, kYAxisB});
-        quads.push_back({bounds.worldX, bounds.worldY - axisLen, headHalf,
-                         headHalf, 0.f, kYAxisR, kYAxisG, kYAxisB});
+        // P4.1 (D1/D2) + P4.7.0 B2: 4 SETAS (±X, ±Y) — hastes terminam
+        // na BASE do triângulo — e centro DIAMANTE (quadrado a 45° —
+        // affordance distinta dos handles quadrados do scale).
+        quads.push_back({bounds.worldX, bounds.worldY, handleHalf,
+                         handleHalf, kPi * 0.25f, kCenterR, kCenterG,
+                         kCenterB});
         return quads;
     }
 
     if (tool == EditorTool::Rotate) {
-        // P4.1 (D3): anel ≥64 px + handle dot ACoplado ao ângulo + ponta
-        // de seta (o dot é o alvo, o spoke é a affordance).
+        // P4.1 (D3) + P4.7.0 B2: anel ≥64 px; o HANDLE é TRIÂNGULO
+        // tangente (em layoutTriangles) — aqui só o anel/spoke vivem em
+        // segmentos; NENHUM quad central (o pivot é o próprio centro).
+        return quads;
+    }
+
+    // Scale (P4.1/D4 + P4.7.0 B2): 4 CANTOS (quadrados — escala XY) + 4
+    // marcas de aresta nas posições CLAMPADAS (anti-sobreposição).
+    const HandlePoints points = scaleHandlePoints(viewport, bounds);
+    quads.push_back({points.ne.first, points.ne.second, handleHalf,
+                     handleHalf, bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({points.nw.first, points.nw.second, handleHalf,
+                     handleHalf, bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({points.se.first, points.se.second, handleHalf,
+                     handleHalf, bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({points.sw.first, points.sw.second, handleHalf,
+                     handleHalf, bounds.rotation, kScaleR, kScaleG, kScaleB});
+    const float edgeHalf = pxToWorld(viewport, edgePx(scale)) * 0.5f;
+    quads.push_back({points.e.first, points.e.second, edgeHalf, edgeHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({points.w.first, points.w.second, edgeHalf, edgeHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({points.n.first, points.n.second, edgeHalf, edgeHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({points.s.first, points.s.second, edgeHalf, edgeHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    return quads;
+}
+
+TransformGizmo::HandlePoints TransformGizmo::scaleHandlePoints(
+    const Viewport& viewport, const GizmoBounds& bounds) const
+{
+    // P4.7.0 Bloco 2: CLAMP anti-sobreposição. Um bounds pequeno (px)
+    // colapsaria cantos/arestas num só blob sobre o centro — cada handle
+    // é empurrado PARA FORA ao longo da sua direção local até a
+    // distância mínima do centro (em PX de tela, constante no zoom).
+    HandlePoints points;
+    const CornerPoints corners = cornersOf(bounds);
+    const EdgePoints edges = edgesOf(bounds);
+    const float scale = viewport.uiScale();
+    const float minCornerPx = kMinCornerCenterDp * scale;
+    const float minEdgePx = kMinEdgeCenterDp * scale;
+
+    auto pushOut = [&](std::pair<float, float> point,
+                       float minDistPx) {
+        const float dx = viewport.worldToScreenX(point.first)
+                         - viewport.worldToScreenX(bounds.worldX);
+        const float dy = viewport.worldToScreenY(point.second)
+                         - viewport.worldToScreenY(bounds.worldY);
+        // worldToScreenY INVERTE o Y — distância euclidiana é igual.
+        const float distPx = std::sqrt(dx * dx + dy * dy);
+        if (distPx >= minDistPx || distPx <= 0.f) {
+            return point;
+        }
+        const float factor = minDistPx / distPx;
+        // Escala o OFFSET de MUNDO (proporcional ao offset de px —
+        // worldToScreen é afin, zoom positivo).
+        const float offX = (point.first - bounds.worldX) * factor;
+        const float offY = (point.second - bounds.worldY) * factor;
+        return std::make_pair(bounds.worldX + offX,
+                              bounds.worldY + offY);
+    };
+
+    points.ne = pushOut(corners.ne, minCornerPx);
+    points.nw = pushOut(corners.nw, minCornerPx);
+    points.se = pushOut(corners.se, minCornerPx);
+    points.sw = pushOut(corners.sw, minCornerPx);
+    points.e = pushOut(edges.e, minEdgePx);
+    points.w = pushOut(edges.w, minEdgePx);
+    points.n = pushOut(edges.n, minEdgePx);
+    points.s = pushOut(edges.s, minEdgePx);
+    return points;
+}
+
+std::vector<GizmoTriangle> TransformGizmo::layoutTriangles(
+    const Viewport& viewport, EditorTool tool,
+    const GizmoBounds& bounds) const
+{
+    std::vector<GizmoTriangle> triangles;
+    if (!bounds.valid || tool == EditorTool::Select) {
+        return triangles;
+    }
+    const float scale = viewport.uiScale();
+    const float halfLen =
+        pxToWorld(viewport, headTriLenPx(scale) * 0.5f);
+    const float halfBase =
+        pxToWorld(viewport, headTriBasePx(scale) * 0.5f);
+
+    if (tool == EditorTool::Move) {
+        // P4.7.0 B2: 4 pontas de seta TRIANGULARES apontando PARA FORA
+        // (+X, −X, +Y, −Y — convenção world, Y para cima).
+        constexpr float kRight = 0.f;
+        constexpr float kUp = kPi * 0.5f;
+        constexpr float kLeft = kPi;
+        constexpr float kDown = kPi * 1.5f;
+        const float axisLen = pxToWorld(viewport, axisPx(scale));
+        triangles.push_back({bounds.worldX + axisLen, bounds.worldY,
+                             halfLen, halfBase, kRight, kXAxisR, kXAxisG,
+                             kXAxisB});
+        triangles.push_back({bounds.worldX - axisLen, bounds.worldY,
+                             halfLen, halfBase, kLeft, kXAxisR, kXAxisG,
+                             kXAxisB});
+        triangles.push_back({bounds.worldX, bounds.worldY + axisLen,
+                             halfLen, halfBase, kUp, kYAxisR, kYAxisG,
+                             kYAxisB});
+        triangles.push_back({bounds.worldX, bounds.worldY - axisLen,
+                             halfLen, halfBase, kDown, kYAxisR, kYAxisG,
+                             kYAxisB});
+        return triangles;
+    }
+
+    if (tool == EditorTool::Rotate) {
+        // Handle TRIANGULAR no anel apontando na TANGENTE (direção de
+        // crescimento do ângulo — affordance de "para onde gira").
         const float radiusPx =
             std::max(bounds.halfW, bounds.halfH) *
                 viewport.effectiveCamera().zoom;
         const float radius =
             pxToWorld(viewport, ringRadiusPx(radiusPx, scale));
         const auto [hx, hy] = ringHandleWorld(bounds, radius);
-        quads.push_back({hx, hy, headHalf, headHalf, 0.f, kRotateR,
-                         kRotateG, kRotateB});
-        return quads;
+        triangles.push_back({hx, hy, halfLen, halfBase,
+                             bounds.rotation + kPi * 0.5f, kRotateR,
+                             kRotateG, kRotateB});
+        return triangles;
     }
 
-    // Scale (P4.1/D4): 4 CANTOS + 4 MARCAS DE ARESTA na rotação da
-    // entidade — cantos maiores (escala XY), arestas menores (1 eixo).
-    const CornerPoints corners = cornersOf(bounds);
-    quads.push_back({corners.ne.first, corners.ne.second, handleHalf, handleHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({corners.nw.first, corners.nw.second, handleHalf, handleHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({corners.se.first, corners.se.second, handleHalf, handleHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({corners.sw.first, corners.sw.second, handleHalf, handleHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    const EdgePoints edges = edgesOf(bounds);
-    quads.push_back({edges.e.first, edges.e.second, edgeHalf, edgeHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({edges.w.first, edges.w.second, edgeHalf, edgeHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({edges.n.first, edges.n.second, edgeHalf, edgeHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({edges.s.first, edges.s.second, edgeHalf, edgeHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    // P4.6 (L3): SETAS nas arestas — affordance direcional coerente com as
-    // setas do move: cada marca de aresta ganha uma ponta apontando PARA
-    // FORA do bounds ao longo do eixo local (E/W no X local, N/S no Y local).
-    const float arrowHalf =
-        pxToWorld(viewport, edgeArrowPx(scale)) * 0.5f;
+    // Scale: setas de ARESTA apontando PARA FORA ao longo do eixo local
+    // (E/W no +X local, N/S no +Y local) — nas posições CLAMPADAS.
+    const HandlePoints points = scaleHandlePoints(viewport, bounds);
     const float dirX = std::cos(bounds.rotation);
     const float dirY = std::sin(bounds.rotation);
     const float perpX = -dirY;
     const float perpY = dirX;
-    const float outward = edgeHalf + arrowHalf * 0.9f;
-    quads.push_back({edges.e.first + dirX * outward,
-                     edges.e.second + dirY * outward, arrowHalf, arrowHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({edges.w.first - dirX * outward,
-                     edges.w.second - dirY * outward, arrowHalf, arrowHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({edges.n.first + perpX * outward,
-                     edges.n.second + perpY * outward, arrowHalf, arrowHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    quads.push_back({edges.s.first - perpX * outward,
-                     edges.s.second - perpY * outward, arrowHalf, arrowHalf,
-                     bounds.rotation, kScaleR, kScaleG, kScaleB});
-    return quads;
+    const float outward = edgePx(scale) * 0.5f
+                          + headTriLenPx(scale) * 0.75f;
+    const float outwardW =
+        pxToWorld(viewport, outward);
+    triangles.push_back(
+        {points.e.first + dirX * outwardW,
+         points.e.second + dirY * outwardW, halfLen, halfBase,
+         bounds.rotation, kScaleR, kScaleG, kScaleB});
+    triangles.push_back(
+        {points.w.first - dirX * outwardW,
+         points.w.second - dirY * outwardW, halfLen, halfBase,
+         bounds.rotation + kPi, kScaleR, kScaleG, kScaleB});
+    triangles.push_back(
+        {points.n.first + perpX * outwardW,
+         points.n.second + perpY * outwardW, halfLen, halfBase,
+         bounds.rotation + kPi * 0.5f, kScaleR, kScaleG, kScaleB});
+    triangles.push_back(
+        {points.s.first - perpX * outwardW,
+         points.s.second - perpY * outwardW, halfLen, halfBase,
+         bounds.rotation + kPi * 1.5f, kScaleR, kScaleG, kScaleB});
+    return triangles;
 }
 
 std::vector<GizmoSegment> TransformGizmo::layoutSegments(
@@ -535,29 +625,32 @@ std::vector<GizmoSegment> TransformGizmo::layoutSegments(
 
     if (tool == EditorTool::Move) {
         // P4.1: hastes das 4 setas (partem da borda do bounds — não
-        // cobrem a arte da entidade).
+        // cobrem a arte da entidade). P4.7.0 B2: terminam na BASE do
+        // triângulo (a seta é o triângulo — nunca haste através dele).
         const float axisLen = pxToWorld(viewport, axisPx(scale));
+        const float shaftGap =
+            pxToWorld(viewport, headTriLenPx(scale) * 0.5f);
         const float startX = std::max(bounds.halfW, 0.f);
         const float startY = std::max(bounds.halfH, 0.f);
         segments.push_back({bounds.worldX + startX, bounds.worldY,
-                            bounds.worldX + axisLen, bounds.worldY,
+                            bounds.worldX + axisLen - shaftGap, bounds.worldY,
                             kXAxisR, kXAxisG, kXAxisB});
         segments.push_back({bounds.worldX - startX, bounds.worldY,
-                            bounds.worldX - axisLen, bounds.worldY,
+                            bounds.worldX - axisLen + shaftGap, bounds.worldY,
                             kXAxisR, kXAxisG, kXAxisB});
         segments.push_back({bounds.worldX, bounds.worldY + startY,
-                            bounds.worldX, bounds.worldY + axisLen,
+                            bounds.worldX, bounds.worldY + axisLen - shaftGap,
                             kYAxisR, kYAxisG, kYAxisB});
         segments.push_back({bounds.worldX, bounds.worldY - startY,
-                            bounds.worldX, bounds.worldY - axisLen,
+                            bounds.worldX, bounds.worldY - axisLen + shaftGap,
                             kYAxisR, kYAxisG, kYAxisB});
         return segments;
     }
 
     if (tool == EditorTool::Rotate) {
-        // P4.1 (D3): anel 32 lados + SPOKE do centro ao handle + PONTA
-        // DE SETA (duas tangentes curtas no handle — chevron). O autor
-        // VÊ de onde girar.
+        // P4.1 (D3): anel 32 lados + SPOKE do centro ao handle. P4.7.0
+        // B2: a ponta de seta é o HANDLE TRIANGULAR (layoutTriangles).
+        // O autor VÊ de onde girar.
         const float radiusPx =
             std::max(bounds.halfW, bounds.halfH) *
                 viewport.effectiveCamera().zoom;
@@ -581,19 +674,8 @@ std::vector<GizmoSegment> TransformGizmo::layoutSegments(
         const auto [hx, hy] = ringHandleWorld(bounds, radius);
         segments.push_back({bounds.worldX, bounds.worldY, hx, hy, kRotateR,
                             kRotateG, kRotateB});
-        // Chevron (ponta de seta tangente no handle — 20% do raio).
-        const float chev = radius * 0.2f;
-        const float cx = std::cos(bounds.rotation + kPi * 0.5f);
-        const float sy = std::sin(bounds.rotation + kPi * 0.5f);
-        const float rx = std::cos(bounds.rotation);
-        const float ry = std::sin(bounds.rotation);
-        // Tangentes ± chevron: do handle, para trás e para os lados.
-        segments.push_back({hx - rx * chev + cx * chev,
-                            hy - ry * chev + sy * chev,
-                            hx, hy, kRotateR, kRotateG, kRotateB});
-        segments.push_back({hx - rx * chev - cx * chev,
-                            hy - ry * chev - sy * chev,
-                            hx, hy, kRotateR, kRotateG, kRotateB});
+        // P4.7.0 B2: o CHEVRON saiu — o handle TRIÂNGULAR tangente
+        // (layoutTriangles) é a própria ponta de seta da rotação.
         return segments;
     }
 

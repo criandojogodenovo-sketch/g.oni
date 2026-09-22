@@ -1503,6 +1503,7 @@ GizmoDrawData EditorDocument::gizmoDraw(TextureCache* textures) const
         return draw;
     }
     draw.quads = gizmo_.layoutQuads(viewport_, tool_, bounds);
+    draw.triangles = gizmo_.layoutTriangles(viewport_, tool_, bounds);
     draw.segments = gizmo_.layoutSegments(viewport_, tool_, bounds);
     // P4.6 (L4): transição entre tools — POP de 120ms nos handles (a
     // hit-test NÃO muda: alvo de toque constante, só o visual escala).
@@ -1511,6 +1512,10 @@ GizmoDrawData EditorDocument::gizmoDraw(TextureCache* textures) const
         for (GizmoQuad& quad : draw.quads) {
             quad.halfW *= pop;
             quad.halfH *= pop;
+        }
+        for (GizmoTriangle& triangle : draw.triangles) {
+            triangle.halfW *= pop;
+            triangle.halfH *= pop;
         }
     }
     return draw;

@@ -3081,17 +3081,26 @@ TEST_CASE("editor: P1 — tool modes: abstração única, Select sem gizmo, Play
         CHECK(doc.tool() == tool);
         REQUIRE(doc.select(g.entity).ok());
         const auto draw = doc.gizmoDraw(nullptr);
-        CHECK_FALSE(draw.quads.empty());   // cada tool desenha handles
+        // P4.7.0 B2: cada tool desenha handles — Rotate agora é anel +
+        // TRIÂNGULO (sem quad central); Move tem diamante + setas;
+        // Scale tem cantos/arestas + setas.
+        const bool hasAnyHandle = !draw.quads.empty()
+                                  || !draw.triangles.empty()
+                                  || !draw.segments.empty();
+        CHECK(hasAnyHandle);
         if (tool == EditorTool::Rotate) {
             CHECK_FALSE(draw.segments.empty());  // anel
+            CHECK(draw.triangles.size() == 1);   // handle triangular
         } else if (tool == EditorTool::Move) {
             // P4.1 (D1/D2): 4 HASTES — setas nos DOIS lados de cada eixo
             // (±X, ±Y) com pontas visíveis; era 2 (só +X/+Y).
             CHECK(draw.segments.size() == 4);
+            CHECK(draw.triangles.size() == 4);   // setas reais (B2)
         } else {
             // P4.1 (D4): 4 diagonais (guia) + 8 meias-arestas do quad
             // (as arestas ganharam handles de escala de um eixo).
             CHECK(draw.segments.size() == 12);
+            CHECK(draw.triangles.size() == 4);   // setas de aresta (B2)
         }
     }
 
@@ -4219,13 +4228,24 @@ TEST_CASE("editor: P2 — gizmo NÃO quebra após mudanças (matrix §5)",
     {
         REQUIRE(doc.select(sprite.value()).ok());
         doc.setTool(eng::editor::EditorTool::Scale);
-        const auto b = doc.selectionBounds(&cache);
-        const float cx = doc.viewport().worldToScreenX(b.worldX);
-        const float cy = doc.viewport().worldToScreenY(b.worldY);
-        REQUIRE(doc.gizmoDragBegin(
-                    cx + b.halfW * 48.f, cy - b.halfH * 48.f,
-                    &cache) == GizmoHandle::ScaleNE);
-        REQUIRE(doc.gizmoDragTo(cx + b.halfW * 96.f, cy - b.halfH * 96.f).ok());
+        // P4.7.0 B2: o toque usa a MESMA fonte do desenho — handle
+        // CLAMPADO (scaleHandlePoints). Bounds pequenos empurram o
+        // cantão para fora; tocar no cantão "cru" seria um MISS.
+        TransformGizmo gizmoForPoints;
+        const auto points =
+            gizmoForPoints.scaleHandlePoints(doc.viewport(),
+                                             doc.selectionBounds(&cache));
+        const float nePx =
+            doc.viewport().worldToScreenX(points.ne.first);
+        const float nePy =
+            doc.viewport().worldToScreenY(points.ne.second);
+        REQUIRE(doc.gizmoDragBegin(nePx, nePy, &cache)
+                == GizmoHandle::ScaleNE);
+        const auto b2 = doc.selectionBounds(&cache);
+        const float cx2 = doc.viewport().worldToScreenX(b2.worldX);
+        const float cy2 = doc.viewport().worldToScreenY(b2.worldY);
+        REQUIRE(doc.gizmoDragTo(cx2 + b2.halfW * 96.f,
+                                cy2 - b2.halfH * 96.f).ok());
         doc.gizmoDragEnd();
     }
 
@@ -8728,27 +8748,30 @@ TEST_CASE("p46: SCALE com setas nas arestas (L3) — 12 quads apontando para "
     std::this_thread::sleep_for(std::chrono::milliseconds(140));
     CHECK(f.doc->gizmoHandlePop() == 1.f);
 
-    // --- L3: layoutQuads SCALE = 4 cantos + 4 marcas + 4 setas = 12 ---------
+    // --- B2: layoutQuads SCALE = 4 cantos + 4 marcas = 8; layoutTriangles
+    // SCALE = 4 setas de aresta (setas REAIS — B2) ----------------------------
     TransformGizmo gizmo;
     const GizmoBounds bounds = f.doc->selectionBounds(nullptr);
     REQUIRE(bounds.valid);
     auto quads = gizmo.layoutQuads(f.doc->viewport(), EditorTool::Scale,
                                    bounds);
-    REQUIRE(quads.size() == 12);
-    // Setas apontam PARA FORA: as 4 últimas (arrows) estão além das marcas.
-    // Ordem de push: 4 cantos, 4 marcas, 4 setas — a seta E está além da
-    // marca E (mesma direção do eixo local, deslocada para fora).
+    REQUIRE(quads.size() == 8); // 4 cantos + 4 marcas (setas migraram)
+    auto tris = gizmo.layoutTriangles(f.doc->viewport(), EditorTool::Scale,
+                                      bounds);
+    REQUIRE(tris.size() == 4);  // 4 setas de aresta (B2)
+    // Setas apontam PARA FORA: a seta E está além da marca E (mesma
+    // direção do eixo local, deslocada para fora).
     const float markE = quads[4].worldX;
-    const float arrowE = quads[8].worldX;
+    const float arrowE = tris[0].worldX;
     CHECK(arrowE > markE);
     const float markW = quads[5].worldX;
-    const float arrowW = quads[9].worldX;
+    const float arrowW = tris[1].worldX;
     CHECK(arrowW < markW);
     const float markN = quads[6].worldY;
-    const float arrowN = quads[10].worldY;
+    const float arrowN = tris[2].worldY;
     CHECK(arrowN > markN);
     const float markS = quads[7].worldY;
-    const float arrowS = quads[11].worldY;
+    const float arrowS = tris[3].worldY;
     CHECK(arrowS < markS);
 
     // Alvos de toque ≥ 48dp: o hitPx continua 24dp de raio (48 ⌀).
