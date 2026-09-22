@@ -380,8 +380,8 @@ Cross-build do `.so` com NDK r27b (mesma toolchain do CI),
 | `nativeEditorCanUndo` / `CanRedo` | VERIFIED | idem — delegam em `canUndo()/canRedo()` |
 | `nativeEditorUndo` / `Redo` | VERIFIED | idem — delegam em `undo()/redo()` (result.ok()) |
 | Outras 112 funções EditorJni | VERIFIED | matriz 1:1 (§7.4) + dlsym 120/120 + CI Linux |
-| Contrato dlsym no CI Linux | VERIFIED (local; CI pendente no push) | proof-of-catch §7.5 |
-| APK do CI re-auditado (anti-mangling) | NOT VERIFIED (aguarda run) | gate §7.6 executa no push |
+| Contrato dlsym no CI Linux | VERIFIED (CI #64 @ `dca9922`) | "JNI symbol contract" verde na suíte ASan+UBSan+Werror |
+| APK do CI re-auditado (anti-mangling) | VERIFIED (CI Android #58 @ `dca9922`) | Gate "OK: zero símbolos JNI manglados" no log; APK artefato SHA256 `f0ae5a5de2d0f9dd9a81a8c52ba6a6dd7ec4ea7694794af7f6fbc40975358ba5`; re-auditoria local do `.so` do artefato: 0 mangled / 120 limpos / 8 P4.5 `T` |
 | Instalação no C33 + round 5b | NOT VERIFIED (device) | requer usuário: APK abre e fica aberta; 10 pontos do round 5 |
 
 ### 7.9 Regras preservadas
