@@ -7288,3 +7288,101 @@ TEST_CASE("editor: P4.3/N1 — preview de áudio: toggle, stop e isolamento",
     REQUIRE(missing.isError());
     CHECK_FALSE(f.doc->audioPreviewPlaying());
 }
+
+// =============================================================================
+// P4.3 — BLOCO 1: hierarquia completa — round-trip de TOPOLOGIA (save/load
+// preserva pais/filhos/ordem) + duplicação de subárvore. A UI por toque
+// (criar/renomear/duplicar/apagar/parentear/menu de contexto) já existe na
+// Activity; aqui está a prova de que o DOCUMENTO preserva o que a UI cria.
+// =============================================================================
+
+TEST_CASE("editor: P4.3/Bloco 1 — save/load preserva topologia e ordem",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // R1 → (C1, C2 → G1); R2 — topologia não-trivial em DUAS raízes.
+    auto r1 = f.doc->createEntity("R1", eng::scene::kNoEntity);
+    auto r2 = f.doc->createEntity("R2", eng::scene::kNoEntity);
+    auto c1 = f.doc->createEntity("C1", r1.value());
+    auto c2 = f.doc->createEntity("C2", r1.value());
+    auto g1 = f.doc->createEntity("G1", c2.value());
+    REQUIRE(r1.ok());
+    REQUIRE(r2.ok());
+    REQUIRE(c1.ok());
+    REQUIRE(c2.ok());
+    REQUIRE(g1.ok());
+
+    const auto before = f.doc->hierarchySnapshot();
+    REQUIRE(before.size() == 5);
+
+    REQUIRE(f.doc->saveScene("topologia.json").ok());
+    REQUIRE(f.doc->loadScene("topologia.json").ok());
+
+    const auto after = f.doc->hierarchySnapshot();
+    REQUIRE(after.size() == before.size());
+    // ORDEM depth-first + profundidade idênticas — fingerprint da topologia.
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        CHECK(after[i].name == before[i].name);
+        CHECK(after[i].depth == before[i].depth);
+    }
+    // PAIS exatos: G1 continua filho de C2 (não de R1/R2).
+    auto findByName = [&](const std::string& name) {
+        for (const auto& node : after) {
+            if (node.name == name) {
+                return node.entity;
+            }
+        }
+        return eng::ecs::Entity{0xFFFFFFFFu, 0xFFFFFFFFu};
+    };
+    auto* scene = f.doc->sceneInFocus();
+    REQUIRE(scene != nullptr);
+    CHECK(scene->parentOf(findByName("G1")) == findByName("C2"));
+    CHECK(scene->parentOf(findByName("C1")) == findByName("R1"));
+    CHECK(scene->parentOf(findByName("R2")) == eng::scene::kNoEntity);
+}
+
+TEST_CASE("editor: P4.3/Bloco 1 — duplicar preserva a SUBÁRVORE por toque",
+          "[editor][p43]")
+{
+    DocFixture f;
+    f.withProject();
+    auto r1 = f.doc->createEntity("R1", eng::scene::kNoEntity);
+    auto c2 = f.doc->createEntity("C2", r1.value());
+    auto g1 = f.doc->createEntity("G1", c2.value());
+    REQUIRE(r1.ok());
+    REQUIRE(c2.ok());
+    REQUIRE(g1.ok());
+
+    auto dup = f.doc->duplicateEntity(c2.value());
+    REQUIRE(dup.ok());
+
+    const auto snapshot = f.doc->hierarchySnapshot();
+    // R1, C2, G1, C2.alt, G1(clonado) — 5 nós; clone por baixo do MESMO pai.
+    REQUIRE(snapshot.size() == 5);
+    auto* scene = f.doc->sceneInFocus();
+    REQUIRE(scene != nullptr);
+    eng::ecs::Entity cloneC2{0xFFFFFFFFu, 0xFFFFFFFFu};
+    std::vector<eng::ecs::Entity> namedG1;
+    for (const auto& node : snapshot) {
+        if (node.name == "C2.alt") {
+            cloneC2 = node.entity;
+        }
+        if (node.name == "G1") {
+            namedG1.push_back(node.entity);
+        }
+    }
+    // O clone da RAIZ ganha sufixo; o filho clonado mantém o rótulo —
+    // subárvore inteira presente e ligada.
+    CHECK(namedG1.size() == 2);
+    CHECK(scene->isNode(cloneC2));
+    eng::ecs::Entity cloneG1{0xFFFFFFFFu, 0xFFFFFFFFu};
+    for (const eng::ecs::Entity candidate : namedG1) {
+        if (scene->parentOf(candidate) == cloneC2) {
+            cloneG1 = candidate;
+        }
+    }
+    CHECK(scene->isNode(cloneG1));
+    CHECK(scene->parentOf(cloneC2) == r1.value());
+}

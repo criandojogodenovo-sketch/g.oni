@@ -197,11 +197,79 @@ eng::core::Result<std::string> SceneSerializer::save(Scene& scene)
         entities.push_back(EntityJson{record.id, std::move(entity)});
     }
 
-    // 3. Ordem canônica: entidades por SceneEntityId (hi, lo).
-    std::sort(entities.begin(), entities.end(),
-              [](const EntityJson& a, const EntityJson& b) {
-                  return a.id < b.id;
-              });
+    // 3. Ordem canônica: DFS pela HIERARQUIA (P4.3/Bloco 1 — "ordem
+    //    estável"). Raízes por índice de ECS (a MESMA ordem que o autor vê
+    //    na Hierarquia/viewport — hierarchySnapshot/buildQuads); filhos na
+    //    ordem interna do Scene. O LOAD recria por esta ordem e anexa nesta
+    //    ordem — irmãos e raízes SOBREVIVEM ao round-trip (a ordem antiga
+    //    por SceneEntityId/UUID recriava a cena com raízes/irmãos
+    //    embaralhados — o autor perdia a arrumação). Determinismo
+    //    preservado (ADR-033): mesmo estado → mesma sequência → mesmos
+    //    bytes; resave de um clone é idêntico (ordem do clone = ordem do
+    //    arquivo = DFS da original).
+    {
+        std::unordered_map<SceneEntityId, std::size_t> jsonOf;
+        jsonOf.reserve(entities.size());
+        for (std::size_t i = 0; i < entities.size(); ++i) {
+            jsonOf.emplace(entities[i].id, i);
+        }
+        std::vector<eng::ecs::Entity> roots;
+        for (const NodeRecord& record : records) {
+            if (record.parent == kNoEntity ||
+                idOf.find(record.parent) == idOf.end()) {
+                roots.push_back(record.entity);
+            }
+        }
+        std::sort(roots.begin(), roots.end(),
+                  [](eng::ecs::Entity a, eng::ecs::Entity b) {
+                      return a.index < b.index;
+                  });
+        std::vector<std::size_t> dfsOrder;
+        dfsOrder.reserve(entities.size());
+        std::vector<bool> visited(entities.size(), false);
+        // DFS pré-ordem ITERATIVA — filhos empilhados em ordem reversa
+        // para saírem na ordem natural do Scene (sem recursão profunda
+        // em cenas encadeadas).
+        std::vector<eng::ecs::Entity> stack;
+        for (const eng::ecs::Entity root : roots) {
+            stack.push_back(root);
+            while (!stack.empty()) {
+                const eng::ecs::Entity node = stack.back();
+                stack.pop_back();
+                const auto idIt = idOf.find(node);
+                if (idIt == idOf.end()) {
+                    continue;  // nó obsoleto (defensivo — sem abortar)
+                }
+                const auto jsonIt = jsonOf.find(idIt->second);
+                if (jsonIt != jsonOf.end() && !visited[jsonIt->second]) {
+                    visited[jsonIt->second] = true;
+                    dfsOrder.push_back(jsonIt->second);
+                }
+                std::vector<eng::ecs::Entity> children;
+                scene.eachChild(node, [&](eng::ecs::Entity child) {
+                    children.push_back(child);
+                });
+                for (auto rit = children.rbegin(); rit != children.rend();
+                     ++rit) {
+                    stack.push_back(*rit);
+                }
+            }
+        }
+        // Órfãos fora da floresta (estado impossível por contrato — ADR-025
+        // trata pai obsoleto como raiz): entram no FIM por índice — nada é
+        // descartado do arquivo (zero perda).
+        for (std::size_t i = 0; i < entities.size(); ++i) {
+            if (!visited[i]) {
+                dfsOrder.push_back(i);
+            }
+        }
+        std::vector<EntityJson> ordered;
+        ordered.reserve(entities.size());
+        for (const std::size_t idx : dfsOrder) {
+            ordered.push_back(std::move(entities[idx]));
+        }
+        entities = std::move(ordered);
+    }
 
     eng::serial::JsonValue ids = eng::serial::JsonValue::array();
     eng::serial::JsonValue entitiesArray = eng::serial::JsonValue::array();
