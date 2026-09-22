@@ -1094,14 +1094,16 @@ internal fun EditorActivity.layerEditDialog(row: LayerRow) {
 internal fun EditorActivity.animMenuDialog(name: String) {
     val act = this
     val items = listOf(
-        "Adicionar frame (textura)…", "FPS / Loop…", "Anexar à seleção…",
+        "Adicionar frame (textura)…", "Keys TRS (timeline)…",
+        "FPS / Loop…", "Anexar à seleção…",
         "Preview na seleção", "Editar JSON…", "Apagar"
     )
-    OniDialog.list(this, name, items, dangerIndex = 5) { which ->
+    OniDialog.list(this, name, items, dangerIndex = 6) { which ->
         when (which) {
             0 -> pickFrameTexture(name)
-            1 -> animMetaDialog(name)
-            2 -> {
+            1 -> animKeysDialog(name)
+            2 -> animMetaDialog(name)
+            3 -> {
                 if (selection == 0L) {
                     toastErr("Selecione uma entidade primeiro")
                 } else if (EditorJni.nativeEditorAnimationAssign(
@@ -1114,7 +1116,7 @@ internal fun EditorActivity.animMenuDialog(name: String) {
                     toastErr(lastErrorText())
                 }
             }
-            3 -> {
+            4 -> {
                 if (selection == 0L) {
                     toastErr("Selecione uma entidade primeiro")
                 } else if (EditorJni.nativeEditorPreviewStart(
@@ -1126,8 +1128,8 @@ internal fun EditorActivity.animMenuDialog(name: String) {
                     toastErr(lastErrorText())
                 }
             }
-            4 -> animJsonEditorDialog(name)
-            5 -> if (EditorJni.nativeEditorAnimationDelete(handle, name)) {
+            5 -> animJsonEditorDialog(name)
+            6 -> if (EditorJni.nativeEditorAnimationDelete(handle, name)) {
                 refreshAnim()
             } else {
                 toastErr(lastErrorText())
@@ -1156,6 +1158,193 @@ internal fun EditorActivity.pickFrameTexture(animName: String) {
             toastErr(lastErrorText())
         }
     }
+}
+
+/**
+ * P4.6 (Bloco 4) — TIMELINE de keys TRS: chips de track, tempo, "＋ Key da
+ * seleção" (captura o Transform corrente — graus para rotação) e lista de
+ * keys (toque → editar/mover/apagar). Reabre o diálogo a cada mutação —
+ * estado SEMPRE fresco do asset real (zero UI morta).
+ */
+internal fun EditorActivity.animKeysDialog(name: String, track: String = "position") {
+    val act = this
+    val container = LinearLayout(act).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, dp(4), 0, 0)
+    }
+
+    // 1) Track chips (Pos/Rot/Esc — convenção do autor).
+    val trackRow = LinearLayout(act).apply {
+        orientation = LinearLayout.HORIZONTAL
+    }
+    for (t in listOf("position", "rotation", "scale")) {
+        val label = when (t) {
+            "position" -> "Pos"
+            "rotation" -> "Rot"
+            else -> "Esc"
+        }
+        trackRow.addView(
+            Oni.chip(act, label, active = t == track, mono = true,
+                     textSizeSp = 11f).apply {
+                setOnClickListener { if (t != track) animKeysDialog(name, t) }
+            },
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44))
+        )
+    }
+    container.addView(trackRow)
+
+    // 2) Tempo + gravar key do transform da SELEÇÃO (o "tempo atual" é o
+    //    playhead do campo — a timeline v1 é autoraria explícita).
+    val keyRow = LinearLayout(act).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    val timeField = Oni.field(act, mono = true).apply {
+        setSingleLine()
+        hint = "tempo (s)"
+        inputType = InputType.TYPE_CLASS_NUMBER or
+            InputType.TYPE_NUMBER_FLAG_DECIMAL
+        setText("0")
+    }
+    keyRow.addView(timeField, LinearLayout.LayoutParams(0, dp(48), 1f))
+    keyRow.addView(
+        Oni.chip(act, "＋ Key da seleção", active = true,
+                 textSizeSp = 11f).apply {
+            setOnClickListener {
+                if (selection == 0L) {
+                    toastErr("Selecione uma entidade primeiro")
+                    return@setOnClickListener
+                }
+                val t = timeField.text.toString().toFloatOrNull()
+                if (t == null || t < 0f) {
+                    toastErr("Tempo inválido")
+                    return@setOnClickListener
+                }
+                val tr = EditorJni.nativeEditorGetTransform(handle, selection)
+                if (tr == null || tr.size < 9) {
+                    toastErr(lastErrorText())
+                    return@setOnClickListener
+                }
+                val (x, y, z) = when (track) {
+                    "position" -> Triple(tr[0], tr[1], tr[2])
+                    "rotation" -> Triple(tr[3], tr[4], tr[5])
+                    else -> Triple(tr[6], tr[7], tr[8])
+                }
+                if (!EditorJni.nativeEditorAnimationAddKey(
+                        handle, name, track, t, x, y, z)) {
+                    toastErr(lastErrorText())
+                } else {
+                    toastOk("Key gravado em t=${"%.2f".format(t)}s")
+                    refreshAnim()
+                }
+            }
+        },
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
+    )
+    container.addView(keyRow)
+
+    // 3) Lista de keys — TSV "index\ttime\tx\ty\tz".
+    val keysTsv =
+        EditorJni.nativeEditorAnimationKeyList(handle, name, track) ?: ""
+    for (line in keysTsv.lines().filter { it.isNotBlank() }) {
+        val p = line.split('\t')
+        if (p.size < 5) continue
+        val index = p[0].toIntOrNull() ?: continue
+        container.addView(TextView(act).apply {
+            text = "#$index  t=${p[1]}  (${p[2]}, ${p[3]}, ${p[4]})"
+            setTextColor(Oni.TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = Oni.ripple(act, Oni.RAISED, Oni.R_THUMB)
+            setOnClickListener {
+                animKeyEditDialog(name, track, index, p[1], p[2], p[3], p[4])
+            }
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+    }
+    if (keysTsv.isEmpty()) {
+        container.addView(TextView(act).apply {
+            text = "Sem keys nesta track — selecione a entidade, defina o " +
+                "tempo e grave o key."
+            setTextColor(Oni.TEXT_DIM)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        })
+    }
+
+    val scroll = ScrollView(act).apply { addView(container) }
+    OniDialog.custom(
+        act, "Keys TRS — $name", scroll, listOf(OniDialog.Btn("Fechar"))
+    )
+}
+
+/** Editar/mover/apagar UM key — mover é editar o tempo (mesmo verbo). */
+internal fun EditorActivity.animKeyEditDialog(
+    name: String, track: String, index: Int,
+    time: String, x: String, y: String, z: String
+) {
+    val act = this
+    val container = LinearLayout(act).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+    fun numberField(hint: String, value: String): EditText =
+        Oni.field(act, mono = true).apply {
+            setSingleLine()
+            this.hint = hint
+            setText(value)
+            inputType = InputType.TYPE_CLASS_NUMBER or
+                InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                InputType.TYPE_NUMBER_FLAG_SIGNED
+        }
+    val fields = mutableListOf<EditText>()
+    for ((hint, value) in listOf("tempo (s)" to time, "x" to x, "y" to y,
+                                 "z" to z)) {
+        container.addView(TextView(act).apply {
+            text = hint
+            setTextColor(Oni.TEXT_DIM)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(4), dp(6), 0, 0)
+        })
+        val f = numberField(hint, value)
+        container.addView(f, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        fields.add(f)
+    }
+    OniDialog.custom(
+        act, "Key #$index — $track", container,
+        listOf(
+            OniDialog.Btn("Apagar", accent = false) {
+                if (!EditorJni.nativeEditorAnimationKeyDelete(
+                        handle, name, track, index)) {
+                    toastErr(lastErrorText())
+                } else {
+                    toastOk("Key apagado")
+                    refreshAnim()
+                }
+            },
+            OniDialog.Btn("Cancelar", accent = false),
+            OniDialog.Btn("Salvar") {
+                val t = fields[0].text.toString().toFloatOrNull()
+                val fx = fields[1].text.toString().toFloatOrNull()
+                val fy = fields[2].text.toString().toFloatOrNull()
+                val fz = fields[3].text.toString().toFloatOrNull()
+                if (t == null || fx == null || fy == null || fz == null) {
+                    toastErr("Valores inválidos")
+                    return@Btn
+                }
+                if (!EditorJni.nativeEditorAnimationKeySet(
+                        handle, name, track, index, t, fx, fy, fz)) {
+                    toastErr(lastErrorText())
+                } else {
+                    toastOk("Key salvo")
+                    refreshAnim()
+                }
+            }
+        )
+    )
 }
 
 internal fun EditorActivity.animMetaDialog(name: String) {

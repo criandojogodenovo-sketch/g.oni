@@ -7984,7 +7984,11 @@ static constexpr const char* kExpectedJniSymbols[] = {
     "Java_com_goni_runtime_EditorJni_nativeEditorAddableComponents",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddFrame",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAssign",
+    "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddKey",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationCreate",
+    "Java_com_goni_runtime_EditorJni_nativeEditorAnimationKeyDelete",
+    "Java_com_goni_runtime_EditorJni_nativeEditorAnimationKeyList",
+    "Java_com_goni_runtime_EditorJni_nativeEditorAnimationKeySet",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationDelete",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationList",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationRead",
@@ -8109,7 +8113,8 @@ static constexpr const char* kExpectedJniSymbols[] = {
     // P4.6: 120 (P4.5.2) + 3 camadas de colisão nomeadas = 123.
     constexpr std::size_t kExpected =
         sizeof(kExpectedJniSymbols) / sizeof(kExpectedJniSymbols[0]);
-    STATIC_REQUIRE(kExpected == 123);
+    // P4.6: 123 (blocos 0-3) + 4 keys TRS da timeline = 127.
+    STATIC_REQUIRE(kExpected == 127);
 
     std::vector<std::string> missing;
     for (const char* name : kExpectedJniSymbols) {
@@ -8453,4 +8458,168 @@ TEST_CASE("p46: migração/round-trip — cena com colisão v2 preserva bits e "
     CHECK(layers[1].bit == 2u);
     CHECK(layers[2].name == "inimigo");
     CHECK(layers[2].bit == 4u);
+}
+
+// =============================================================================
+// P4.6 (Bloco 4): Animação v1 — keys TRS (timeline), round-trip e playback
+// =============================================================================
+
+TEST_CASE("p46: keys TRS — grava, lista, substitui no mesmo tempo, edita "
+          "(mover), apaga; .anim round-trip",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.doc->animationCreate("andar").ok());
+
+    // Grava keys FORA de ordem — a track sai ordenada por tempo.
+    REQUIRE(f.doc->animationAddKey("andar.anim.json", "position", 1.0f,
+                                   3.f, 0.f, 0.f)
+                .ok());
+    REQUIRE(f.doc->animationAddKey("andar.anim.json", "position", 0.f, 0.f,
+                                   2.f, 0.f)
+                .ok());
+    auto list = f.doc->animationKeyList("andar.anim.json", "position");
+    REQUIRE(list.ok());
+    CHECK(list.value() == "0\t0\t0\t2\t0\n1\t1\t3\t0\t0");
+
+    // Mesmo tempo (ε) SUBSTITUI — gravar de novo = atualizar.
+    REQUIRE(f.doc->animationAddKey("andar.anim.json", "position", 1.0f, 9.f,
+                                   9.f, 9.f)
+                .ok());
+    list = f.doc->animationKeyList("andar.anim.json", "position");
+    REQUIRE(list.ok());
+    CHECK(list.value() == "0\t0\t0\t2\t0\n1\t1\t9\t9\t9");
+
+    // Rotação: graus do autor — round-trip por QUAT tem erro de precisão
+    // (90° pode voltar 89.98): assert por valor aproximado.
+    REQUIRE(f.doc->animationAddKey("andar.anim.json", "rotation", 0.5f,
+                                   90.f, 0.f, 0.f)
+                .ok());
+    REQUIRE(f.doc->animationAddKey("andar.anim.json", "scale", 0.f, 2.f, 2.f,
+                                   2.f)
+                .ok());
+    auto rot = f.doc->animationKeyList("andar.anim.json", "rotation");
+    REQUIRE(rot.ok());
+    {
+        // linha única "0\t0.5\t<graus>\t0\t0" — graus ≈ 90 (ε quat).
+        const std::string& row = rot.value();
+        const auto t1 = row.find('\t');
+        const auto t2 = row.find('\t', t1 + 1);
+        const auto t3 = row.find('\t', t2 + 1);
+        REQUIRE(t1 != std::string::npos);
+        REQUIRE(t2 != std::string::npos);
+        REQUIRE(t3 != std::string::npos);
+        CHECK(row.substr(0, t1) == "0");
+        CHECK(row.substr(t1 + 1, t2 - t1 - 1) == "0.5");
+        const double deg =
+            std::atof(row.substr(t2 + 1, t3 - t2 - 1).c_str());
+        CHECK(std::abs(deg - 90.0) <= 0.1);
+    }
+    auto scale = f.doc->animationKeyList("andar.anim.json", "scale");
+    REQUIRE(scale.ok());
+    CHECK(scale.value() == "0\t0\t2\t2\t2");
+
+    // Editar/mover key #1 da position (tempo 1 → 0.5).
+    REQUIRE(f.doc
+                ->animationKeySet("andar.anim.json", "position", 1, 0.5f,
+                                  5.f, 1.f, 0.f)
+                .ok());
+    list = f.doc->animationKeyList("andar.anim.json", "position");
+    REQUIRE(list.ok());
+    // Re-ordenado: o key movido agora vem primeiro.
+    CHECK(list.value() == "0\t0\t0\t2\t0\n1\t0.5\t5\t1\t0");
+
+    // Apagar o #0 — sobra um.
+    REQUIRE(f.doc->animationKeyDelete("andar.anim.json", "position", 0).ok());
+    list = f.doc->animationKeyList("andar.anim.json", "position");
+    REQUIRE(list.ok());
+    CHECK(list.value() == "0\t0.5\t5\t1\t0");
+
+    // Erros precisos: track inválida, índice fora, tempo negativo.
+    CHECK(f.doc->animationKeyList("andar.anim.json", "cor").isError());
+    CHECK(f.doc
+              ->animationKeySet("andar.anim.json", "position", 7, 0.f, 0.f,
+                                0.f, 0.f)
+              .isError());
+    CHECK(f.doc
+              ->animationAddKey("andar.anim.json", "position", -1.f, 0.f,
+                                0.f, 0.f)
+              .isError());
+
+    // O JSON persistido contém as tracks (serialização .anim REAL).
+    auto content = f.doc->animationRead("andar.anim.json");
+    REQUIRE(content.ok());
+    CHECK(content.value().find("\"position\"") != std::string::npos);
+    CHECK(content.value().find("\"rotation\"") != std::string::npos);
+    CHECK(content.value().find("\"scale\"") != std::string::npos);
+}
+
+TEST_CASE("p46: timeline TRS reproduz no PLAY (AnimationTick real) — "
+          "position e scale animam, loop recomeça",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+    REQUIRE(f.doc->animationCreate("pulo").ok());
+    REQUIRE(f.doc->animationAddKey("pulo.anim.json", "position", 0.f, 0.f,
+                                   0.f, 0.f)
+                .ok());
+    REQUIRE(f.doc->animationAddKey("pulo.anim.json", "position", 1.f, 0.f,
+                                   4.f, 0.f)
+                .ok());
+    REQUIRE(f.doc->animationAddKey("pulo.anim.json", "scale", 0.f, 1.f, 1.f,
+                                   1.f)
+                .ok());
+    REQUIRE(f.doc->animationAddKey("pulo.anim.json", "scale", 1.f, 2.f, 2.f,
+                                   2.f)
+                .ok());
+    REQUIRE(f.doc->animationSetMeta("pulo.anim.json", /*loop=*/true, 30.f)
+                .ok());
+
+    auto e = f.doc->createEntity("Ator", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->animationAssign(e.value(), "pulo.anim.json").ok());
+    // P4.6: o playback no Play segue o contrato P2 — o AUTOR liga
+    // `playing` no Inspector (assign não vira autoplay: zero mudança de
+    // comportamento para flipbooks existentes).
+    REQUIRE(f.doc
+                ->setInspectorField(e.value(), "eng::animation::Animator",
+                                    "playing", "true")
+                .ok());
+
+    REQUIRE(f.doc->play().ok());
+    // 60 ticks de 1/60 = 1 s — chega ao fim do clip (position.y → 4,
+    // scale → 2)… o loop recomeça no tick seguinte (y volta a ~0.033*4).
+    for (int i = 0; i < 60; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    auto py = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(py.ok());
+    INFO("position.y após 1s = " << py.value());
+    CHECK(std::atof(py.value().c_str()) > 3.0);
+    auto sx = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::math::Transform", "scale.x");
+    REQUIRE(sx.ok());
+    INFO("scale.x após 1s = " << sx.value());
+    CHECK(std::atof(sx.value().c_str()) > 1.8);
+
+    // Mais 60 ticks: o loop deu a volta — y NÃO continua subindo (volta
+    // para perto de 0 a cada recomeço; aqui já re-avançou ~1 s… com loop
+    // 1s o valor fica em qualquer ponto do [0,4] — o que PROVA o loop é
+    // que não passa de 4 (sem loop o tempo continua e trava em 4).
+    for (int i = 0; i < 120; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    py = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(py.ok());
+    const double y2 = std::atof(py.value().c_str());
+    CHECK(y2 >= -0.01);
+    CHECK(y2 <= 4.01); // loop amarra ao range do clip
+
+    f.doc->stop();
 }

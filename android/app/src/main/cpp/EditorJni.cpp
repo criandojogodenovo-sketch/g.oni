@@ -2075,6 +2075,100 @@ Java_com_goni_runtime_EditorJni_nativeEditorAnimationSetMeta(
                : JNI_FALSE;
 }
 
+// --- P4.6 (Bloco 4): keys TRS — autoraria da timeline (.anim) ---------------
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddKey(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name,
+    jstring track, jfloat time, jfloat x, jfloat y, jfloat z)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    char trackBuf[64];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf)) ||
+        !copyJString(env, track, trackBuf, sizeof(trackBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().animationAddKey(
+                      nameBuf, trackBuf, static_cast<float>(time),
+                      static_cast<float>(x), static_cast<float>(y),
+                      static_cast<float>(z)))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationKeyList(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name, jstring track)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    char nameBuf[kMaxStringArg];
+    char trackBuf[64];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf)) ||
+        !copyJString(env, track, trackBuf, sizeof(trackBuf))) {
+        return nullptr;
+    }
+    auto keys = host->document().animationKeyList(nameBuf, trackBuf);
+    if (keys.isError()) {
+        record(handle, keys);
+        return nullptr;
+    }
+    return stringToJni(env, keys.value());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationKeySet(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name,
+    jstring track, jint index, jfloat time, jfloat x, jfloat y, jfloat z)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    char trackBuf[64];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf)) ||
+        !copyJString(env, track, trackBuf, sizeof(trackBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().animationKeySet(
+                      nameBuf, trackBuf, static_cast<std::size_t>(index),
+                      static_cast<float>(time), static_cast<float>(x),
+                      static_cast<float>(y), static_cast<float>(z)))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAnimationKeyDelete(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name,
+    jstring track, jint index)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    char trackBuf[64];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf)) ||
+        !copyJString(env, track, trackBuf, sizeof(trackBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().animationKeyDelete(
+                      nameBuf, trackBuf, static_cast<std::size_t>(index)))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorPreviewStart(JNIEnv* env,
                                                          jobject /*thiz*/,

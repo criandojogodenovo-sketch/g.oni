@@ -228,6 +228,16 @@ object EditorJni {
     /** Acrescenta frame (textura real do projeto); devolve o tempo do frame ou -1. */
     external fun nativeEditorAnimationAddFrame(handle: Long, name: String, texture: String): Float
     external fun nativeEditorAnimationSetMeta(handle: Long, name: String, loop: Boolean, fps: Float): Boolean
+
+    // --- P4.6 (Bloco 4): keys TRS — autoraria da timeline ---------------------
+    // track ∈ {"position","rotation","scale"}; rotation em GRAUS.
+    /** Grava key (mesmo tempo ε substitui; inserção ordenada). */
+    external fun nativeEditorAnimationAddKey(handle: Long, name: String, track: String, time: Float, x: Float, y: Float, z: Float): Boolean
+    /** TSV "index\ttime\tx\ty\tz" (ordenado por tempo). */
+    external fun nativeEditorAnimationKeyList(handle: Long, name: String, track: String): String?
+    /** Edita/move key por índice. */
+    external fun nativeEditorAnimationKeySet(handle: Long, name: String, track: String, index: Int, time: Float, x: Float, y: Float, z: Float): Boolean
+    external fun nativeEditorAnimationKeyDelete(handle: Long, name: String, track: String, index: Int): Boolean
     /** PREVIEW da animação na entidade (Edit) — avança com o render frame. */
     external fun nativeEditorPreviewStart(handle: Long, packed: Long, clip: String): Boolean
     external fun nativeEditorPreviewStop(handle: Long)

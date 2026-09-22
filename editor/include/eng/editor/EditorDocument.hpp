@@ -631,6 +631,28 @@ public:
     [[nodiscard]] eng::core::Result<void> animationSetMeta(
         std::string_view name, bool loop, float fps);
 
+    // --- P4.6 (Bloco 4): autoraria de keys TRS (timeline v1) ----------------
+    // `track` ∈ {"position", "rotation", "scale"}; rotation em GRAUS
+    // (convenção do autor — decode/encode .anim.json idênticos). Key no
+    // MESMO tempo (ε 1e-4) SUBSTITUI o valor (gravar de novo = atualizar).
+    /// Grava um key (inserção ordenada por tempo). Erro: track inválida,
+    /// tempo negativo/não-finito, asset ausente.
+    [[nodiscard]] eng::core::Result<void> animationAddKey(
+        std::string_view name, std::string_view track, float time, float x,
+        float y, float z);
+    /// Lista os keys da track em TSV "index\ttime\tx\ty\tz" (rotation em
+    /// graus; ordenados por tempo).
+    [[nodiscard]] eng::core::Result<std::string> animationKeyList(
+        std::string_view name, std::string_view track) const;
+    /// Edita key por índice (tempo + valores — mover/editar são o mesmo
+    /// verbo honesto). Re-ordena a track se o tempo mudar.
+    [[nodiscard]] eng::core::Result<void> animationKeySet(
+        std::string_view name, std::string_view track, std::size_t index,
+        float time, float x, float y, float z);
+    /// Apaga key por índice.
+    [[nodiscard]] eng::core::Result<void> animationKeyDelete(
+        std::string_view name, std::string_view track, std::size_t index);
+
     /// PREVIEW em Edit (§8 "reproduzir preview"): aplica o clip na
     /// entidade por dt avançando o tempo; restaura o Transform original
     /// no previewStop. Só uma entidade por vez (preview explícito do

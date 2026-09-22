@@ -3165,6 +3165,236 @@ Result<void> EditorDocument::animationSetMeta(std::string_view name,
     return animationWrite(fileName, encoded.value());
 }
 
+// --- P4.6 (Bloco 4): autoraria de keys TRS (timeline v1) --------------------
+
+namespace {
+
+/// Key TRS normalizado (rotation em GRAUS — convenção do autor).
+struct TrsKey {
+    float time;
+    float x;
+    float y;
+    float z;
+};
+
+[[nodiscard]] bool validTrsTrackName(const std::string& track)
+{
+    return track == "position" || track == "rotation" ||
+           track == "scale";
+}
+
+/// Lê a track pedida como keys normalizados. false = track inválida.
+[[nodiscard]] bool readTrsTrack(
+    const eng::animation::AnimationClip& clip, const std::string& track,
+    std::vector<TrsKey>& out)
+{
+    if (track == "position") {
+        for (const auto& k : clip.position) {
+            out.push_back({k.time, k.value.x, k.value.y, k.value.z});
+        }
+        return true;
+    }
+    if (track == "rotation") {
+        for (const auto& k : clip.rotation) {
+            const eng::math::Vec3 d = degreesFromQuat(k.value);
+            out.push_back({k.time, d.x, d.y, d.z});
+        }
+        return true;
+    }
+    if (track == "scale") {
+        for (const auto& k : clip.scale) {
+            out.push_back({k.time, k.value.x, k.value.y, k.value.z});
+        }
+        return true;
+    }
+    return false;
+}
+
+/// Escreve de volta (rotation: graus → quat) e ORDENA por tempo (estável —
+/// a amostragem do AnimationSystem assume keys ordenados).
+void writeTrsTrack(eng::animation::AnimationClip& clip,
+                   const std::string& track, std::vector<TrsKey> keys)
+{
+    std::stable_sort(keys.begin(), keys.end(),
+                     [](const TrsKey& a, const TrsKey& b) {
+                         return a.time < b.time;
+                     });
+    if (track == "position") {
+        clip.position.clear();
+        for (const auto& k : keys) {
+            clip.position.push_back(
+                eng::animation::PositionKey{k.time,
+                                            eng::math::Vec3{k.x, k.y, k.z}});
+        }
+    } else if (track == "rotation") {
+        clip.rotation.clear();
+        for (const auto& k : keys) {
+            clip.rotation.push_back(
+                eng::animation::RotationKey{
+                    k.time, quatFromDegrees(
+                                eng::math::Vec3{k.x, k.y, k.z})});
+        }
+    } else if (track == "scale") {
+        clip.scale.clear();
+        for (const auto& k : keys) {
+            clip.scale.push_back(
+                eng::animation::ScaleKey{k.time,
+                                         eng::math::Vec3{k.x, k.y, k.z}});
+        }
+    }
+}
+
+/// Corpo comum: valida → lê asset → decodifica. `asset` sai decodificado.
+[[nodiscard]] eng::core::Result<eng::editor::AnimationAsset>
+loadAnimAssetForKeys(const EditorDocument& doc, std::string_view name,
+                     const std::string& track)
+{
+    if (!isValidAnimName(name)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument, "nome de animação inválido"));
+    }
+    if (!validTrsTrackName(track)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "track inválida (use position|rotation|scale)"));
+    }
+    const std::string fileName = withAnimExtension(name);
+    auto content = doc.animationRead(fileName);
+    if (content.isError()) {
+        return makeUnexpected(content.error());
+    }
+    return animationDecode(content.value());
+}
+
+}  // namespace
+
+Result<void> EditorDocument::animationAddKey(std::string_view name,
+                                             std::string_view track,
+                                             float time, float x, float y,
+                                             float z)
+{
+    if (!std::isfinite(time) || time < 0.f || !std::isfinite(x) ||
+        !std::isfinite(y) || !std::isfinite(z)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "key TRS: tempo/valores devem ser finitos (tempo >= 0)"));
+    }
+    auto loaded = loadAnimAssetForKeys(*this, name, std::string(track));
+    if (loaded.isError()) {
+        return makeUnexpected(loaded.error());
+    }
+    std::vector<TrsKey> keys;
+    const std::string trackStr{track};
+    (void)readTrsTrack(loaded.value().clip, trackStr, keys);
+    // Key no MESMO tempo (ε 1e-4) SUBSTITUI — gravar de novo = atualizar.
+    bool replaced = false;
+    for (TrsKey& k : keys) {
+        if (std::abs(k.time - time) <= 1e-4f) {
+            k = TrsKey{time, x, y, z};
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        keys.push_back(TrsKey{time, x, y, z});
+    }
+    writeTrsTrack(loaded.value().clip, trackStr, std::move(keys));
+    auto encoded = animationEncode(loaded.value());
+    if (encoded.isError()) {
+        return makeUnexpected(encoded.error());
+    }
+    return animationWrite(withAnimExtension(name), encoded.value());
+}
+
+Result<std::string> EditorDocument::animationKeyList(
+    std::string_view name, std::string_view track) const
+{
+    auto loaded = loadAnimAssetForKeys(*this, name, std::string(track));
+    if (loaded.isError()) {
+        return makeUnexpected(loaded.error());
+    }
+    std::vector<TrsKey> keys;
+    const std::string trackStr{track};
+    (void)readTrsTrack(loaded.value().clip, trackStr, keys);
+    std::stable_sort(keys.begin(), keys.end(),
+                     [](const TrsKey& a, const TrsKey& b) {
+                         return a.time < b.time;
+                     });
+    std::string tsv;
+    char line[128];
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        std::snprintf(line, sizeof(line), "%zu\t%.4g\t%.4g\t%.4g\t%.4g\n", i,
+                      static_cast<double>(keys[i].time),
+                      static_cast<double>(keys[i].x),
+                      static_cast<double>(keys[i].y),
+                      static_cast<double>(keys[i].z));
+        tsv += line;
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return tsv;
+}
+
+Result<void> EditorDocument::animationKeySet(std::string_view name,
+                                             std::string_view track,
+                                             std::size_t index, float time,
+                                             float x, float y, float z)
+{
+    if (!std::isfinite(time) || time < 0.f || !std::isfinite(x) ||
+        !std::isfinite(y) || !std::isfinite(z)) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument,
+            "key TRS: tempo/valores devem ser finitos (tempo >= 0)"));
+    }
+    auto loaded = loadAnimAssetForKeys(*this, name, std::string(track));
+    if (loaded.isError()) {
+        return makeUnexpected(loaded.error());
+    }
+    std::vector<TrsKey> keys;
+    const std::string trackStr{track};
+    (void)readTrsTrack(loaded.value().clip, trackStr, keys);
+    if (index >= keys.size()) {
+        return makeUnexpected(documentError(
+            StatusCode::NotFound, "key " + std::to_string(index) +
+                                      " não existe na track '" + trackStr +
+                                      "'"));
+    }
+    keys[index] = TrsKey{time, x, y, z};
+    writeTrsTrack(loaded.value().clip, trackStr, std::move(keys));
+    auto encoded = animationEncode(loaded.value());
+    if (encoded.isError()) {
+        return makeUnexpected(encoded.error());
+    }
+    return animationWrite(withAnimExtension(name), encoded.value());
+}
+
+Result<void> EditorDocument::animationKeyDelete(std::string_view name,
+                                                std::string_view track,
+                                                std::size_t index)
+{
+    auto loaded = loadAnimAssetForKeys(*this, name, std::string(track));
+    if (loaded.isError()) {
+        return makeUnexpected(loaded.error());
+    }
+    std::vector<TrsKey> keys;
+    const std::string trackStr{track};
+    (void)readTrsTrack(loaded.value().clip, trackStr, keys);
+    if (index >= keys.size()) {
+        return makeUnexpected(documentError(
+            StatusCode::NotFound, "key " + std::to_string(index) +
+                                      " não existe na track '" + trackStr +
+                                      "'"));
+    }
+    keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(index));
+    writeTrsTrack(loaded.value().clip, trackStr, std::move(keys));
+    auto encoded = animationEncode(loaded.value());
+    if (encoded.isError()) {
+        return makeUnexpected(encoded.error());
+    }
+    return animationWrite(withAnimExtension(name), encoded.value());
+}
+
 Result<void> EditorDocument::previewStart(eng::ecs::Entity entity,
                                           std::string_view clipName)
 {
