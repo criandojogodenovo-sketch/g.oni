@@ -154,6 +154,11 @@ eng::core::Result<EditorHost*> EditorHost::create(const char* backend,
     diag::mark("STARTUP_EDITOR_DOCUMENT", "ok");
     host->requested_ = backendFromName(backend);
     host->document_ = std::move(document.value());
+    // P4.5.1 (R1): o begin acima era o ÚNICO mark sem par "ok" — a
+    // janela entre begin e o próximo mark do Kotlin nunca fechava (a
+    // morte "pós-host" era indistinguível de "morrendo a criar o
+    // host"). Host + documento PRONTOS: fase de criação FECHADA.
+    diag::mark("STARTUP_EDITOR_HOST", "ok", "host + documento prontos");
     ENG_INFO("Editor host criado (backend '{}', workspace root '{}')",
              backend == nullptr ? "auto" : backend, workspaceRoot.str());
     return host;

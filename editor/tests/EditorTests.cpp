@@ -5863,6 +5863,67 @@ TEST_CASE("editor: P3.1 — tracer persiste estágios na hora (formato grep-áve
     CHECK(std::string{eng::editor::diag::lastStage()} == "TESTE_ESTAGIO_B");
 }
 
+TEST_CASE("editor: P4.5.1 R1 — STARTUP_EDITOR_HOST fecha com ok (par begin/ok)",
+          "[editor][diagnostics][startup]") {
+    // REGRESSÃO P4.5.1: no device, o mark "STARTUP_EDITOR_HOST" só tinha
+    // "begin" — a janela entre o begin e o próximo mark nunca fechava, e
+    // uma morte "pós-host" era indistinguível de "morrendo a criar o
+    // host". O create agora emite "ok" ao completar (host + documento).
+    std::filesystem::path dir = std::filesystem::temp_directory_path() /
+        ("goni_diag_host_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    eng::editor::diag::init(dir.c_str());
+
+    // O tracer é cumulativo (append entre casos) — validar só o DELTA
+    // que ESTE create emitir (ordem-independente: init pode ou não
+    // trocar o arquivo efetivo; o path vem SEMPRE da API).
+    const std::string beforeText = [&] {
+        std::FILE* f = std::fopen(eng::editor::diag::startupLogPath(), "r");
+        std::string text;
+        char buf[512];
+        if (f != nullptr) {
+            while (std::fgets(buf, sizeof buf, f) != nullptr) {
+                text += buf;
+            }
+            std::fclose(f);
+        }
+        return text;
+    }();
+
+    const char* ws = ".editor-test-ws-p451-host";
+    std::filesystem::remove_all(std::filesystem::path{ws});
+    auto host = eng::editor::EditorHost::create("auto", ws);
+    REQUIRE(host.ok());
+    std::unique_ptr<eng::editor::EditorHost> owned{host.value()};
+
+    std::FILE* f = std::fopen(eng::editor::diag::startupLogPath(), "r");
+    REQUIRE(f != nullptr);
+    std::string text;
+    char buf[512];
+    while (std::fgets(buf, sizeof buf, f) != nullptr) {
+        text += buf;
+    }
+    std::fclose(f);
+    REQUIRE(text.size() >= beforeText.size());
+    const std::string delta = text.substr(beforeText.size());
+    INFO("delta do log de startup:\n" << delta);
+
+    const std::size_t beginPos = delta.find("STARTUP_EDITOR_HOST begin");
+    const std::size_t okPos = delta.find("STARTUP_EDITOR_HOST ok");
+    REQUIRE(beginPos != std::string::npos);
+    REQUIRE(okPos != std::string::npos);   // R1: a fase FECHA
+    CHECK(okPos > beginPos);
+    // Ordem interna da criação fica grep-ável: filesystem → documento →
+    // host fechado (a evidência do device segue o mesmo formato).
+    const std::size_t fsPos = delta.find("STARTUP_FILESYSTEM ok");
+    const std::size_t docPos = delta.find("STARTUP_EDITOR_DOCUMENT ok");
+    REQUIRE(fsPos != std::string::npos);
+    REQUIRE(docPos != std::string::npos);
+    CHECK(fsPos < docPos);
+    CHECK(docPos < okPos);
+    std::filesystem::remove_all(std::filesystem::path{ws});
+}
+
 TEST_CASE("editor: P3.1 — crash handler registra e NÃO mascara (SIGSEGV)",
           "[editor][diagnostics][crash]") {
     // init() é idempotente: se o caso anterior rodou, o singleton já vive

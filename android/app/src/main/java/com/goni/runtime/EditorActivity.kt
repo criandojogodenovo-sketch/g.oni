@@ -165,6 +165,13 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         // o editor (ou a própria lib nativa) morra em seguida, a cópia
         // pública em Download/GONI/ já existe com o que houve até aqui.
         DiagnosticsMirror.init(this)
+        // P4.5.1: handler de exceções Kotlin — instalado ANTES de qualquer
+        // código que possa lançar. Exceções Kotlin tinham ZERO forense
+        // (o handler nativo só apanha sinais): 5 mortes silenciosas no
+        // device provaram a lacuna. Delega ao handler anterior — a morte
+        // do sistema é intacta; agora COM evidência (goni_crash.log).
+        KotlinCrashGuard.install(this)
+        KotlinCrashGuard.phase("BOOTSTRAP")
         try {
             // P3.1 (FASE 4/5): diagnóstico persistente ANTES de qualquer
             // subsistema — cada estágio daqui para frente é gravado na HORA
@@ -193,10 +200,23 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         EditorJni.nativeStartupMark("STARTUP_APPLICATION", "ok", "process")
         EditorJni.nativeStartupMark("STARTUP_ACTIVITY", "ok", "EditorActivity")
+        // P4.5.1 (R3 — JANELA DA MORTE #2: ACTIVITY → EDITOR_HOST): a
+        // sessão pid 24646 morreu AQUI dentro sem nomear a fase. Estes
+        // dois marks auditam o TEMA/SPLASH NO DEVICE e delimitam todo o
+        // resto da janela — incluindo o crash-prompt (OniDialog, código
+        // P4.5 que só roda quando há crash report anterior) e a entrada
+        // JNI do create. Se a próxima morte cair aqui, o último mark
+        // NOMEIA a fase — e o KotlinCrashGuard nomeia a LINHA.
+        KotlinCrashGuard.phase("UI_THEME")
+        markUiTheme()
+        KotlinCrashGuard.phase("UI_SPLASH")
+        markUiSplash()
+        KotlinCrashGuard.phase("CRASH_PROMPT")
         maybeOfferCrashExport()
 
         // Workspace: filesDir/projects (interno — sem permissões). Paths
         // DENTRO do projeto seguem relativos (§8.1 — ADR-032).
+        KotlinCrashGuard.phase("EDITOR_CREATE")
         val workspace = File(filesDir, "projects").apply { mkdirs() }
         handle = EditorJni.nativeEditorCreate("auto", workspace.absolutePath)
         if (handle == 0L) {
@@ -205,10 +225,20 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             return
         }
 
+        // P4.5.1 (R3 — JANELA DA MORTE #1: pós-EDITOR_DOCUMENT → UI P4.5):
+        // as 4 sessões (pid 24087…24618) morreram EXATAMENTE aqui dentro
+        // (build da UI nova — OniUi/sheets/1º frame) sem NENHUM mark entre
+        // STARTUP_EDITOR_DOCUMENT e STARTUP_EDITOR_UI. Quatro micro-marks
+        // cobrem agora o intervalo inteiro; nada mais mudou.
+        EditorJni.nativeStartupMark("UI_BUILD_START", "ok",
+            "buildUi começa (P4.5 Curved Dark)")
+        KotlinCrashGuard.phase("UI_BUILD")
         buildUi()
         EditorJni.nativeStartupMark("STARTUP_EDITOR_UI", "ok", "UI construída")
+        KotlinCrashGuard.phase("POST_PROJECT")
         ensureProjectOnFirstRun()
         EditorJni.nativeStartupMark("STARTUP_POST_PROJECT", "ok", "ensureProject retornou")
+        KotlinCrashGuard.phase("UI_SYNC")
         refreshAll()
         EditorJni.nativeStartupMark("STARTUP_UI_SYNC", "ok", "refreshAll concluído")
         // P2 (§5): o DOCUMENTO é a fonte da verdade — a ferramenta da UI
@@ -216,7 +246,49 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         editorTool = EditorJni.nativeEditorGetTool(handle)
         updateToolSegments()
         // P4.1 (T1/D3/D4): densidade do device → alvos de toque do gizmo.
+        KotlinCrashGuard.phase("UI_SCALE")
         installUiScale()
+        KotlinCrashGuard.phase("IDLE")
+    }
+
+    /**
+     * P4.5.1 (R2/R3): auditoria do TEMA no device real — resolve o
+     * windowBackground do tema ativo e confirma que é o splash Oni, e
+     * que o ícone do launcher resolve (no Android 12+ o splash do
+     * SISTEMA usa o ícone do launcher — um adaptive-icon quebrado matava
+     * ANTES de qualquer onCreate nosso). Auditoria apenas: qualquer
+     * falha é REGISTRADA (mark failed) — nunca aborta o startup.
+     */
+    private fun markUiTheme() {
+        val outcome = try {
+            val tv = TypedValue()
+            val resolved = theme.resolveAttribute(
+                android.R.attr.windowBackground, tv, true)
+            val bgIsSplash = resolved && tv.resourceId != 0 &&
+                tv.resourceId == R.drawable.oni_splash
+            // Ícone do launcher resolve? (usado pelo splash do sistema 12+)
+            val icon = resources.getDrawable(R.mipmap.ic_launcher, theme)
+            "ok" to "windowBackground splash=$bgIsSplash, launcher=${icon != null}"
+        } catch (t: Throwable) {
+            "failed" to "${t.javaClass.simpleName}: ${t.message}"
+        }
+        EditorJni.nativeStartupMark("UI_THEME", outcome.first, outcome.second)
+    }
+
+    /**
+     * P4.5.1 (R2/R3): auditoria da CADEIA do splash "Curved Dark" no
+     * device — infla o layer-list (fundo oni_bg + logo 96dp + wordmark
+     * por densidade). Resolve o caminho completo de recursos que a
+     * janela usa antes do primeiro frame. Best-effort igual acima.
+     */
+    private fun markUiSplash() {
+        val outcome = try {
+            val splash = resources.getDrawable(R.drawable.oni_splash, theme)
+            "ok" to "layer-list inflado (${splash.javaClass.simpleName})"
+        } catch (t: Throwable) {
+            "failed" to "${t.javaClass.simpleName}: ${t.message}"
+        }
+        EditorJni.nativeStartupMark("UI_SPLASH", outcome.first, outcome.second)
     }
 
     /** P4.1 (T1): instala a densidade no viewport nativo (dp → px). */
@@ -330,6 +402,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             it.setOnClickListener { b -> showBackendMenu(b as TextView) }
         }
         topBar.addView(btnBackend, LinearLayout.LayoutParams(0, dp(48), 0.7f))
+        // P4.5.1 (R3): header card completo (Oni.chip/Oni.button/tokens) —
+        // o primeiro trecho P4.5-escrito do build agora tem nome e sobrevive
+        // ao processo (mark persistido na hora).
+        KotlinCrashGuard.phase("ONIUI_INIT")
+        EditorJni.nativeStartupMark("ONIUI_INIT", "ok",
+            "header + chips + play (tokens Oni) construídos")
 
         // ---- chrome inferior: linha de ferramentas flutuante + tab bar card ----
         bottomBar = LinearLayout(this).apply {
@@ -584,6 +662,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             background = null
         }
         buildAssetsPanel()
+        // P4.5.1 (R3): sheets + scrim + adapters prontos — a metade pesada
+        // do build P4.5 passou (é aqui que a UI nova mais criava views).
+        KotlinCrashGuard.phase("UI_SHEETS")
+        EditorJni.nativeStartupMark("UI_SHEETS", "ok",
+            "sheets/scrim/adapters dos painéis construídos")
 
         setContentView(root)
         applyWindowInsets()
@@ -594,6 +677,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         undoCluster?.visibility = View.VISIBLE
         syncSnapChips()
         updateUndoRedo()
+        // P4.5.1 (R3): UI anexada à janela (traversal agendado) — o 1º frame
+        // é a última zona cega do build; doFrame já marca FIRST_TRAVERSAL.
+        KotlinCrashGuard.phase("UI_FIRST_FRAME")
+        EditorJni.nativeStartupMark("UI_FIRST_FRAME", "ok",
+            "setContentView + insets + estados iniciais concluídos")
     }
 
     /** Zoom por botão (cluster): fator no CENTRO do viewport. */
