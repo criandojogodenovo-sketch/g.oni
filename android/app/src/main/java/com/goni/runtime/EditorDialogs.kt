@@ -93,7 +93,9 @@ internal fun EditorActivity.showBackendMenu(button: TextView) {
     val options = listOf("auto", "vulkan", "gles")
     OniDialog.list(this, "Backend de render", options) { which ->
         EditorJni.nativeEditorSetBackend(handle, options[which])
-        button.text = options[which]
+        // P4.7.0 B3: fonte ÚNICA do rótulo (tag canônico + compação
+        // re-aplicada — o texto direto quebrava o modo compacto).
+        setBackendLabel(options[which])
     }
 }
 

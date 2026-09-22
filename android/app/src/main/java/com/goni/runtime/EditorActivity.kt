@@ -395,10 +395,17 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         topBar.addView(btnProject, LinearLayout.LayoutParams(dp(48), dp(48)))
         // P4.6 (L1): referência p/ modo COMPATO da top bar em landscape.
+        // P4.7.0 B3 (zero sobreposição): chip por CONTEÚDO (WRAP_CONTENT +
+        // single line) — o weight antigo forçava largura e o texto QUEBRAVA
+        // no meio ("Cen a" / "a u t" do round 6). Compactação estreita
+        // troca o rótulo por ÍCONE (updateTopBarCompaction), nunca corta.
         btnScene = Oni.chip(this, "Cena", textSizeSp = 13f).also {
             it.setOnClickListener { showSceneMenu() }
         }
-        topBar.addView(btnScene, LinearLayout.LayoutParams(0, dp(48), 0.9f))
+        topBar.addView(btnScene, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+        // Mola: empurra play/backend para a DIREITA sem apertar os chips.
+        topBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         // Play = icon-button ACENTO circular (§2 — chamada do acento).
         btnPlay = Oni.button(this, "▶", kind = Oni.BTN_PRIMARY, textSizeSp = 16f)
         btnPlay.setOnClickListener { togglePlay() }
@@ -406,7 +413,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         btnBackend = Oni.chip(this, "auto", mono = true, textSizeSp = 12f).also {
             it.setOnClickListener { b -> showBackendMenu(b as TextView) }
         }
-        topBar.addView(btnBackend, LinearLayout.LayoutParams(0, dp(48), 0.7f))
+        topBar.addView(btnBackend, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
         // P4.5.1 (R3): header card completo (Oni.chip/Oni.button/tokens) —
         // o primeiro trecho P4.5-escrito do build agora tem nome e sobrevive
         // ao processo (mark persistido na hora).
@@ -658,6 +666,13 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 Gravity.TOP
             ).apply { setMargins(dp(8), dp(8), dp(8), 0) }
         )
+        // P4.7.0 B3 (zero sobreposição): compação + auditoria reagindo ao
+        // layout REAL (rotação/teclado/landscape) — mesma reação do painel
+        // (listener de layout, NUNCA re-parent — regra N2).
+        topBar.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updateTopBarCompaction()
+            auditChromeOverlaps()
+        }
 
         panelContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -884,6 +899,113 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 }
                 cluster.requestLayout()
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // P4.7.0 Bloco 3 — ZERO SOBREPOSIÇÃO na top bar (driver round 6:
+    // chips "Cen a"/"a u t" = texto QUEBRADO pelo weight+wrap).
+    // ------------------------------------------------------------------
+
+    /** Rótulos não-compactos canônicos (fonte da compação). */
+    private var topBarCompact = false
+
+    /** Aplica (ou desfaz) os rótulos compactos — ÍCONE em vez de cortar. */
+    internal fun applyTopBarLabels(compact: Boolean) {
+        topBarCompact = compact
+        btnScene?.text = if (compact) "≡" else "Cena"
+        // Backend: "auto"/"vulkan"/"gles" → inicial maiúscula em compacto.
+        btnBackend.text = if (compact) {
+            backendLabel().take(1).uppercase()
+        } else {
+            backendLabel()
+        }
+    }
+
+    /** Rótulo corrente do backend (o menu troca o texto do chip). */
+    internal fun backendLabel(): String = btnBackend.tag as? String ?: "auto"
+
+    /** Fonte ÚNICA do rótulo do backend — o menu NUNCA escreve direto
+     *  no chip (a compação re-aplica e o tag guarda o canônico). */
+    internal fun setBackendLabel(label: String) {
+        btnBackend.tag = label
+        applyTopBarLabels(topBarCompact)
+    }
+
+    /**
+     * Compação reativa: se os filhos da top bar NÃO cabem na largura
+     * real (teclado/landscape/tela estreita), os chips textuais viram
+     * ícones (48dp fixos) — o texto nunca quebra nem fica sob outro.
+     */
+    private fun updateTopBarCompaction() {
+        if (topBar.childCount == 0) return
+        val available = topBar.width - topBar.paddingLeft - topBar.paddingRight
+        if (available <= 0) return
+        var needed = 0
+        for (i in 0 until topBar.childCount) {
+            needed += topBar.getChildAt(i).measuredWidth
+        }
+        val overflow = needed > available
+        if (overflow != topBarCompact) {
+            applyTopBarLabels(overflow)
+            topBar.requestLayout()
+        }
+    }
+
+    /**
+     * AUDITORIA DE SOBREPOSIÇÃO (evidência round 7 — matriz bidirecional):
+     * caminha pelo chrome visível da raiz (topBar, bottomBar, playHud,
+     * gameHudBar, clusters) e verifica pares NÃO pai-filho com caixas
+     * intersectadas. Resultado vai para o diagnóstico persistido
+     * (CHROME_AUDIT) — o device round 7 mostra "ok" ou os pares exatos.
+     */
+    private fun auditChromeOverlaps() {
+        if (!::rootLayout.isInitialized) return
+        // Chrome do modo corrente (paneis modais GONE não auditam).
+        val chrome = mutableListOf<Pair<String, android.graphics.Rect>>()
+        fun collect(name: String, view: View) {
+            if (view.visibility != View.VISIBLE || view.width == 0) return
+            val loc = IntArray(2)
+            view.getLocationOnScreen(loc)
+            chrome.add(name to android.graphics.Rect(
+                loc[0], loc[1], loc[0] + view.width, loc[1] + view.height))
+        }
+        if (::topBar.isInitialized && topBar.visibility == View.VISIBLE) {
+            collect("topBar", topBar)
+        }
+        if (::bottomBar.isInitialized && bottomBar.visibility == View.VISIBLE) {
+            collect("bottomBar", bottomBar)
+        }
+        if (::playHud.isInitialized && playHud.visibility == View.VISIBLE) {
+            collect("playHud", playHud)
+        }
+        gameHudBar?.let {
+            if (it.visibility == View.VISIBLE) collect("gameHudBar", it)
+        }
+        zoomCluster?.let { if (it.visibility == View.VISIBLE) collect("zoom", it) }
+        undoCluster?.let {
+            if (it.visibility == View.VISIBLE) collect("undo", it)
+        }
+        // Matriz bidirecional (i<j cobre os dois sentidos da interseção).
+        var overlaps = 0
+        var detail = ""
+        for (i in chrome.indices) {
+            for (j in i + 1 until chrome.size) {
+                val (nameA, rectA) = chrome[i]
+                val (nameB, rectB) = chrome[j]
+                // Contenção legítima (HUD dentro de cluster etc.) não é
+                // sobreposição — aqui não há pais/filhos no mesmo nível.
+                if (android.graphics.Rect.intersects(rectA, rectB)) {
+                    overlaps++
+                    detail += "$nameA×$nameB "
+                }
+            }
+        }
+        if (overlaps == 0) {
+            EditorJni.nativeStartupMark("CHROME_AUDIT", "ok",
+                "chrome sem sobreposição (modos: portrait/landscape)")
+        } else {
+            EditorJni.nativeStartupMark("CHROME_AUDIT", "overlap", detail)
         }
     }
 

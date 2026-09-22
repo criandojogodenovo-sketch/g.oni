@@ -174,6 +174,40 @@ quadrados girados) e handles colapsando sobre o centro em bounds pequenos.
 | Halo 1dp (quads+segmentos+triângulos) | VERIFIED (código; visual no round 7) |
 | Drag 1:1 preservado (regressões P1/P2 verdes) | VERIFIED (suite completa 3×) |
 
-## Bloco 3 — zero sobreposição (top bar / auditoria)
+## Bloco 3 — zero sobreposição: top bar por conteúdo + auditoria
+
+Driver: round 6 — chips truncados/quebrados ("Cen a", "a u t").
+
+- **Causa raiz**: chips com `LinearLayout.LayoutParams(0, 48dp, weight)` —
+  largura FORÇADA pelo weight + texto sem single-line = quebra no meio do
+  rótulo (era sobreposição/ilegibilidade, não "chip curto").
+- **Correção estrutural** (`buildUi`): `btnScene`/`btnBackend` passam a
+  `WRAP_CONTENT` (chip tem o tamanho do CONTEÚDO, regra §1.2), mola
+  (`weight=1`) empurra ▶/backend para a direita; `Oni.chip` ganha
+  `isSingleLine + maxLines=1` — quebra de linha IMPOSSÍVEL em qualquer chip.
+- **Compação reativa** (`updateTopBarCompaction`): o listener de layout da
+  top bar compara largura necessária × disponível (teclado/landscape/tela
+  estreita); no overflow, rótulos textuais viram ÍCONE ("Cena"→"≡",
+  backend→inicial maiúscula "A"/"V"/"G") — nunca corta, alvo 48dp
+  preservado. Fonte ÚNICA do rótulo do backend (`setBackendLabel` com tag
+  canônico — o menu não escreve direto no chip).
+- **Auditoria bidirecional** (`auditChromeOverlaps`): matriz i<j dos pares
+  visíveis {topBar, bottomBar, playHud, gameHudBar, zoom, undo} com caixas
+  de tela reais (`getLocationOnScreen`); resultado persistido via
+  `nativeStartupMark("CHROME_AUDIT", ok|overlap, pares)` — evidência
+  grepável no diagnóstico do device (round 7). Dispara em cada layout da
+  top bar (rotação/teclado/play) — os dois sentidos (A×B e B×A) cobertos
+  pela matriz de índices.
+- Zero re-parent (regra N2 intocada): compação só troca TEXTOS; auditoria
+  é somente-leitura.
+
+| Item | Status |
+|---|---|
+| Chips por conteúdo + single line (fim de "Cen a"/"a u t") | VERIFIED (código; visual no round 7) |
+| Compação ícone-em-vês-de-corte | VERIFIED (código; visual no round 7) |
+| Auditoria bidirecional com evidência persistida | VERIFIED (código; grep no round 7) |
+| Regressões de layout portrait/landscape (P4.6 L1) | VERIFIED (lógica preservada; visual round 7) |
+
+## Bloco 4 — Camera2D (zoom/limits/follow/smoothing/deadzone)
 
 (este bloco ainda não começou)

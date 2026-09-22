@@ -294,7 +294,9 @@ object Oni {
     const val BTN_SUCCESS = 3
     const val BTN_SHEET = 4
 
-    /** Chip pill (§1.2 — raio total); mono opcional; 48dp de alvo. */
+    /** Chip pill (§1.2 — raio total); mono opcional; 48dp de alvo.
+     *  P4.7.0 B3 (zero sobreposição): UMA linha SEMPRE — o wrap do
+     *  weight antigo quebrava "Cena"→"Cen a" e "auto"→"a u t". */
     fun chip(c: Context, label: String, active: Boolean = false,
              mono: Boolean = false, textSizeSp: Float = 12f): TextView {
         val t = TextView(c)
@@ -303,6 +305,8 @@ object Oni {
         t.typeface = if (mono) Typeface.MONOSPACE else Typeface.DEFAULT
         t.setPadding(dp(c, 14), 0, dp(c, 14), 0)
         t.gravity = Gravity.CENTER
+        t.isSingleLine = true
+        t.maxLines = 1
         t.minimumHeight = dp(c, 48)
         if (active) {
             t.setTextColor(ON_ACCENT)
