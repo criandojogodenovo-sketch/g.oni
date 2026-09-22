@@ -222,6 +222,21 @@ public:
     /// Erro se não finito, <= 0 ou > 0.25 s (honesto — sem clamp calado).
     [[nodiscard]] eng::core::Result<void> setPhysicsFixedDt(float fixedDt);
 
+    // --- P4.7.0 (Bloco 5): kinematic_sweep ----------------------------------
+    /// ON (default): `move` do KINEMATIC é VARRIDO (TOI+slide — o script
+    /// ingênuo COLIDE; parede para, desliza, nunca atravessa). OFF: `move`
+    /// é translação crua (teletransporte — semântica pré-P4.7). Persiste
+    /// na cena (chave aditiva "physicsKinematicSweep"; arquivo antigo = ON).
+    [[nodiscard]] bool kinematicSweep() const noexcept
+    {
+        return kinematicSweep_;
+    }
+    void setKinematicSweep(bool enabled) noexcept
+    {
+        kinematicSweep_ = enabled;
+        sceneDirty_ = true; // persiste no próximo save (como fixedDt)
+    }
+
     // --- P4.6 (Bloco 1): camadas de COLISÃO nomeadas (project settings) ---
     // ≠ camadas de cena/tick (LayerInfo/ADR-051): estes bitfields filtram
     // PARES de colisão — (A.mask & B.layer) && (B.mask & A.layer) — e são
@@ -911,6 +926,8 @@ private:
     eng::input::InputSystem runtimeInput_{}; ///< input do JOGO (§6.4)
     eng::physics::PhysicsWorld physicsWorld_{};      ///< §7.1–§7.6
     eng::physics::TimestepAccumulator physicsAccumulator_{1.f / 60.f};
+    /// P4.7.0 B5: varredura do kinematic (default ON — ver kinematicSweep()).
+    bool kinematicSweep_ = true;
     eng::animation::AnimationBank runtimeAnimations_{}; ///< §7.7–§7.11
     eng::audio::AudioMixer audioMixer_{};      ///< P2 §12 — mixer REAL
     /// P4.3 (N1): voice/asset do PREVIEW (uma única; bus isolado do jogo).

@@ -651,7 +651,9 @@ void noHost(NiFault& fault, const char* who)
     return true;
 }
 
-/// move(dx,dy): translação CRUA (teletransporte — SEM resolução).
+/// move(dx,dy): P4.7.0 B5 — com kinematic_sweep ON (default da cena), o
+/// move de um KINEMATIC com Collider é VARRIDO (TOI+slide — colide).
+/// Demais casos: translação crua (semântica pré-P4.7 — ver NiHost).
 [[nodiscard]] bool fnMove(NiExecContext& ctx, const NiValue* args,
                           std::uint16_t /*argc*/, NiValue& out,
                           NiFault& fault)
@@ -687,6 +689,29 @@ void noHost(NiFault& fault, const char* who)
         return false;
     }
     out = niBool(true);
+    return true;
+}
+
+/// teleport(x,y): translação CRUA — SEM varredura, SEMPRE (P4.7.0 B5:
+/// com kinematic_sweep ON, `move` colide; o TELEPORTE é a válvula de
+/// escape do autor para spawn/reposicionamento — atravessa por design).
+/// Host dedicado (não o translate — que VARRE o kinematic com sweep ON).
+[[nodiscard]] bool fnTeleport(NiExecContext& ctx, const NiValue* args,
+                              std::uint16_t /*argc*/, NiValue& out,
+                              NiFault& fault)
+{
+    float dx = 0.f;
+    float dy = 0.f;
+    eng::ecs::Entity self{0xFFFFFFFFu, 0xFFFFFFFFu};
+    if (!moveSelf(ctx, args, dx, dy, "teleport", self, fault)) {
+        return false;
+    }
+    NiHost* host = ctx.host();
+    if (host == nullptr) {
+        noHost(fault, "teleport");
+        return false;
+    }
+    out = niBool(host->teleport(self, dx, dy));
     return true;
 }
 
@@ -775,6 +800,8 @@ void NiNativeTable::addStandardHost()
         {"move_and_slide", 2, hostn::fnMoveAndSlide, NiType::Bool},
         // P4.7.0 (Bloco 4): câmera de jogo autorável por script — mesma
         // câmera do Inspector/CameraTick (primeira ativa vence).
+        // P4.7.0 (Bloco 5): teleporte cru — NUNCA varrido (spawn).
+        {"teleport", 2, hostn::fnTeleport, NiType::Bool},
         {"camera.zoom", 1, hostn::fnCameraZoom, NiType::Bool},
         {"camera.position", 2, hostn::fnCameraPosition, NiType::Bool},
         {"camera.follow", 1, hostn::fnCameraFollow, NiType::Bool},

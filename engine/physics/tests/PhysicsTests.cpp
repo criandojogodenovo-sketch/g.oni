@@ -522,3 +522,91 @@ TEST_CASE("p46: moveAndSlide respeita o MASK do próprio corpo",
         PhysicsWorld::moveAndSlide(f.scene, solid, {6.f, 0.f, 0.f});
     CHECK(blocked.x < 2.5f);
 }
+
+// =============================================================================
+// P4.7.0 (Bloco 5): kinematicSweepMove/From — o script ingênuo COLIDE
+// =============================================================================
+
+TEST_CASE("p47: kinematicSweepMove para na parede SEM CharacterBody "
+          "(script ingênuo colide)",
+          "[physics][p47]")
+{
+    WorldFixture f;
+    f.addStaticBox({3.f, 0.f, 0.f}, {0.5f, 5.f, 5.f});
+    // KINEMATIC com Collider — o corpo típico de gameplay autorado
+    // (inimigo/plataforma movida por script; NÃO tem CharacterBody).
+    auto kinematic = f.addBody({0.f, 0.f, 0.f}, 1.f, 0.5f, {0, 0, 0}, false);
+    f.scene.world().get<RigidBody>(kinematic)->bodyType =
+        BodyType::Kinematic;
+
+    // Movimento ALTO (6u num passo) — o anti-túnel fatia em substeps.
+    const Vec3 finalPos =
+        PhysicsWorld::kinematicSweepMove(f.scene, kinematic, {6.f, 0.f, 0.f});
+    CHECK(finalPos.x < 2.55f); // NUNCA do outro lado (face em 2.5)
+    CHECK(finalPos.x > 1.5f);  // mas ANDOU (parou NA parede: face − raio)
+}
+
+TEST_CASE("p47: kinematicSweepMove DESLIZA na parede (diagonal: x para, "
+          "y avança)",
+          "[physics][p47]")
+{
+    WorldFixture f;
+    // Parede ALTA (±50): o slide diagonal (y até −6) NUNCA sai do
+    // alcance dela — só assim o x absorve de verdade até o fim.
+    f.addStaticBox({3.f, 0.f, 0.f}, {0.5f, 50.f, 50.f});
+    auto kinematic = f.addBody({0.f, 0.f, 0.f}, 1.f, 0.5f, {0, 0, 0}, false);
+    f.scene.world().get<RigidBody>(kinematic)->bodyType =
+        BodyType::Kinematic;
+
+    // Diagonal 45° contra a parede: a componente NORMAL (x) para, a
+    // TANGENCIAL (y) desliza — composição de push-out por substep.
+    const Vec3 finalPos = PhysicsWorld::kinematicSweepMove(
+        f.scene, kinematic, {6.f, -6.f, 0.f});
+    CHECK(finalPos.x < 2.55f);           // normal absorvida
+    CHECK(finalPos.y < -5.5f);           // tangente deslizou (quase −6)
+    CHECK(finalPos.y > -6.5f);
+}
+
+TEST_CASE("p47: kinematicSweepMoveFrom varre da ORIGEM explícita "
+          "(semântica da escrita de position)",
+          "[physics][p47]")
+{
+    WorldFixture f;
+    f.addStaticBox({3.f, 0.f, 0.f}, {0.5f, 5.f, 5.f});
+    auto kinematic = f.addBody({0.f, 0.f, 0.f}, 1.f, 0.5f, {0, 0, 0}, false);
+    f.scene.world().get<RigidBody>(kinematic)->bodyType =
+        BodyType::Kinematic;
+
+    // Cenário da ESCRITA de position: o write cru JÁ deixou o corpo no
+    // DESTINO (x=6 — do outro lado da parede). A varredura tem de
+    // partir da ORIGEM (0,0) e parar NA parede — nunca varrer DO
+    // destino (que varreria longe dela).
+    f.scene.localTransform(kinematic)->position = {6.f, 0.f, 0.f};
+    const Vec3 finalPos = PhysicsWorld::kinematicSweepMoveFrom(
+        f.scene, kinematic, {0.f, 0.f, 0.f}, {6.f, 0.f, 0.f});
+    CHECK(finalPos.x < 2.55f);
+    CHECK(finalPos.x > 1.5f);
+}
+
+TEST_CASE("p47: kinematicSweepMove sem collider = cru; respeita mask",
+          "[physics][p47]")
+{
+    WorldFixture f;
+    f.addStaticBox({3.f, 0.f, 0.f}, {0.5f, 5.f, 5.f});
+
+    // Sem Collider: nada a varrer — cru (from + motion).
+    auto naked = f.scene.createNode();
+    (void)f.scene.world().emplace<RigidBody>(naked, RigidBody{});
+    f.scene.localTransform(naked)->position = {0.f, 0.f, 0.f};
+    const Vec3 raw = PhysicsWorld::kinematicSweepMove(f.scene, naked,
+                                                      {6.f, 0.f, 0.f});
+    CHECK(raw.x == Catch::Approx(6.f).margin(1e-4f));
+
+    // Com Collider + mask que IGNORA a parede: atravessa (ghost).
+    auto ghost = f.addBody({0.f, 0.f, 0.f}, 1.f, 0.5f, {0, 0, 0}, false);
+    f.scene.world().get<RigidBody>(ghost)->bodyType = BodyType::Kinematic;
+    f.scene.world().get<Collider>(ghost)->mask = 2u; // parede é bit 1
+    const Vec3 through = PhysicsWorld::kinematicSweepMove(
+        f.scene, ghost, {6.f, 0.f, 0.f});
+    CHECK(through.x == Catch::Approx(6.f).margin(1e-4f));
+}

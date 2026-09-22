@@ -835,3 +835,228 @@ TEST_CASE("p47: verbos camera.* — script dirige a câmera ativa",
     CHECK(data->followName == "Herói");
     f.doc->stop();
 }
+
+// =============================================================================
+// P4.7.0 Bloco 5 — kinematic_sweep: script ingênuo COLIDE (round 6)
+// =============================================================================
+
+TEST_CASE("p47: kinematic_sweep ON — move ingênuo de 6u PARA na parede",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+
+    // Parede estática: box (0.5, 5, 5) em x=3 — face em 2.5.
+    auto wall = f.doc->createEntity("Parede", eng::scene::kNoEntity);
+    REQUIRE(wall.ok());
+    REQUIRE(f.doc->addComponent(wall.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "shape", "Box")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "halfExtents.x", "0.5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "halfExtents.y", "5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "halfExtents.z", "5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::math::Transform",
+                                    "position.x", "3")
+                .ok());
+
+    // Jogador KINEMATIC (Collider + RigidBody kinematic) + script INGÊNUO:
+    // tenta 600 u num tick (o anti-túnel do sweep fatia em substeps).
+    auto player = f.doc->createEntity("Jogador", eng::scene::kNoEntity);
+    REQUIRE(player.ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::physics::RigidBody")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::physics::RigidBody",
+                                    "bodyType", "Kinematic")
+                .ok());
+    const char* source = "up update:\n"
+                         "    move(6, 0)\n"
+                         "stop\n";
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    // Sweep ON é o DEFAULT (o naive script COLIDE — round 6).
+    CHECK(f.doc->kinematicSweep());
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+    const auto fields = f.doc->inspectorFields(player.value(),
+                                               "eng::math::Transform");
+    float px = 0.f;
+    for (const auto& field : fields) {
+        if (field.path == "position.x") {
+            px = std::stof(field.value);
+        }
+    }
+    INFO("player.x = " << px);
+    CHECK(px < 2.55f); // NUNCA do outro lado (face 2.5)
+    CHECK(px > 1.5f);  // mas andou (parou NA parede: face − raio 0.5)
+    f.doc->stop();
+}
+
+TEST_CASE("p47: kinematic_sweep OFF — o mesmo move é teletransporte cru",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto wall = f.doc->createEntity("Parede", eng::scene::kNoEntity);
+    REQUIRE(wall.ok());
+    REQUIRE(f.doc->addComponent(wall.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "shape", "Box")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::math::Transform",
+                                    "position.x", "3")
+                .ok());
+
+    auto player = f.doc->createEntity("Jogador", eng::scene::kNoEntity);
+    REQUIRE(player.ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::physics::RigidBody")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::physics::RigidBody",
+                                    "bodyType", "Kinematic")
+                .ok());
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    const char* source = "up update:\n"
+                         "    move(6, 0)\n"
+                         "stop\n";
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    f.doc->setKinematicSweep(false); // semântica pré-P4.7 (cru)
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+    const auto fields = f.doc->inspectorFields(player.value(),
+                                               "eng::math::Transform");
+    float px = 0.f;
+    for (const auto& field : fields) {
+        if (field.path == "position.x") {
+            px = std::stof(field.value);
+        }
+    }
+    CHECK(px == Catch::Approx(6.f).margin(0.05f)); // ATRAVESSOU (cru)
+    f.doc->stop();
+}
+
+TEST_CASE("p47: teleport atravessa MESMO com sweep ON (spawn por design)",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    auto wall = f.doc->createEntity("Parede", eng::scene::kNoEntity);
+    REQUIRE(wall.ok());
+    REQUIRE(f.doc->addComponent(wall.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::math::Transform",
+                                    "position.x", "3")
+                .ok());
+
+    auto player = f.doc->createEntity("Jogador", eng::scene::kNoEntity);
+    REQUIRE(player.ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::physics::RigidBody")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::physics::RigidBody",
+                                    "bodyType", "Kinematic")
+                .ok());
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    const char* source = "up update:\n"
+                         "    teleport(6, 0)\n"
+                         "stop\n";
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+    CHECK(f.doc->kinematicSweep()); // sweep ON…
+
+    REQUIRE(f.doc->play().ok());
+    f.doc->tick(1.f / 60.f);
+    const auto fields = f.doc->inspectorFields(player.value(),
+                                               "eng::math::Transform");
+    float px = 0.f;
+    for (const auto& field : fields) {
+        if (field.path == "position.x") {
+            px = std::stof(field.value);
+        }
+    }
+    CHECK(px == Catch::Approx(6.f).margin(0.05f)); // …e ATRAVESSOU (cru)
+    f.doc->stop();
+}
+
+TEST_CASE("p47: physicsKinematicSweep persiste e o ausente volta a ON",
+          "[editor][p47]")
+{
+    ContractFixture f;
+    f.withProject();
+    f.doc->setKinematicSweep(false);
+    REQUIRE(f.doc->saveScene("main.json").ok());
+    auto saved = f.fs->readAllText(
+        eng::fs::Path{"ContractGame/scenes/main.json"});
+    REQUIRE(saved.ok());
+    CHECK(saved.value().find("\"physicsKinematicSweep\":false")
+          != std::string::npos);
+
+    // Remove a chave (cena "antiga") → default ON.
+    std::string stripped = saved.value();
+    const std::string needle = "\"physicsKinematicSweep\":false";
+    const auto at = stripped.find(needle);
+    REQUIRE(at != std::string::npos);
+    // A chave sai ORDENADA do dump (meio do objeto: seguida de vírgula)
+    // ou por último (vírgula ANTES dela) — apagar sem deixar vírgula
+    // órfã (vírgula pendurada = JSON inválido).
+    const bool commaAfter =
+        at + needle.size() < stripped.size()
+        && stripped[at + needle.size()] == ',';
+    const bool commaBefore = at > 0 && stripped[at - 1] == ',';
+    stripped.erase(at, needle.size());
+    if (commaAfter) {
+        stripped.erase(at, 1); // "k1":v,"k2" — apaga a vírgula SEGUIDA
+    } else if (commaBefore && at < stripped.size()
+               && stripped[at] == '}') {
+        stripped.erase(at - 1, 1); // ,"k"} — apaga a vírgula ANTERIOR
+    }
+    REQUIRE(f.fs->writeAllText(
+        eng::fs::Path{"ContractGame/scenes/main.json"}, stripped));
+    auto loaded = f.doc->loadScene("main.json");
+    INFO("erro: "
+         << (loaded.ok() ? std::string{"ok"} : loaded.error().message));
+    REQUIRE(loaded.ok());
+    CHECK(f.doc->kinematicSweep());
+}

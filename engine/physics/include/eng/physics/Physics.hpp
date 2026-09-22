@@ -169,6 +169,26 @@ public:
         const eng::scene::Scene& scene, eng::ecs::Entity body,
         eng::math::Vec3 motion);
 
+    /// P4.7.0 Bloco 5: varredura de KINEMATIC por COLLIDER (sem
+    /// CharacterBody). Mesma matemática de substeps anti-túnel do
+    /// moveAndSlide (chunk ≤ meio raio, teto 64), raio da esfera do
+    /// Collider do próprio corpo (Sphere = radius; Box = círculo
+    /// inscrito na meia-extensão mínima) e o mask do próprio corpo
+    /// decidindo contra quem desliza. Retorna a posição FINAL em mundo.
+    /// Parte da posição de MUNDO ATUAL do corpo (`motion` = delta
+    /// proposto — semântica do `move` do script).
+    [[nodiscard]] static eng::math::Vec3 kinematicSweepMove(
+        const eng::scene::Scene& scene, eng::ecs::Entity body,
+        eng::math::Vec3 motion);
+
+    /// P4.7.0 Bloco 5: variante com ORIGEM explícita — varre de `from`
+    /// (posição de mundo ANTES da escrita) por `motion`. Necessária para
+    /// a escrita de `position` (o write já moveu o corpo; a varredura
+    /// tem de voltar à origem — nunca varrer DO destino).
+    [[nodiscard]] static eng::math::Vec3 kinematicSweepMoveFrom(
+        const eng::scene::Scene& scene, eng::ecs::Entity body,
+        const eng::math::Vec3& from, eng::math::Vec3 motion);
+
     [[nodiscard]] std::span<const ContactEvent> contacts() const noexcept
     {
         return contacts_;

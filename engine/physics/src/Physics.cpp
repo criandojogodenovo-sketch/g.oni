@@ -594,6 +594,64 @@ eng::core::Result<RaycastHit> PhysicsWorld::raycast(
 // CharacterBody (§7.5)
 // =============================================================================
 
+/// P4.7.0 Bloco 5 (comum ao moveAndSlide/kinematicSweepMove): fatia o
+/// motion em substeps de no máximo MEIO raio (anti-túnel, teto 64) e
+/// compõe sweepSphereOnce por chunk. Escreve a posição final em
+/// `outResolved` (a posição inicial `from` é imutável — chamador mantém).
+void sweptSphereMove(const eng::scene::Scene& scene, eng::ecs::Entity body,
+                     const Vec3& from, const Vec3& motion, float radius,
+                     std::uint32_t selfMask, Vec3& outResolved)
+{
+    const float len = std::sqrt(motion.x * motion.x + motion.y * motion.y +
+                                motion.z * motion.z);
+    const float maxStep = std::max(radius * 0.5f, 0.05f);
+    const std::uint32_t substeps = static_cast<std::uint32_t>(
+        std::min(64.0, std::max(1.0, std::ceil(
+            static_cast<double>(len) / static_cast<double>(maxStep)))));
+    const Vec3 chunk{motion.x / static_cast<float>(substeps),
+                     motion.y / static_cast<float>(substeps),
+                     motion.z / static_cast<float>(substeps)};
+    outResolved = from;
+    for (std::uint32_t step = 0; step < substeps; ++step) {
+        outResolved = sweepSphereOnce(scene, body, outResolved, chunk,
+                                      radius, selfMask);
+    }
+}
+
+Vec3 PhysicsWorld::kinematicSweepMove(const eng::scene::Scene& scene,
+                                      eng::ecs::Entity body, Vec3 motion)
+{
+    // P4.7.0 Bloco 5: varredura por COLLIDER (sem CharacterBody). O raio
+    // da esfera varrida: Sphere = radius; Box = círculo inscrito na
+    // meia-extensão MÍNIMA (conservador — para no espaço mais apertado).
+    const eng::math::Mat4 world = scene.computeWorldMatrix(body);
+    const Vec3 position = {world.at(3, 0), world.at(3, 1), world.at(3, 2)};
+    return kinematicSweepMoveFrom(scene, body, position, motion);
+}
+
+Vec3 PhysicsWorld::kinematicSweepMoveFrom(const eng::scene::Scene& scene,
+                                          eng::ecs::Entity body,
+                                          const Vec3& from, Vec3 motion)
+{
+    const Collider* collider = scene.world().get<Collider>(body);
+    if (collider == nullptr) {
+        return from + motion; // sem collider: nada a varrer (movimento cru)
+    }
+    float radius = collider->radius;
+    if (collider->shape == ColliderShape::Box) {
+        radius = std::min(collider->halfExtents.x,
+                          std::min(collider->halfExtents.y,
+                                   collider->halfExtents.z));
+    }
+    if (!(radius > 0.f)) {
+        return from + motion;
+    }
+    Vec3 resolved = from;
+    sweptSphereMove(scene, body, from, motion, radius, collider->mask,
+                    resolved);
+    return resolved;
+}
+
 Vec3 PhysicsWorld::moveAndSlide(const eng::scene::Scene& scene,
                                 eng::ecs::Entity body, Vec3 motion)
 {
@@ -614,28 +672,13 @@ Vec3 PhysicsWorld::moveAndSlide(const eng::scene::Scene& scene,
     // projeta a penetração (sweepSphereOnce) — parar/deslizar é a
     // composição. Teto de 64 substeps: motion por chamada acima disso
     // É teletransporte por definição (documentado no §07-bindings).
-    const float len = std::sqrt(motion.x * motion.x + motion.y * motion.y +
-                                motion.z * motion.z);
-    const float maxStep = std::max(radius * 0.5f, 0.05f);
-    const std::uint32_t substeps = static_cast<std::uint32_t>(
-        std::min(64.0, std::max(1.0, std::ceil(
-            static_cast<double>(len) / static_cast<double>(maxStep)))));
-    const Vec3 chunk{motion.x / static_cast<float>(substeps),
-                     motion.y / static_cast<float>(substeps),
-                     motion.z / static_cast<float>(substeps)};
-
-    // Mask do próprio corpo (Collider no self, se houver) filtra contra
-    // quem o deslize acontece (uma direção — padrão Godot cinemático).
     std::uint32_t selfMask = 0xFFFFFFFFu;
     if (const Collider* selfCollider = scene.world().get<Collider>(body)) {
         selfMask = selfCollider->mask;
     }
-
     Vec3 resolved = position;
-    for (std::uint32_t step = 0; step < substeps; ++step) {
-        resolved = sweepSphereOnce(scene, body, resolved, chunk, radius,
-                                   selfMask);
-    }
+    sweptSphereMove(scene, body, position, motion, radius, selfMask,
+                    resolved);
 
     // Bug C-18 da auditoria final: snapToGround era serializado e nunca
     // aplicado. Semântica: com o movimento (quase) horizontal e chão a até

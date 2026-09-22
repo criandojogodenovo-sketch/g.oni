@@ -80,8 +80,58 @@ struct NiRuntime::HostImpl final : eng::ni::NiHost {
     }
 
     // --- P4.6 (Bloco 1): movimento de gameplay -----------------------------
+    // --- P4.7.0 (Bloco 5): kinematic_sweep ---------------------------------
+    // ON (default): `move` de um KINEMATIC com collider vira varredura
+    // (TOI+slide — o script ingênuo COLIDE; parede para e desliza). OFF
+    // (ou sem kinematic/collider): translação crua — semântica pré-P4.7.
+    // `teleport` é SEMPRE cru, mesmo com sweep ON (válvula de escape do
+    // autor — spawn/reposicionamento atravessa por design). A ESCRITA de
+    // `position` também resolve (wrap no binding — start()).
 
-    bool translate(eng::ecs::Entity self, float dx, float dy) override
+    /// Posição de MUNDO da entidade (identidade se obsoleta — o chamador
+    /// valida antes de agir; o valor só alimenta deltas de varredura).
+    [[nodiscard]] eng::math::Vec3 worldPositionOf(eng::ecs::Entity e) const
+    {
+        const eng::math::Mat4 world = scene->computeWorldMatrix(e);
+        return {world.at(3, 0), world.at(3, 1), world.at(3, 2)};
+    }
+
+    /// P4.7.0 B5: resolve a ESCRITA de `position` — se sweep ON e o corpo
+    /// é KINEMATIC com collider, varre de `oldWorld` ao destino escrito
+    /// (nunca varre DO destino — kinematicSweepMoveFrom) e aplica o delta
+    /// de volta ao local. Pais sem rotação/escala: exato (limitação do
+    /// moveAndSlide — mesma nota).
+    void sweepPositionWrite(eng::ecs::Entity e,
+                            const eng::math::Vec3& oldWorld)
+    {
+        if (!runtime->kinematicSweep_) {
+            return;
+        }
+        const auto* body = scene->world().get<eng::physics::RigidBody>(e);
+        if (body == nullptr
+            || body->bodyType != eng::physics::BodyType::Kinematic
+            || scene->world().get<eng::physics::Collider>(e) == nullptr) {
+            return;
+        }
+        auto* transform = scene->localTransform(e);
+        if (transform == nullptr) {
+            return;
+        }
+        const eng::math::Vec3 newWorld = worldPositionOf(e);
+        const eng::math::Vec3 resolved = eng::physics::PhysicsWorld::
+            kinematicSweepMoveFrom(*scene, e, oldWorld, newWorld - oldWorld);
+        if (scene->parentOf(e)
+            == eng::ecs::Entity{0xFFFFFFFFu, 0xFFFFFFFFu}) {
+            transform->position = resolved;
+        } else {
+            transform->position =
+                transform->position + (resolved - newWorld);
+        }
+    }
+
+    /// P4.7.0 B5: translação CRUA compartilhada (teleport + fallback do
+    /// move quando não varre).
+    bool rawTranslate(eng::ecs::Entity self, float dx, float dy)
     {
         auto* transform = scene->localTransform(self);
         if (transform == nullptr) {
@@ -89,6 +139,86 @@ struct NiRuntime::HostImpl final : eng::ni::NiHost {
         }
         transform->position =
             transform->position + eng::math::Vec3{dx, dy, 0.f};
+        return true;
+    }
+
+    bool translate(eng::ecs::Entity self, float dx, float dy) override
+    {
+        if (runtime->kinematicSweep_) {
+            if (const auto* body =
+                    scene->world().get<eng::physics::RigidBody>(self);
+                body != nullptr && body->bodyType
+                       == eng::physics::BodyType::Kinematic
+                && scene->world().get<eng::physics::Collider>(self)
+                       != nullptr) {
+                // Varredura com deslize (substeps anti-túnel; o mask do
+                // próprio corpo decide). move parte do MUNDO atual —
+                // nunca do local (pais sem rotação/escala: exato).
+                const eng::math::Vec3 worldBefore = worldPositionOf(self);
+                const eng::math::Vec3 resolved = eng::physics::PhysicsWorld::
+                    kinematicSweepMove(*scene, self,
+                                       eng::math::Vec3{dx, dy, 0.f});
+                auto* transform = scene->localTransform(self);
+                if (transform == nullptr) {
+                    return false;
+                }
+                if (scene->parentOf(self)
+                    == eng::ecs::Entity{0xFFFFFFFFu, 0xFFFFFFFFu}) {
+                    transform->position = resolved;
+                } else {
+                    transform->position = transform->position +
+                                          (resolved - worldBefore);
+                }
+                return true;
+            }
+        }
+        return rawTranslate(self, dx, dy);
+    }
+
+    bool teleport(eng::ecs::Entity self, float x, float y) override
+    {
+        // SEMPRE cru — NUNCA varrido (spawn atravessa por design, mesmo
+        // com sweep ON; contrato NiBindings.hpp).
+        return rawTranslate(self, x, y);
+    }
+
+    // --- P4.7.0 (Bloco 5): wrap da ESCRITA de `position` -------------------
+    // O binding refletido escreve CRU; o wrap resolve a varredura por
+    // cima (MESMA semântica do move: TOI+slide quando sweep ON — o
+    // script que move por position TAMBÉM colide). O estado guarda o
+    // binding refletido (delegação) — vivo pelo keepAlive do wrap.
+    struct PositionSweepState {
+        HostImpl* host = nullptr;
+        eng::ni::NiComponentBinding prev;
+    };
+    /// LEITURA delega ao refletido com o USER dele (o wrapper troca o
+    /// user — o ponteiro de função do refletido espera o adapter DELE,
+    /// não o PositionSweepState).
+    static bool positionSweepGet(void* userData, eng::ecs::Entity e,
+                                 std::string_view fieldPath,
+                                 eng::ni::NiValue& out, eng::ni::NiFault& fault)
+    {
+        auto* state = static_cast<PositionSweepState*>(userData);
+        return state->prev.get(state->prev.user, e, fieldPath, out, fault);
+    }
+    static bool positionSweepSet(void* userData, eng::ecs::Entity e,
+                                 std::string_view fieldPath,
+                                 const eng::ni::NiValue& value,
+                                 eng::ni::NiFault& fault)
+    {
+        auto* state = static_cast<PositionSweepState*>(userData);
+        if (!state->host->scene->world().valid(e)) {
+            // Entidade nula/obsoleta: o binding refletido faulta com
+            // precisão (EntityNull/EntityStale) — nunca varrer às cegas.
+            return state->prev.set(state->prev.user, e, fieldPath, value,
+                                   fault);
+        }
+        const eng::math::Vec3 oldWorld = state->host->worldPositionOf(e);
+        if (!state->prev.set(state->prev.user, e, fieldPath, value,
+                             fault)) {
+            return false;
+        }
+        state->host->sweepPositionWrite(e, oldWorld);
         return true;
     }
 
@@ -337,6 +467,23 @@ void NiRuntime::start(eng::scene::Scene& runtimeScene)
     (void)eng::ni::niAddReflectionBinding(
         bindings_, "position", "eng::math::Transform", fetchT, fetchTm,
         world, "position", &worldValid);
+    // P4.7.0 Bloco 5: ESCRITA de `position` com varredura — o ÚLTIMO
+    // binding "position" vence (contrato NiBindingTable) e o wrap delega
+    // ao refletido guardado em prev (vivo pelo keepAlive do wrap).
+    if (const auto* reflected = bindings_.find("position");
+        reflected != nullptr && reflected->set != nullptr) {
+        auto sweepState =
+            std::make_shared<HostImpl::PositionSweepState>();
+        sweepState->host = host_.get();
+        sweepState->prev = *reflected;
+        eng::ni::NiComponentBinding sweepBinding;
+        sweepBinding.alias = "position";
+        sweepBinding.user = sweepState.get();
+        sweepBinding.keepAlive = sweepState;
+        sweepBinding.get = &HostImpl::positionSweepGet;
+        sweepBinding.set = &HostImpl::positionSweepSet;
+        bindings_.add(std::move(sweepBinding));
+    }
     (void)eng::ni::niAddReflectionBinding(
         bindings_, "scale", "eng::math::Transform", fetchT, fetchTm, world,
         "scale", &worldValid);

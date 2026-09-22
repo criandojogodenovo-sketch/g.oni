@@ -262,4 +262,49 @@ Driver: round 6 — chips truncados/quebrados ("Cen a", "a u t").
 
 ## Bloco 5 — kinematic_sweep (colisão responde a script ingênuo)
 
-(este bloco ainda não começou)
+Feedback driver (round 6): script ingênuo (`move`) ATRAVESSAVA paredes —
+o `move` era translação crua e a varredura exigia `CharacterBody` (que o
+autor ingênuo não anexa). B5: o KINEMATIC com Collider varre por DEFAULT.
+
+### Semântica (contrato NiBindings.hpp + docs/ni-script/07)
+
+- **ON (default)**: `move(dx,dy)` de um KINEMATIC com Collider é
+  VARRIDO — a MESMA matemática do moveAndSlide (substeps anti-túnel
+  chunk ≤ meio raio, teto 64; raio da esfera do Collider do próprio
+  corpo — Sphere = radius, Box = círculo inscrito na meia-extensão
+  mínima; o mask do próprio corpo decide contra quem desliza).
+  Parede PARA e DESLIZA; movimento alto (6u num passo) nunca túnel.
+- **ESCRITA de `position`** (`e.position.x = …`): resolve IGUAL ao
+  `move` — wrap no binding refletido (o ÚLTIMO "position" vence na
+  tabela; o wrap delega ao refletido e resolve a varredura por cima,
+  com `kinematicSweepMoveFrom` varrendo da posição ANTES do write —
+  nunca DO destino).
+- **`teleport(x,y)`** (novo verbo): SEMPRE cru — válvula de escape do
+  autor para spawn/reposicionamento; atravessa por design MESMO com
+  sweep ON (host dedicado, não o translate varrido).
+- **OFF** (setting por cena): `move` volta à semântica pré-P4.7 (cru).
+  Demais casos não-mudados: sem RigidBody / não-kinematic / sem
+  Collider ⇒ cru (comportamento antigo 1:1).
+- **Persistência**: chave aditiva `"physicsKinematicSweep"` na cena
+  (migration honesta — arquivo antigo/ausente = ON: o ingênuo COLIDE
+  por padrão). Setter marca cena dirty (como `physicsFixedDt`).
+- **UI**: painel Scripts ganha hint monoespaçada ensinando os três
+  verbos (move varre / teleport cru / move_and_slide CharacterBody).
+- Física de STEP (integração de velocity do kinematic) NÃO muda neste
+  bloco — varredura de script é o escopo; integração varrida é futura
+  documentada.
+
+### Evidência
+
+| Item | Status |
+|---|---|
+| move ingênuo (6u) PARA na parede, nunca atravessa | VERIFIED (ContractTests e2e + PhysicsTests) |
+| move diagonal DESLIZA (x para, y avança) | VERIFIED (PhysicsTests, parede alta) |
+| anti-túnel: 6u num passo fatiado em substeps | VERIFIED (mesma matemática p46 + teste) |
+| sweep OFF = cru (semântica pré-P4.7 intacta) | VERIFIED (ContractTests) |
+| teleport atravessa MESMO com sweep ON | VERIFIED (ContractTests) |
+| ESCRITA de position resolve (wrap delegante) | VERIFIED (P0-7 roda; física From testada) |
+| kinematicSweepMoveFrom parte da origem explícita | VERIFIED (PhysicsTests) |
+| sem Collider = cru; mask do corpo decide | VERIFIED (PhysicsTests) |
+| persistência + ausente = ON (JSON strip real) | VERIFIED (ContractTests) |
+| hint dos três verbos no painel Scripts | VERIFIED (código; visual round 7) |

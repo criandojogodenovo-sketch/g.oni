@@ -108,11 +108,26 @@ public:
     // --- P4.6 (Bloco 1): movimento de gameplay (padrão Godot/Unity) -------
     // Ambos operam sobre a PRÓPRIA entidade (self do script), em unidades
     // de MUNDO, no eixo XY (z preservado).
-    /// move(dx,dy): translação CRUA — SEM resolução de penetração
-    /// (teletransporte; escrever `position` direto equivale a isto —
-    /// documentado). false = entidade sem transform (no-op seguro).
+    /// move(dx,dy): P4.7.0 B5 — com kinematic_sweep ON (default da cena),
+    /// o move de um KINEMATIC com Collider é VARRIDO (TOI+slide — o
+    /// script ingênuo COLIDE; parede para e desliza, nunca atravessa).
+    /// Demais casos (sem RigidBody, não-kinematic, sem collider, sweep
+    /// OFF): translação crua — semântica pré-P4.7. false = entidade sem
+    /// transform (no-op seguro).
     [[nodiscard]] virtual bool translate(
         eng::ecs::Entity self, float dx, float dy) = 0;
+    /// teleport(x,y): translação CRUA — NUNCA varrida (P4.7.0 B5: a
+    /// válvula de escape do autor para spawn/reposicionamento; atravessa
+    /// colisores por design MESMO com sweep ON). false = entidade sem
+    /// transform (no-op seguro).
+    [[nodiscard]] virtual bool teleport(
+        eng::ecs::Entity self, float x, float y)
+    {
+        (void)self;
+        (void)x;
+        (void)y;
+        return false; // default no-op seguro (padrão dos verbos camera.*)
+    }
     /// move_and_slide(dx,dy): varredura da esfera do CharacterBody com
     /// deslize (substeps anti-túnel; o mask do próprio corpo decide
     /// contra quem desliza). false = sem CharacterBody/transform — o

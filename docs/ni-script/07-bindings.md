@@ -52,11 +52,40 @@ spawn("nome")          → entity   (falha de spawn = Fault, não nil)
 despawn(e)             → bool
 self()                 → entity   (entidade dona da instância)
 find("nome")           → entity   (ausente = Fault, não nil)
+
+move(dx,dy)            → bool     (P4.6 — semântica B5 abaixo)
+move_and_slide(dx,dy)  → bool     (P4.6 — CharacterBody; false = Fault)
+teleport(x,y)          → bool     (P4.7.0 B5 — SEMPRE cru)
+camera.zoom(z)         → bool     (P4.7.0 B4 — primeira câmera ativa)
+camera.position(x,y)   → bool     (P4.7.0 B4 — offsets da câmera)
+camera.follow("nome")  → bool     (P4.7.0 B4 — "" solta o follow)
 ```
 
 `NiHost` é implementado pelo consumidor (editor: clone + runtimeInput_;
 testes: harness próprio). Sem host configurado, os nativos de host falham
 com `NativeError` (mensagens explícitas — nunca crash).
+
+## Movimento de gameplay (P4.6 / P4.7.0 B5 — kinematic_sweep)
+
+Três verbos, três semânticas — o autor distingue de cara:
+
+| verbo | com kinematic_sweep ON (default) | com sweep OFF |
+|---|---|---|
+| `move(dx,dy)` | KINEMATIC com Collider: **VARRIDO** (TOI+slide — para e desliza na parede, nunca atravessa). Demais entidades: cru. | cru para todos (pré-P4.7) |
+| `move_and_slide(dx,dy)` | varredura da esfera do **CharacterBody** (sem CharacterBody = Fault — nunca deslize silencioso) | idem (não muda com sweep) |
+| `teleport(x,y)` | **SEMPRE cru** — atravessa por design (spawn/reposicionamento) | idem |
+
+- A varredura do kinematic (B5) é a MESMA matemática do moveAndSlide:
+  motion fatiado em substeps de ≤ meio raio (anti-túnel, teto 64);
+  raio da esfera = `Collider` do próprio corpo (Sphere = radius;
+  Box = círculo inscrito na meia-extensão mínima); o **mask do próprio
+  corpo** decide contra quem desliza.
+- A **ESCRITA de `position`** (`e.position.x = …`) resolve IGUAL ao
+  `move` quando o corpo é KINEMATIC com Collider e sweep ON — script
+  que move por position TAMBÉM colide. `teleport` é a válvula de
+  escape (por design atravessa).
+- O setting vive na CENA (`"physicsKinematicSweep"`, chave aditiva —
+  arquivo antigo/ausente = ON: o script ingênuo COLIDE por padrão).
 
 ## Tabela de componentes (NiBindingTable)
 
@@ -81,7 +110,9 @@ Entradas `{alias → get/set}` resolvem caminhos `e.<alias>.<campo>…`:
 ### O que o EDITOR registra (editor/src/NiRuntime.cpp)
 
 ```
-position  → Transform.position        (refletido, basePath)
+position  → Transform.position        (refletido, basePath + WRAP B5:
+                                        a ESCRITA resolve varredura do
+                                        kinematic — ver seção acima)
 scale     → Transform.scale            (refletido, basePath)
 rotation  → Transform.rotation         CUSTOM euler↔quat em GRAUS
 transform → Transform inteiro          (refletido)

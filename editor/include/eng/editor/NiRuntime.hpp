@@ -96,6 +96,18 @@ public:
     void setActionQuery(bool (*query)(std::string_view, int, void*),
                         void* user) noexcept;
 
+    /// P4.7.0 B5: kinematic_sweep — quando ON (default), o verbo `move`
+    /// de um KINEMATIC com collider é VARRIDO (TOI+slide). O documento
+    /// liga com o setting da cena no play().
+    void setKinematicSweep(bool enabled) noexcept
+    {
+        kinematicSweep_ = enabled;
+    }
+    [[nodiscard]] bool kinematicSweep() const noexcept
+    {
+        return kinematicSweep_;
+    }
+
 private:
     struct HostImpl;
 
@@ -147,6 +159,8 @@ private:
     /// Recursão: handler de evento pode emitir contato (spawn/move) →
     /// publicar de novo? Guarda de profundidade (um nível de script).
     bool dispatching_ = false;
+    /// P4.7.0 B5: varredura do kinematic no `move` (default ON).
+    bool kinematicSweep_ = true;
 };
 
 } // namespace eng::editor

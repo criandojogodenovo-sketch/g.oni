@@ -823,6 +823,9 @@ Result<void> EditorDocument::saveScene(std::string_view scenePath)
             "physicsFixedDt",
             eng::serial::JsonValue::real(
                 static_cast<double>(physicsAccumulator_.fixedDt())));
+        // P4.7.0 B5: varredura do kinematic persistida (default ON).
+        root.value().set("physicsKinematicSweep",
+                         eng::serial::JsonValue::boolean(kinematicSweep_));
         text = eng::serial::dumpJson(root.value());
     }
     const eng::fs::Path full = scenesRootOf(*project_) / path;
@@ -1019,6 +1022,14 @@ Result<void> EditorDocument::loadScene(std::string_view scenePath)
                 if (std::isfinite(v) && v > 0.0 && v <= 0.25) {
                     physicsAccumulator_.setFixedDt(static_cast<float>(v));
                 }
+            }
+            // P4.7.0 B5: varredura do kinematic (arquivo antigo/ausente =
+            // ON — o script ingênuo COLIDE por padrão).
+            kinematicSweep_ = true;
+            if (const auto sweep = parsed.value().find(
+                    "physicsKinematicSweep");
+                sweep.has_value() && sweep->isBool()) {
+                kinematicSweep_ = sweep->asBool();
             }
             // P4.6 (Blocos 1/2): MIGRAÇÃO ADITIVA — campos refletidos
             // novos não existem em cenas pré-P4.6 e o decode é ESTRITO
@@ -2075,6 +2086,8 @@ Result<void> EditorDocument::play()
                                 : state.released;
         },
         &runtimeInput_);
+    // P4.7.0 B5: o setting da cena dirige a varredura do kinematic.
+    niRuntime_->setKinematicSweep(kinematicSweep_);
     niRuntime_->start(*runtimeScene_);
     niRuntime_->fireStart();
 

@@ -774,6 +774,24 @@ fun EditorActivity.buildScriptsPanel() {
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT,
         Gravity.CENTER).apply { setMargins(dp(24), dp(8), dp(24), 0) })
+    // P4.7.0 B5: hint de MOVIMENTO — o autor distingue de cara os três
+    // verbos (naive script colide com move; teleport é a válvula de fuga).
+    val movementHint = TextView(this).apply {
+        text = ("move(dx,dy) — varre: para/desliza na parede (KINEMATIC)\n"
+                + "teleport(x,y) — cru: atravessa por design (spawn)\n"
+                + "move_and_slide(dx,dy) — varredura de CharacterBody")
+        setTextColor(Oni.TEXT_DIM)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+        typeface = Typeface.MONOSPACE
+        setPadding(dp(16), dp(6), dp(16), dp(6))
+    }
+    panelContainer.addView(
+        movementHint,
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+    )
     panelContainer.addView(
         bar,
         LinearLayout.LayoutParams(
