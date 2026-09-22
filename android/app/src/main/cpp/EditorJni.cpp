@@ -2447,8 +2447,6 @@ Java_com_goni_runtime_EditorJni_nativeEditorListMaterials(JNIEnv* env,
     return stringToJni(env, lines);
 }
 
-}  // extern "C"
-
 // --- P4.5: snap do gizmo / fit do viewport / undo-redo ---------------------
 
 JNIEXPORT void JNICALL
@@ -2541,3 +2539,12 @@ Java_com_goni_runtime_EditorJni_nativeEditorRedo(JNIEnv* /*env*/,
     }
     return host->document().redo().ok() ? JNI_TRUE : JNI_FALSE;
 }
+
+// Fecho do bloco extern "C" — ÚLTIMA linha do TU por razão dura:
+// QUALQUER Java_com_goni_* definido FORA deste bloco sai com nome C++
+// manglado (_Z…Java_com_…) e o JNI não o resolve → UnsatisfiedLinkError
+// no device (P4.5.2: as 8 funções snap/fit/undo/redo nasceram aqui fora
+// e derrubaram o arranque no C33; matriz + regressão em
+// docs/p451-kotlin-diagnostics.md e em EditorTests.cpp
+// "JNI symbol contract" — dlsym de cada símbolo esperado).
+}  // extern "C"

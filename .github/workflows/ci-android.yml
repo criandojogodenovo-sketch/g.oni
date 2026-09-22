@@ -57,6 +57,19 @@ jobs:
           "$NDK_LLVM/llvm-readelf" -d "$TMP/lib/arm64-v8a/libgoni.so" | grep NEEDED
           # Símbolos JNI obrigatórios (missão §XXV.7)
           "$NDK_LLVM/llvm-nm" -D "$TMP/lib/arm64-v8a/libgoni.so" | grep Java_com_goni
+          # P4.5.2: ZERO símbolos JNI C++ manglados — Java_com_* FORA de
+          # extern "C" sai como _Z…Java_com_… e o ART não resolve
+          # (UnsatisfiedLinkError no arranque — crash do C33). O grep
+          # simples acima PASSA com símbolos manglados (substring!), por
+          # isso o guard explícito abaixo é obrigatório.
+          MANGLED=$("$NDK_LLVM/llvm-nm" -D "$TMP/lib/arm64-v8a/libgoni.so" \
+            | grep -c '_Z[0-9]*Java_com_goni' || true)
+          if [ "$MANGLED" -ne 0 ]; then
+            echo "::error::Símbolos JNI manglados no libgoni.so ($MANGLED) — Java_com_goni_* fora do bloco extern \"C\"?"
+            "$NDK_LLVM/llvm-nm" -D "$TMP/lib/arm64-v8a/libgoni.so" | grep '_Z[0-9]*Java_com_goni'
+            exit 1
+          fi
+          echo "OK: zero símbolos JNI manglados no libgoni.so"
           "$ANDROID_SDK/build-tools/34.0.0/aapt" dump badging "$APK" | head -6
 
       - name: Upload do APK (artefato)

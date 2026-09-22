@@ -64,14 +64,26 @@ if(NOT ENG_BUILD_TESTS)
     return()
 endif()
 
-add_executable(eng_editor_tests tests/EditorTests.cpp)
-target_include_directories(eng_editor_tests PRIVATE
+# P4.5.2: contrato de vinculação JNI — o TU Android EditorJni.cpp compila
+# AQUI no Linux contra o shim hermético tests/jni_shim (jni.h +
+# ANativeWindow mínimos, SEM JDK) e EditorTests.cpp prova por
+# dlsym(RTLD_DEFAULT, …) que cada `external fun` de EditorJni.kt tem um
+# símbolo C limpo. ENABLE_EXPORTS (+rdynamic) põe os símbolos JNIEXPORT na
+# tabela dinâmica — a mesma resolução nome→símbolo que o ART faz no device.
+# Regressão travada: as 8 funções P4.5 fora de extern "C" (mangling →
+# UnsatisfiedLinkError no arranque do C33) agora falham NESTE build.
+add_executable(eng_editor_tests
+    tests/EditorTests.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../android/app/src/main/cpp/EditorJni.cpp")
+target_include_directories(eng_editor_tests BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/jni_shim"
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(eng_editor_tests PRIVATE
     eng::editor
     eng::fs
     Catch2::Catch2WithMain)
 eng_apply_test_policy(eng_editor_tests)
+set_target_properties(eng_editor_tests PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME editor COMMAND eng_editor_tests)
 set_tests_properties(editor PROPERTIES
     SKIP_RETURN_CODE 4
