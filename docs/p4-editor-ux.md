@@ -205,3 +205,92 @@ fase corrige persistência/UX/gizmos/áudio e entrega o Modo Jogo.
    NO IMPORT com toast claro. Importar `.wav`: entra e o preview toca.
 6. **T5**: Play → editor some, HUD com STOP/PAUSE + fps aparece; PAUSE
    congela; STOP volta com a seleção e a câmera de onde estavam.
+
+---
+
+# Adenda P4.3 — EDITOR COMPLETO (fusão 4.3+4.4+4.5) + bugs round 3
+
+Base `fcdaa40` (P4.2). Round 3 no Realme C33 confirmou as vitórias do
+P4.2 (teclado/inspeção = B-B núcleo morto, WAV preview toca, escala boa)
+e nomeou 4 restos (N1–N4). Decisão de produto: hierarquia (ex-P4.3),
+inspector+ticks (ex-P4.4) e materiais+luzes (ex-P4.5) fundidos numa fase
+em BLOCOS ORDENADOS com gate próprio (bloco seguinte só com o anterior
+verde no CI). **Authoring de animação (P4.6) e authoring de GLSL custom
+ficam FORA — futuro declarado, nada implementado.**
+
+## Estado dos defeitos do round 3
+
+| Defeito | Estado | Causa raiz + correção |
+|---------|--------|------------------------|
+| **N1** preview de áudio sem stop (toca até reiniciar a app) | **FIXED** | `audioPreview` descartava o `VoiceHandle` do mixer — nenhuma voz podia parar. Agora: **toggle** (2º toque no MESMO asset = stop; outro asset troca com stop da anterior — uma única voice de preview existe), `audioPreviewStop()` idempotente por handle, `audioPreviewPlaying()` como fonte de verdade do botão (a voice pode terminar sozinha), bus dedicado "preview" isolado do master (vozes de jogo intocáveis), e stop automático ao **fechar/trocar painel, mudar categoria de assets, importar e entrar em Play**. |
+| **N2** com IME aberta, tab bar sobrepõe o painel e campos ficam esbatidos | **FIXED** | A altura do painel era FIXA (62% do display cheio): o IME (adjustResize) encolhia a root, mas o painel continuava grande — bottomBar desenhava POR CIMA do conteúdo. Correção: altura recalculada da root ATUAL (min(62% visível, root−barras)) + painel ancorado ACIMA da bottomBar (bottomMargin) + campo focado rola à vista — **tudo via LayoutParams (requestLayout), NUNCA re-parent/detach**: o fix B-B (foco/IME intocáveis) não pode voltar. Regressão Linux limitada (sem IME no sandbox) — passos device abaixo. |
+| **N3** rotação deforma sprites + anel elíptico no portrait | **FIXED** | A deformação NÃO era scale corrompido no ECS (o drag de rotação nunca escreve scale — regressões 90/180/360° com ε + filho de pai escalado provam). Era o RENDER: quads rotacionados dentro do CLIP SPACE anisotrópico (X escala w/2 px, Y escala h/2 px) — sprite rodado 90° esticava 2,22× (720×1600) e a espessura dos segmentos do anel variava com a direção (elipse perceptual). Ver N4. |
+| **N4** refino de viewport — overlays sem conversão única | **FIXED** | **Regra única nova (`OverlayMath.hpp`)**: toda a geometria do editor (grid, bounds/bordas, sprites lit/unlit, xadrez, partículas, contornos de collider, retângulo de câmera, emissor, gizmos, preview de luz) nasce em PX DE TELA — rotação aplicada com a projeção mundo→tela (flip Y) — e só vira clip no último passo, por eixo. Círculos são círculos, quadrados são quadrados, espessuras constantes em px em qualquer aspect. |
+
+## Estado por bloco
+
+| Bloco | Estado | Conteúdo |
+|-------|--------|----------|
+| **Bloco 0 — N1–N4** | **FIXED** | Tabela acima. Nota honesta: o CI (com lavapipe) apanhou um passo do refactor que o sandbox local (sem driver) não podia — a primeira versão rotacionava cantos SEM o flip Y da projeção (sprite virado no readback PNG). Corrigido com regressão aritmética sem GPU (clip y 0.375) + o CI verde a confirmar. |
+| **Bloco 1 — hierarquia completa (ex-P4.3)** | **JÁ OPERATIVO + ordem estável** | Criar/renomear/duplicar(apagar)/parentear por toque + menu de contexto por entidade já existiam (P4.1/P4.2). O gap era a ORDEM: o save canônico ordenava por SceneEntityId (UUID) e o load recriava nessa ordem — **raízes e irmãos embaralhavam** após save/load. Fix na raiz: ordem canônica do save = **DFS pela hierarquia** (raízes pela ordem que o autor vê; filhos na ordem interna do Scene) — determinismo ADR-033 preservado (mesmo estado → mesmos bytes). Round-trips de topologia e de duplicação de subárvore pinados. |
+| **Bloco 2 — inspector completo + Ticks visíveis (ex-P4.4)** | **IMPLEMENTED** | Add/remove de TODOS os componentes registados já existia (catálogo único ADR-043 — 11 tipos; hints de dependência). O novo: sheet **"Ticks"** (6ª tab) — camadas GAME/SUBGAME/nomeadas com **timeScale por camada (0 = pausada)** e **participação update/física/render** (toca a `LayerRegistry` REAL — `timeScaleOf`/`participatesIn` do runtime mudam), **"+ Camada"** por toque, e **timestep fixo da física (s)** — configura o `TimestepAccumulator` do PhysicsTick e **persiste na cena** (chave aditiva `physicsFixedDt`; arquivo antigo = 1/60). Zero campos mortos: tudo guarda/configura estado vivo. |
+| **Bloco 3 — materiais & luzes (ex-P4.5)** | **JÁ OPERATIVO + preview de luz** | Materiais `.mat`: criar/editar (lit/unlit + tint/alfa, swatch com preview) e atribuir por picker — operativos desde o P3 com readback. **Novo**: **preview visual da Light2D** no viewport (anel de alcance = raio×zoom px, círculo perfeito + dot central; luz desligada não desenha) e atalho **"＋ Luz 2D"** no menu de contexto (1 toque cria + seleciona; cor/raio/falloff/camada no Inspector). **Sem authoring de GLSL custom (futuro declarado).** |
+
+## Verificação local (P4.3)
+
+- linux-debug (ASan+UBSan, `-Werror`): build OK, **100% (31/31)**, 0 failed —
+  9 casos novos `[p43]` (OverlayMath isotrópico, anel círculo px no
+  portrait, rotação 90/180/360 sem scale, pai escalado, preview de áudio
+  toggle/stop/isolamento, topologia round-trip, subárvore duplicada,
+  camadas/timestep, dados do marker de luz).
+- linux-release (LTO): build OK, **100% (31/31)**, 0 failed.
+- CI Linux (debug+release) e CI Android (APK arm64-v8a+x86_64): verdes por
+  bloco (gate: bloco seguinte só com o anterior verde).
+
+## Contratos revistos (declarados)
+
+1. **Ordem canônica do save: SceneEntityId → DFS de hierarquia.** A ordem
+   antiga embaralhava a cena visível a cada save/load. Byte-estável
+   mantido; resave de clone idêntico; órfãos impossíveis entram no fim
+   (zero perda).
+2. **`audioPreview` é TOGGLE** (antes: sempre tocava uma voice nova).
+   Vozes de jogo nunca são alvo do stop do preview (bus dedicado + stop
+   por handle — nunca `stopAll`).
+3. **Cena ganha chave aditiva `physicsFixedDt`** (documento escreve/lê;
+   o loader do serializer ignora chaves desconhecidas — arquivos antigos
+   carregam com 1/60).
+4. **Espessuras de overlay agora são px honestos** (grid 1.4, collider/
+   câmera 1.2, emissor 1.0, gizmo 2.0 px) — antes variavam com a direção
+   e com w/h da surface.
+
+## Verificação no device (Realme C33) — round 4
+
+1. **N1**: Inspector → AudioSource → "Ouvir": toca; 2º toque: PARA.
+   Assets → áudio → "Ouvir/Parar": idem. Fechar o painel ou trocar de
+   categoria com o som tocando: para sozinho. Play com preview ativo:
+   preview morre, vozes de jogo seguem.
+2. **N2**: Inspector → tocar num campo (teclado abre): a tab bar NÃO
+   sobrepõe o painel; o campo focado fica visível (sobe à vista). Digitar
+   contínuo não fecha o teclado (B-B continua morto).
+3. **N3**: tool ROTACIONAR → rodar um sprite 90/180/360°: a ARTE não
+   deforma (proporção px preservada) e o anel é um CÍRCULO com linha
+   uniforme no portrait. Inspector confirma escala inalterada.
+4. **N4**: gizmos (move/rotate/scale) com handles quadrados; contornos de
+   collider uniformes; borda de seleção acompanha sprites rotacionados.
+5. **Bloco 1**: criar 2 raízes com filhos → salvar → matar app → reabrir:
+   a ORDEM da hierarquia é a mesma.
+6. **Bloco 2**: tab Ticks → camada UI (nova) com timeScale 0.25 → entidade
+   nela → Play: anda a 25%. Desligar render da camada: some do viewport.
+   Dt física 1/120 → salvar/reabrir: permanece.
+7. **Bloco 3**: menu da entidade → "＋ Luz 2D": anel âmbar aparece no
+   viewport; ajustar raio/cor no Inspector: anel e iluminação mudam
+   juntos. Material unlit/lit + tint por picker.
+
+## Limitações declaradas (não implementado — futuro)
+
+- **N2 no Linux**: regressão limitada (sandbox sem IME) — validação por
+  passos device (item 2 acima); a mecânica (LayoutParams sem detach) é
+  coberta por inspeção do fluxo e o gate B-B tem regressão própria.
+- **OGG/MP3** no áudio: recusado no import com mensagem clara (fase futura).
+- **Authoring de GLSL custom**: fora do escopo (futuro declarado).
+- **Authoring de animação (P4.6)**: fora desta fase (raio de explosão).
