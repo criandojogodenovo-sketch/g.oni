@@ -1041,12 +1041,24 @@ Java_com_goni_runtime_EditorJni_nativeEditorPerfStats(JNIEnv* env,
 namespace android::thermal {
 class ThermalProvider final {
 public:
-    ThermalProvider() : manager_(AThermal_acquireManager()) {}
+    ThermalProvider()
+    {
+        // ADPF introduzido na API 30: guard RUNTIME (o minSdk do app é
+        // menor — devices pré-30 caem no caminho "desconhecido" e o
+        // governor roda só com frame time; honesto e sem crash).
+        if (__builtin_available(android 30, *)) {
+            manager_ = AThermal_acquireManager();
+        }
+    }
     [[nodiscard]] int currentStatus() const noexcept
     {
-        return manager_ != nullptr
-                   ? AThermal_getCurrentThermalStatus(manager_)
-                   : -1;
+        if (manager_ == nullptr) {
+            return -1;
+        }
+        if (__builtin_available(android 30, *)) {
+            return AThermal_getCurrentThermalStatus(manager_);
+        }
+        return -1;
     }
 
 private:
