@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- P4.5 §2: splash "Curved Dark" — carvão + logo 96dp + wordmark.
+     layer-list (o logo/wordmark são bitmaps por densidade em drawable-*dpi).
+     Android 12+ usa o splash do sistema (ícone do launcher) — este drawable
+     cobre API 24–31- com a mesma identidade. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/oni_bg" />
+    <item
+        android:gravity="center"
+        android:bottom="36dp"
+        android:drawable="@drawable/oni_splash_logo" />
+    <item
+        android:gravity="center"
+        android:top="96dp"
+        android:drawable="@drawable/oni_splash_wordmark" />
+</layer-list>

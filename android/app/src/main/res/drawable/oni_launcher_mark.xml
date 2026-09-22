@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- P4.5 §2 — marca G.ONI (prompt verbatim): letra G abstrata formada por
+     arco circular fino aberto à direita, com nó circular pequeno ligado por
+     linha curta — tudo em #8AB4F8. Viewport 108dp do adaptive icon; o mark
+     vive na zona segura (66dp centrais). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- arco: centro (54,54) raio 21, aberto à direita (±40°), stroke 4.5 -->
+    <path
+        android:pathData="M 70.09 40.5 A 21 21 0 1 0 70.09 67.5"
+        android:strokeColor="#8AB4F8"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- linha curta ligando o arco ao nó -->
+    <path
+        android:pathData="M 70.09 67.5 L 76.2 67.5"
+        android:strokeColor="#8AB4F8"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- nó circular pequeno (dot cheio) -->
+    <path
+        android:pathData="M 80.7 67.5 m -3.4 0 a 3.4 3.4 0 1 0 6.8 0 a 3.4 3.4 0 1 0 -6.8 0"
+        android:fillColor="#8AB4F8"
+        android:strokeColor="#00000000" />
+</vector>

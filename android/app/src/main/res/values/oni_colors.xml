@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- P4.5 §1.1: layers de tom "Curved Dark". Cores nomeadas da linguagem. -->
+<resources>
+    <color name="oni_bg">#0B0E13</color>
+    <color name="oni_panel">#12161D</color>
+    <color name="oni_raised">#1A2029</color>
+    <color name="oni_overlay">#222933</color>
+    <color name="oni_accent">#8AB4F8</color>
+    <color name="oni_text">#E6EDF3</color>
+</resources>

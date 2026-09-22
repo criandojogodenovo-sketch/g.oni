@@ -1,28 +1,26 @@
 package com.goni.runtime
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
-import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.Choreographer
-import android.os.Handler
-import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.os.Handler
+import android.os.Looper
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -30,11 +28,7 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.Space
-import android.widget.Spinner
-import android.widget.Switch
-import android.widget.SeekBar
 import android.widget.TextView
-import android.widget.Toast
 import android.content.Context
 import java.io.File
 import java.util.zip.ZipEntry
@@ -52,11 +46,23 @@ import java.util.zip.ZipOutputStream
  * - loop de frame na UI thread via Choreographer (ADR-039 — igual FASE 7);
  * - gestos do EDITOR vão direto ao documento (§6.4: separados do input
  *   do JOGO que nasce na FASE 9).
+ *
+ * P4.5 — RECONSTRUÇÃO "CURVED DARK": toda a camada visual obedece ao
+ * sistema de design Oni (OniUi.kt — tokens §1 do prompt). Zero mudança de
+ * comportamento (contrato §3): B-B (foco/IME — sync diferencial), N1
+ * (preview de áudio com stop), N2 (painel adaptativo via LayoutParams,
+ * NUNCA detach) preservados linha a linha. A superfície separou-se em:
+ *   EditorActivity.kt — ciclo de vida + chrome flutuante + plumagem
+ *   EditorPanels.kt   — conteúdo dos painéis (hierarquia/inspector/...)
+ *   EditorDialogs.kt  — menus/pickers (OniDialog — z zero diálogos default))
+ *   ScriptWindow.kt   — janela dedicada de script (Bloco B)
+ * Membros marcados `internal` são o contrato ENTRE estes ficheiros do
+ * MESMO módulo — nada é público fora do pacote.
  */
 class EditorActivity : Activity(), SurfaceHolder.Callback2,
     Choreographer.FrameCallback {
 
-    private var handle: Long = 0L
+    internal var handle: Long = 0L
     private var choreographer: Choreographer? = null
     private var surfaceReady = false
     private var lastFrameNanos = 0L
@@ -64,64 +70,82 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private var firstTraversalMarked = false
 
     // UI
-    private lateinit var surfaceView: SurfaceView
-    private lateinit var rootLayout: FrameLayout
-    private lateinit var topBar: LinearLayout
-    private lateinit var bottomBar: LinearLayout
-    private lateinit var brand: TextView
-    private lateinit var panelHost: FrameLayout
-    private lateinit var panelContainer: LinearLayout
-    private lateinit var btnPlay: Button
-    private lateinit var btnProject: Button
-    private lateinit var btnBackend: Button
-    private lateinit var btnTool: Button
-    private lateinit var hierarchyList: ListView
-    private lateinit var inspectorScroll: ScrollView
+    internal lateinit var surfaceView: SurfaceView
+    internal lateinit var rootLayout: FrameLayout
+    internal lateinit var topBar: LinearLayout
+    /// P4.5: `bottomBar` passou a ser o CHROME INFERIOR inteiro (linha de
+    /// ferramentas flutuante + tab bar card) num wrapper vertical — o painel
+    /// continua a âncorar acima dele por LayoutParams (N2 intocado).
+    internal lateinit var bottomBar: LinearLayout
+    internal lateinit var brand: TextView
+    internal lateinit var panelHost: FrameLayout
+    internal lateinit var panelContainer: LinearLayout
+    private var panelScrim: View? = null
+    /// P4.5: guard da animação do sheet (evita GONE atrasado sobre
+    /// painel novo — troca rápida de tabs durante o slide de saída).
+    private var sheetShowing = false
+    private lateinit var tabButtons: List<TextView>
+    internal lateinit var btnPlay: android.widget.Button
+    /// P4.5: chips são TextView (eram controles default).
+    internal lateinit var btnProject: TextView
+    internal lateinit var btnBackend: TextView
+    internal lateinit var toolSegments: List<TextView>
+    internal lateinit var hierarchyList: ListView
+    internal lateinit var inspectorScroll: ScrollView
     /// P4.1 (T2/D5 + T3/D6): HUD do Play — scripts + áudio, texto HONESTO
     /// em device (o silêncio calado era o D5/D6).
-    private lateinit var playHud: TextView
+    internal lateinit var playHud: TextView
     private var hudFrameCounter = 0L
-    private lateinit var assetCategory: Spinner
-    private lateinit var assetList: ListView
-    private lateinit var hierarchyAdapter: HierarchyAdapter
-    private lateinit var assetAdapter: AssetAdapter
+    /// P4.5: categoria de assets — chip pill que abre picker (era dropdown default).
+    internal var assetCategoryName: String = ""
+    internal lateinit var assetList: ListView
+    internal lateinit var hierarchyAdapter: HierarchyAdapter
+    internal lateinit var assetAdapter: AssetAdapter
 
-    private var editorTool = 0 // 0=Select 1=Move 2=Rotate 3=Scale (C++ manda)
-    private var activePanel = PANEL_NONE
+    internal var editorTool = 0 // 0=Select 1=Move 2=Rotate 3=Scale (C++ manda)
+    internal var activePanel = PANEL_NONE
 
     // Live sync (P1.9): últimos valores de transform exibidos no Inspector.
-    private var transformFields: MutableList<android.widget.EditText> =
-        mutableListOf()
-    private var collectTransformFields = false
+    internal var transformFields: MutableList<EditText> = mutableListOf()
+    internal var collectTransformFields = false
     private var lastSelectionRevision = -1L
 
     // P4.2 (B-B — teclado que abre e fecha): sync DIFERENCIAL do Inspector.
     // A estrutura (componentes/campos/kinds) tem assinatura; mudou → rebuild;
     // mesma estrutura → valores in-place (nunca recria view, nunca toca na
     // view com FOCO — o IME sobrevive).
-    private var inspectorKey: String? = null
-    private var inspectorContent: LinearLayout? = null
-    private var inspectorNameField: android.widget.EditText? = null
-    private val inspectorTextFields =
-        mutableMapOf<String, android.widget.EditText>()   // "comp\u0001path"
-    private val inspectorValueViews =
+    internal var inspectorKey: String? = null
+    internal var inspectorContent: LinearLayout? = null
+    internal var inspectorNameField: EditText? = null
+    internal val inspectorTextFields = mutableMapOf<String, EditText>() // "comp\u0001path"
+    internal val inspectorValueViews =
         mutableMapOf<String, Pair<TextView, String>>()    // view + placeholder
 
     // P4.2 (T5 — Modo Jogo G1): chrome escondido + HUD fullscreen.
-    private var gameMode = false
+    internal var gameMode = false
     private var gameHudBar: LinearLayout? = null
     private var gameHudStatus: TextView? = null
-    private var btnPauseGame: Button? = null
+    private var btnPauseGame: TextView? = null
     private var fpsFrames = 0
     private var fpsAccum = 0f
     private var fpsShown = 0f
 
     // Painel de scripts (P0-7): lista carregada por refreshScripts().
-    private lateinit var scriptsList: ListView
-    private val scriptNames = mutableListOf<String>()
+    internal var scriptsList: ListView? = null
+    internal val scriptNames = mutableListOf<String>()
 
-    private lateinit var importButton: Button
-    private var importTmpDir: File? = null
+    // Campos dos painéis vivos (preenchidos pelos builders em EditorPanels.kt).
+    internal var ticksList: ListView? = null
+    internal var animList: ListView? = null
+    internal var assetsRoot: LinearLayout? = null
+    internal var assetSearch: EditText? = null
+    internal var assetCategoryChip: TextView? = null
+    internal var assetQuery: String = ""
+    internal val tickLayerRows = mutableListOf<LayerRow>()
+    internal val animNames = mutableListOf<String>()
+
+    internal var importButton: android.widget.Button? = null
+    internal var importTmpDir: File? = null
 
     // --- ciclo de vida ---------------------------------------------------------
 
@@ -147,23 +171,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             // A lib nativa pode nem carregar (dlopen/UnsatisfiedLinkError/
             // ExceptionInInitializerError): sem este registro a morte seria
             // indistinguível de "abre e fecha" sem evidência NENHUMA.
-            // Registramos a causa real + stack em Java puro e espelhamos
-            // publicamente; a saída continua visível (toast + finish).
             DiagnosticsMirror.recordBootstrapFailure(t)
             android.util.Log.e("GONI", "bootstrap nativo falhou", t)
-            toast("Falha ao iniciar o engine: ${t.message}")
+            toastErr("Falha ao iniciar o engine: ${t.message}")
             finish()
             return
         }
-        // P3.5 (T3): watchdog de hang da main thread. arm() captura ESTA
-        // thread; o pinger (1 s) faz Handler.post → heartbeat; sem resposta
-        // em 8 s → pthread_kill(main, SIGUSR1) → dump forense completo em
-        // goni_crash.log (o processo continua VIVO — hang diagnosticado).
-        // A graça inicial (15 s) cobre o onCreate pesado do editor.
+        // P3.5 (T3): watchdog de hang da main thread (ver P3.5 — graça 15 s).
         Watchdog.start()
-        // P3.2: crash de execução ANTERIOR → exporta IMEDIATAMENTE para
-        // Download/GONI/goni_crash.log (sem diálogo, sem depender de UI —
-        // o signal handler só pôde gravar no privado).
+        // P3.2: crash de execução ANTERIOR → exporta IMEDIATAMENTE.
         if (EditorJni.nativeStartupHasCrashReport()) {
             DiagnosticsMirror.exportCrashLogIfPresent()
         }
@@ -176,7 +192,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         val workspace = File(filesDir, "projects").apply { mkdirs() }
         handle = EditorJni.nativeEditorCreate("auto", workspace.absolutePath)
         if (handle == 0L) {
-            toast("Falha ao criar o editor (ver logcat)")
+            toastErr("Falha ao criar o editor (ver logcat)")
             finish()
             return
         }
@@ -190,9 +206,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         // P2 (§5): o DOCUMENTO é a fonte da verdade — a ferramenta da UI
         // sincroniza com a nativa (activity recriada não diverge).
         editorTool = EditorJni.nativeEditorGetTool(handle)
-        btnTool.text = toolLabel(editorTool)
-        // P4.1 (T1/D3/D4): densidade do device → alvos de toque do gizmo
-        // em dp reais (48 dp de alvo; os 13 px do P1 eram intocáveis).
+        updateToolSegments()
+        // P4.1 (T1/D3/D4): densidade do device → alvos de toque do gizmo.
         installUiScale()
     }
 
@@ -210,10 +225,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         if (handle != 0L) {
             EditorJni.nativeEditorOnResume(handle)
         }
-        // P3.5 (T2) — micro-marks da janela resume→surface: cada sub-passo
-        // invisível entre o retorno do onResume e o surfaceCreated agora
-        // deixa rastro com timestamp duplo no log privado. Se o app travar,
-        // o ÚLTIMO mark nomeia exatamente o sub-passo que nunca completa.
+        // P3.5 (T2) — micro-marks da janela resume→surface.
         EditorJni.nativeStartupMark("MIRROR_ENQUEUE", "ok",
             "espelho assíncrono (pós-resume)")
         lastFrameNanos = 0L
@@ -248,54 +260,17 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     // --- UI (programática — sem XML, sem dependências) ---------------------------
 
-    // Identidade visual G.ONI (evolução P0-4: dark compact, viewport
-    // dominante, densidade de editor moderno — sem copiar Godot/Unreal).
-    private object Ui {
-        const val BG = 0xFF0B0E13.toInt()        // fundo geral
-        const val SURFACE = 0xF211161F.toInt()    // painéis/barras (com alpha)
-        const val SURFACE_SOLID = 0xFF11161F.toInt()
-        const val SURFACE_ALT = 0xFF161D29.toInt()  // linhas alternadas/hover
-        const val BORDER = 0xFF232B3A.toInt()
-        const val ACCENT = 0xFF8AB4F8.toInt()     // marca G.ONI
-        const val ACCENT_DIM = 0xFF5E8BE0.toInt()
-        const val TEXT = 0xFFE6EDF3.toInt()
-        const val TEXT_DIM = 0xFF8B949E.toInt()
-        const val DANGER = 0xFFFF5252.toInt()
-        const val OK = 0xFF4CAF50.toInt()
-    }
+    internal fun dp(v: Int): Int = Oni.dp(this, v)
 
-    private fun dp(v: Int): Int =
-        TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics
-        ).toInt()
-
-    /** Botão compacto do editor (40dp — densidade de ferramenta, não botão
-     * de marketing; alvo de toque OK pelo padding interno). */
-    private fun toolButton(label: String, onClick: (Button) -> Unit): Button {
-        val b = Button(this)
-        b.text = label
-        b.minHeight = 0
-        b.minWidth = 0
-        b.setPadding(dp(10), 0, dp(10), 0)
-        b.height = dp(36)
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-        b.setTextColor(Ui.TEXT)
-        b.isAllCaps = false
-        b.background = rippleBox(Ui.SURFACE_ALT, dp(6))
-        b.setOnClickListener { onClick(b) }
-        return b
-    }
-
-    /** Fundo arredondado com ripple (sem lib de terceiros). */
-    private fun rippleBox(color: Int, radiusPx: Int): android.graphics.drawable.Drawable {
-        val base = android.graphics.drawable.GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = radiusPx.toFloat()
+    /** Label flutuante (texto dim 12sp) — wrapper p/ painéis. */
+    internal fun labelView(text: String): TextView =
+        Oni.rowText(this, text, dim = true, sizeSp = 12f).apply {
+            setPadding(dp(4), dp(8), dp(4), dp(4))
         }
-        return android.graphics.drawable.RippleDrawable(
-            android.content.res.ColorStateList.valueOf(0x338AB4F8), base, null
-        )
-    }
+
+    /** Header de secção (uppercase 12sp — §1.5) sobre tom, sem borda. */
+    internal fun sectionTitle(text: String): TextView =
+        Oni.sectionHeader(this, text)
 
     private fun buildUi() {
         // Viewport (fundo) + chrome por cima.
@@ -306,7 +281,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
         val root = FrameLayout(this)
         rootLayout = root
-        root.setBackgroundColor(Ui.BG)
+        root.setBackgroundColor(Oni.BG)
         // P4.3 (N2 — IME): o root ENCOLHE quando o teclado abre (adjustResize)
         // — este listener reage e redimensiona o PAINEL por LayoutParams
         // (nunca re-parent: o B-B — foco/IME intocáveis — não pode voltar).
@@ -314,93 +289,128 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             updatePanelHeight()
         }
 
-        // ---- barra superior: marca + projeto + cena | backend | play ----
+        // ---- header card flutuante (§2): marca + projeto | cena | backend | play
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Ui.SURFACE)
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-            gravity = android.view.Gravity.CENTER_VERTICAL
+            background = Oni.rounded(this@EditorActivity, Oni.PANEL, Oni.R_CARD)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            gravity = Gravity.CENTER_VERTICAL
         }
         brand = TextView(this).apply {
             text = "G.ONI"
-            setTextColor(Ui.ACCENT)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(Oni.ACCENT)
+            typeface = Typeface.DEFAULT_BOLD
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             setPadding(0, 0, dp(8), 0)
         }
         topBar.addView(brand)
-        btnProject = toolButton("☰") { showProjectMenu() }
-        topBar.addView(
-            btnProject,
-            LinearLayout.LayoutParams(dp(38), dp(36))
-        )
-        topBar.addView(
-            toolButton("Cena") { showSceneMenu() },
-            LinearLayout.LayoutParams(0, dp(36), 0.9f)
-        )
-        btnPlay = toolButton("▶") { togglePlay() }
-        btnPlay.setTextColor(Ui.OK)
-        btnPlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        topBar.addView(
-            btnPlay,
-            LinearLayout.LayoutParams(dp(42), dp(36))
-        )
-        btnBackend = toolButton("Auto") { showBackendMenu(it as Button) }
-        topBar.addView(
-            btnBackend,
-            LinearLayout.LayoutParams(0, dp(36), 0.7f)
-        )
-        btnTool = toolButton("FERRAMENTA") { showToolMenu() }
-        topBar.addView(
-            btnTool,
-            LinearLayout.LayoutParams(0, dp(36), 0.9f)
-        )
-
-        // ---- barra inferior: toggles de painel (sheets/drawers) ----
-        bottomBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Ui.SURFACE)
-            setPadding(dp(8), dp(5), dp(8), dp(5))
-            gravity = android.view.Gravity.CENTER_VERTICAL
+        btnProject = Oni.chip(this, "☰", textSizeSp = 14f).also {
+            it.setOnClickListener { showProjectMenu() }
         }
-        bottomBar.addView(
-            toolButton("Hierarquia") { togglePanel(PANEL_HIERARCHY) },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
+        topBar.addView(btnProject, LinearLayout.LayoutParams(dp(48), dp(44)))
+        topBar.addView(
+            Oni.chip(this, "Cena", textSizeSp = 13f).also {
+                it.setOnClickListener { showSceneMenu() }
+            },
+            LinearLayout.LayoutParams(0, dp(44), 0.9f)
         )
-        bottomBar.addView(
-            toolButton("Inspector") { togglePanel(PANEL_INSPECTOR) },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        bottomBar.addView(
-            toolButton("Assets") { togglePanel(PANEL_ASSETS) },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        bottomBar.addView(
-            toolButton("Scripts") { togglePanel(PANEL_SCRIPTS) },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        bottomBar.addView(
-            toolButton("Animação") { togglePanel(PANEL_ANIM) },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        bottomBar.addView(
-            toolButton("Ticks") { togglePanel(PANEL_TICKS) },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
+        // Play = icon-button ACENTO circular (§2 — chamada do acento).
+        btnPlay = Oni.button(this, "▶", kind = Oni.BTN_PRIMARY, textSizeSp = 16f)
+        btnPlay.setOnClickListener { togglePlay() }
+        topBar.addView(btnPlay, LinearLayout.LayoutParams(dp(48), dp(44)))
+        btnBackend = Oni.chip(this, "auto", mono = true, textSizeSp = 12f).also {
+            it.setOnClickListener { b -> showBackendMenu(b as TextView) }
+        }
+        topBar.addView(btnBackend, LinearLayout.LayoutParams(0, dp(44), 0.7f))
 
-        // ---- host de painel (sheet inferior / drawer lateral) ----
+        // ---- chrome inferior: linha de ferramentas flutuante + tab bar card ----
+        bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val chromeRow = FrameLayout(this)
+
+        // Tool switcher — segmented pill flutuante (§2), thumb zone.
+        val toolPill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = Oni.pill(this@EditorActivity, 0xF21A2029.toInt())
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val segments = listOf("Select" to 0, "Move" to 1, "Rotation" to 2, "Scale" to 3)
+        toolSegments = segments.map { (label, tool) ->
+            Oni.chip(this, label, textSizeSp = 12f).also { seg ->
+                seg.minHeight = dp(40)
+                seg.setPadding(dp(12), 0, dp(12), 0)
+                seg.setOnClickListener {
+                    editorTool = tool
+                    EditorJni.nativeEditorSetTool(handle, tool)
+                    updateToolSegments()
+                }
+            }
+        }
+        for (seg in toolSegments) {
+            toolPill.addView(seg, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40), 1f))
+        }
+        chromeRow.addView(toolPill, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+
+        // Tab bar card (§2): ativa = pill filled acento.
+        val tabCard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = Oni.rounded(this@EditorActivity, Oni.PANEL, Oni.R_CARD)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val tabs = listOf(
+            "Hierarquia" to PANEL_HIERARCHY,
+            "Inspector" to PANEL_INSPECTOR,
+            "Assets" to PANEL_ASSETS,
+            "Scripts" to PANEL_SCRIPTS,
+            "Animação" to PANEL_ANIM,
+            "Ticks" to PANEL_TICKS
+        )
+        tabButtons = tabs.map { (label, panel) ->
+            Oni.chip(this, label, textSizeSp = 11f).also { tab ->
+                tab.minHeight = dp(40)
+                tab.setPadding(dp(4), 0, dp(4), 0)
+                tab.setOnClickListener { togglePanel(panel) }
+            }
+        }
+        for (tab in tabButtons) {
+            tabCard.addView(tab, LinearLayout.LayoutParams(
+                0, dp(40), 1f))
+        }
+
+        bottomBar.addView(chromeRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(dp(8), 0, dp(8), dp(8)) })
+        bottomBar.addView(tabCard, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(dp(8), 0, dp(8), dp(8)) })
+
+        // ---- host de painel (sheet inferior / drawer lateral) + scrim ----
         panelHost = FrameLayout(this)
+        panelScrim = View(this).apply {
+            setBackgroundColor(Oni.SCRIM)
+            visibility = View.GONE
+            setOnClickListener { if (activePanel != PANEL_NONE) togglePanel(activePanel) }
+        }
+        panelHost.addView(panelScrim, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
 
-        // P4.1 (T2/D5 + T3/D6): HUD do PLAY — scripts (instâncias/ticks/
-        // faults) + estado REAL do backend de áudio. O que antes era
-        // silêncio (script que não roda, device sem AAudio) agora é TEXTO.
+        // P4.1 (T2/D5 + T3/D6): HUD do PLAY — pill translúcida (§2).
         playHud = TextView(this).apply {
-            setTextColor(Ui.TEXT)
+            setTextColor(Oni.TEXT)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            // 0x99000000 > Int.MAX_VALUE — Kotlin exige .toInt() explícito
-            // (CI Android #45: literal não conforma a Int sem a conversão).
-            setBackgroundColor(0x99000000.toInt())
-            setPadding(dp(8), dp(4), dp(8), dp(4))
+            typeface = Typeface.MONOSPACE
+            background = Oni.rounded(this@EditorActivity, 0xCC12161D.toInt(), Oni.R_CARD)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             visibility = View.GONE
         }
 
@@ -423,55 +433,57 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.Gravity.BOTTOM or android.view.Gravity.START
-            ).apply { bottomMargin = dp(56) }
+                Gravity.BOTTOM or Gravity.START
+            ).apply {
+                bottomMargin = dp(76)
+                leftMargin = dp(12)
+            }
         )
-        // P4.2 (T5 — Modo Jogo G1): HUD fullscreen do Play — STOP/PAUSE +
-        // linha de estado (áudio backend, fps, PAUSE). O chrome do editor
-        // some (applyGameModeChrome) e os toques vão ao JOGO inteiro.
+        // P4.2 (T5 — Modo Jogo G1): HUD do Play — pill flutuante translúcida:
+        // STOP (danger) / PAUSE (warn) / estado mono (§2).
         gameHudBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xE0101010.toInt())
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            gravity = android.view.Gravity.CENTER_VERTICAL
+            background = Oni.pill(this@EditorActivity, 0xCC12161D.toInt())
+            setPadding(dp(8), dp(6), dp(12), dp(6))
+            gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
         }
         gameHudBar?.addView(
-            toolButton("■ STOP") { togglePlay() }.apply {
-                setTextColor(Ui.DANGER)
+            Oni.button(this, "■", kind = Oni.BTN_DANGER, textSizeSp = 14f).also {
+                it.setTextColor(Oni.DANGER)
+                it.setOnClickListener { togglePlay() }
             },
-            LinearLayout.LayoutParams(0, dp(40), 1f)
+            LinearLayout.LayoutParams(dp(52), dp(44))
         )
-        btnPauseGame = toolButton("⏸ PAUSE") { togglePauseGame() }.apply {
-            setTextColor(Ui.TEXT)
+        btnPauseGame = Oni.chip(this, "⏸", textSizeSp = 14f).also {
+            it.setTextColor(Oni.WARN)
+            it.setOnClickListener { togglePauseGame() }
         }
-        gameHudBar?.addView(
-            btnPauseGame,
-            LinearLayout.LayoutParams(0, dp(40), 1f)
-        )
+        gameHudBar?.addView(btnPauseGame, LinearLayout.LayoutParams(dp(48), dp(44)))
         gameHudStatus = TextView(this).apply {
-            setTextColor(Ui.TEXT)
+            setTextColor(Oni.TEXT_DIM)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setPadding(dp(10), 0, 0, 0)
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(8), 0, 0, 0)
         }
         gameHudBar?.addView(
             gameHudStatus,
-            LinearLayout.LayoutParams(0, dp(40), 1.5f)
+            LinearLayout.LayoutParams(0, dp(44), 1.5f)
         )
         root.addView(
             gameHudBar,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.Gravity.BOTTOM
-            ).apply { bottomMargin = dp(48) }
+                Gravity.BOTTOM
+            ).apply { setMargins(dp(12), 0, dp(12), dp(16)) }
         )
         root.addView(
             bottomBar,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.Gravity.BOTTOM
+                Gravity.BOTTOM
             )
         )
         root.addView(
@@ -479,35 +491,69 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.Gravity.TOP
-            )
+                Gravity.TOP
+            ).apply { setMargins(dp(8), dp(8), dp(8), 0) }
         )
 
         panelContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Ui.SURFACE_SOLID)
             visibility = View.GONE
         }
 
         hierarchyAdapter = HierarchyAdapter()
-        inspectorScroll = ScrollView(this)
+        inspectorScroll = ScrollView(this).apply {
+            background = null
+        }
         buildAssetsPanel()
 
         setContentView(root)
         applyWindowInsets()
         updatePanelPlacement()
+        updateToolSegments()
+        updateTabStates()
+    }
+
+    /** Estado visual do segmented pill (ativo = acento — §1.4). */
+    internal fun updateToolSegments() {
+        if (!::toolSegments.isInitialized) return
+        for ((i, seg) in toolSegments.withIndex()) {
+            val active = i == editorTool
+            seg.setTextColor(if (active) Oni.ON_ACCENT else Oni.TEXT_DIM)
+            seg.background =
+                if (active) Oni.ripplePill(this, Oni.ACCENT)
+                else Oni.rippleOnly(this)
+        }
+    }
+
+    /** Estado visual das tabs (ativa = pill filled acento — §2). */
+    private fun updateTabStates() {
+        if (!::tabButtons.isInitialized) return
+        val tabs = listOf(
+            PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_ASSETS,
+            PANEL_SCRIPTS, PANEL_ANIM, PANEL_TICKS
+        )
+        for ((i, tab) in tabButtons.withIndex()) {
+            val active = tabs[i] == activePanel && activePanel != PANEL_NONE
+            tab.setTextColor(if (active) Oni.ON_ACCENT else Oni.TEXT_DIM)
+            tab.background =
+                if (active) Oni.ripplePill(this, Oni.ACCENT)
+                else Oni.rippleOnly(this)
+        }
     }
 
     /** Insets reais (status/nav bar — sem androidx): o chrome RESPETA o
-     * sistema em portrait e landscape (evolução P0-4). */
+     *  sistema em portrait e landscape (evolução P0-4). */
     private fun applyWindowInsets() {
         window.decorView.setOnApplyWindowInsetsListener { _, insets ->
             val top = insets.systemWindowInsetTop
             val bottom = insets.systemWindowInsetBottom
             val left = insets.systemWindowInsetLeft
             val right = insets.systemWindowInsetRight
-            topBar.setPadding(dp(8) + left, dp(6) + top, dp(8) + right, dp(6))
-            bottomBar.setPadding(dp(8) + left, dp(5), dp(8) + right, dp(5) + bottom)
+            topBar.setPadding(dp(12) + left, dp(8) + top, dp(12) + right, dp(8))
+            // tab card (último filho do chrome): respeita a nav bar.
+            val tabCard = bottomBar.getChildAt(bottomBar.childCount - 1)
+            tabCard.setPadding(dp(6) + left, dp(6), dp(6) + right, dp(6) + bottom)
+            gameHudBar?.setPadding(dp(8) + left, dp(6), dp(12) + right, dp(6))
             updatePanelPlacement()
             insets
         }
@@ -516,7 +562,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     private var panelPlacementLandscape = false
 
     /** Portrait: painel = sheet inferior (máx 62% da altura, viewport
-     * continua por trás). Landscape: drawer lateral direito (46%). */
+     *  continua por trás). Landscape: drawer lateral direito (46%). */
     private fun updatePanelPlacement() {
         if (!::panelHost.isInitialized || !::panelContainer.isInitialized) return
         val isLandscape = resources.configuration.orientation ==
@@ -541,17 +587,26 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     (resources.displayMetrics.widthPixels * 0.46f).toInt(),
                     ViewGroup.LayoutParams.MATCH_PARENT
                 ).apply {
-                    gravity = android.view.Gravity.RIGHT or android.view.Gravity.BOTTOM
+                    gravity = Gravity.RIGHT or Gravity.BOTTOM
+                    setMargins(dp(8), dp(8), dp(8), dp(8))
                 }
             )
+            // Drawer lateral: card curvo flutuante dos dois lados.
+            panelContainer.background =
+                Oni.rounded(this, Oni.PANEL, Oni.R_CARD)
         } else {
             panelHost.addView(
                 panelContainer,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     (resources.displayMetrics.heightPixels * 0.62f).toInt(),
-                    android.view.Gravity.BOTTOM
+                    Gravity.BOTTOM
                 )
+            )
+            // Sheet inferior: topo 28dp (§1.2), base reta na aresta.
+            panelContainer.background = Oni.roundedCorners(
+                this, Oni.PANEL,
+                floatArrayOf(28f, 28f, 28f, 28f, 0f, 0f, 0f, 0f)
             )
         }
     }
@@ -559,21 +614,21 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         // configChanges cobre orientation|screenSize — o layout ADAPTA em
-        // runtime sem recriar a Activity (evolução P0-4: portrait E
-        // landscape corretos).
+        // runtime sem recriar a Activity (evolução P0-4).
         updatePanelPlacement()
         installUiScale()  // P4.1 (T1): densidade pode mudar com a config
     }
 
     // --- painéis ---------------------------------------------------------------
 
-    private fun togglePanel(panel: Int) {
+    internal fun togglePanel(panel: Int) {
         if (activePanel == panel) {
             activePanel = PANEL_NONE
             // P4.3 (N1): painel fechou — a voice de preview morre com o
             // contexto (nunca toca "para sempre" atrás da UI).
             stopAudioPreview()
-            panelContainer.visibility = View.GONE
+            hideSheet()
+            updateTabStates()
             return
         }
         if (activePanel != PANEL_NONE) {
@@ -581,6 +636,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         activePanel = panel
         panelContainer.removeAllViews()
+
+        // Drag-handle (§2) + cabeçalho do sheet: título 16sp + fechar 48dp.
+        panelContainer.addView(View(this).apply {
+            background = Oni.pill(this@EditorActivity, Oni.HANDLE)
+        }, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = dp(10)
+            bottomMargin = dp(4)
+        })
         val title = when (panel) {
             PANEL_HIERARCHY -> "Hierarquia"
             PANEL_INSPECTOR -> "Inspector"
@@ -590,25 +654,26 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_TICKS -> "Ticks & Camadas"
             else -> ""
         }
-        // Cabeçalho do sheet: título + fechar (padrão de drawer moderno).
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(12), dp(8), dp(4), dp(8))
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            setBackgroundColor(Ui.SURFACE_ALT)
+            setPadding(dp(16), dp(4), dp(8), dp(8))
+            gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(
             TextView(this).apply {
                 text = title
-                setTextColor(Ui.TEXT)
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(Oni.TEXT)
+                typeface = Typeface.DEFAULT_BOLD
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         )
         header.addView(
-            toolButton("✕") { togglePanel(panel) }.apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f) },
-            LinearLayout.LayoutParams(dp(36), dp(32))
+            Oni.chip(this, "✕", textSizeSp = 13f).also {
+                it.minimumWidth = dp(48)
+                it.setOnClickListener { togglePanel(panel) }
+            },
+            LinearLayout.LayoutParams(dp(48), dp(44))
         )
         panelContainer.addView(
             header,
@@ -625,20 +690,64 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_ANIM -> buildAnimPanel()
             PANEL_TICKS -> buildTicksPanel()
         }
-        panelContainer.visibility = View.VISIBLE
+        showSheet()
+        updateTabStates()
         // P4.3 (N2): altura ADAPTATIVA (viewport atual, teclado incluído) —
         // via LayoutParams (sem detach); ver updatePanelHeight.
         updatePanelHeight()
         refreshPanel()
     }
 
+    /** Sheet entra: scrim fade + slide 180 ms (§1.6) — SEM detach. */
+    private fun showSheet() {
+        sheetShowing = true
+        panelScrim?.let { s ->
+            s.visibility = View.VISIBLE
+            s.alpha = 0f
+            s.animate().alpha(1f).setDuration(180).start()
+        }
+        panelContainer.visibility = View.VISIBLE
+        panelContainer.post {
+            panelContainer.translationY =
+                (panelContainer.height * 0.12f).coerceAtLeast(dp(24).toFloat())
+            panelContainer.animate()
+                .translationY(0f)
+                .setDuration(180)
+                .start()
+        }
+    }
+
+    /** Sheet sai: slide curto → GONE (idempotente). */
+    private fun hideSheet() {
+        sheetShowing = false
+        panelScrim?.let { s ->
+            s.animate().alpha(0f).setDuration(120).withEndAction {
+                if (!sheetShowing) s.visibility = View.GONE
+            }.start()
+        }
+        if (panelContainer.visibility == View.VISIBLE) {
+            panelContainer.animate()
+                .translationY((panelContainer.height * 0.12f)
+                    .coerceAtLeast(dp(24).toFloat()))
+                .setDuration(140)
+                .withEndAction {
+                    if (!sheetShowing) {
+                        panelContainer.visibility = View.GONE
+                        panelContainer.translationY = 0f
+                    }
+                }.start()
+        } else {
+            panelContainer.visibility = View.GONE
+        }
+    }
+
     /** P4.3 (N2 — tab bar sobre o conteúdo com o teclado aberto): a altura
-     * do painel era FIXA (62% do display cheio); com o IME aberto a root
-     * encolhe e o painel continuava grande — campos ficavam atrás da
-     * bottomBar e sob a topBar. AGORA a altura é recalculada a partir da
-     * root ATUAL (IME incluído) e o painel ancora ACIMA da bottomBar —
-     * TUDO por LayoutParams (requestLayout), NUNCA re-parent/remova-view:
-     * o EditText focado nunca é destacado (regressão B-B não volta). */
+     *  do painel era FIXA (62% do display cheio); com o IME aberto a root
+     *  encolhe e o painel continuava grande — campos ficavam atrás do
+     *  chrome. AGORA a altura é recalculada a partir da root ATUAL (IME
+     *  incluído) e o painel ancora ACIMA do chrome flutuante — TUDO por
+     *  LayoutParams (requestLayout), NUNCA re-parent/remova-view: o
+     *  EditText focado nunca é destacado (regressão B-B não volta). */
     private fun updatePanelHeight() {
         if (!::rootLayout.isInitialized || !::panelContainer.isInitialized) return
         if (activePanel == PANEL_NONE ||
@@ -651,24 +760,25 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             ?: return
         val isLandscape = resources.configuration.orientation ==
                 android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        // Painel ancora ACIMA da bottomBar (margem) — em qualquer orientação.
-        val marginChanged = params.bottomMargin != bottomH
+        // Painel ancora ACIMA do chrome (margem) — em qualquer orientação.
+        val marginTarget = bottomH + dp(6)
+        val marginChanged = params.bottomMargin != marginTarget
         if (isLandscape) {
-            // Drawer lateral: altura cheia da root (menos nada) — só a
-            // margem inferior o livra da tab bar.
+            // Drawer lateral flutuante: margens 8dp (margem inferior livra
+            // o drawer do chrome).
             if (marginChanged) {
-                params.bottomMargin = bottomH
+                params.bottomMargin = marginTarget
                 panelContainer.layoutParams = params  // requestLayout SEM detach
             }
         } else {
             // Sheet inferior: no máximo 62% da altura VISÍVEL (root ATUAL —
             // com o IME aberto a root encolhe e o painel encolhe junto) e
-            // nunca atrás da topBar/bottomBar.
+            // nunca atrás do topBar/chrome.
             val target = minOf((rootH * 0.62f).toInt(),
-                maxOf(rootH - topH - bottomH, dp(120)))
+                maxOf(rootH - topH - bottomH - dp(12), dp(120)))
             if (params.height != target || marginChanged) {
                 params.height = target
-                params.bottomMargin = bottomH
+                params.bottomMargin = marginTarget
                 panelContainer.layoutParams = params  // requestLayout SEM detach
             }
         }
@@ -687,7 +797,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     /** 1º toque toca; 2º toque no MESMO asset para. Fonte de verdade: o
      *  mixer NATIVO (a voice pode ter terminado sozinha). */
-    private fun toggleAudioPreview(name: String): Boolean {
+    internal fun toggleAudioPreview(name: String): Boolean {
         if (handle == 0L) return false
         return if (EditorJni.nativeEditorAudioPreviewPlaying(handle)) {
             EditorJni.nativeEditorAudioPreviewStop(handle)
@@ -699,13 +809,13 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     /** Stop do preview (fechar painel / mudar categoria / importar /
      *  Play) — idempotente, nunca toca nas vozes de jogo. */
-    private fun stopAudioPreview() {
+    internal fun stopAudioPreview() {
         if (handle != 0L) {
             EditorJni.nativeEditorAudioPreviewStop(handle)
         }
     }
 
-    private fun refreshPanel() {
+    internal fun refreshPanel() {
         when (activePanel) {
             PANEL_HIERARCHY -> refreshHierarchy()
             PANEL_INSPECTOR -> refreshInspector()
@@ -716,747 +826,35 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
-    // --- P4.3 (Bloco 2): sheet Ticks & Camadas (ADR-051 autorável) -------------
-
-    private data class LayerRow(
-        val name: String,
-        val timeScale: Float,
-        val update: Boolean,
-        val physics: Boolean,
-        val render: Boolean
-    )
-
-    private val tickLayerRows = mutableListOf<LayerRow>()
-    private lateinit var ticksList: ListView
-    private lateinit var physicsDtField: EditText
-
-    private fun buildTicksPanel() {
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bar.addView(
-            toolButton("+ Camada") { addLayerDialog() },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        // Timestep FIXO da física (s) — configura o PhysicsTick do Play.
-        // Aplica no IME_ACTION_DONE (campo vivo — zero UI morta).
-        bar.addView(
-            TextView(this).apply {
-                text = "Dt física (s):"
-                setTextColor(Ui.TEXT_DIM)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                setPadding(dp(8), 0, dp(4), 0)
-                gravity = Gravity.CENTER_VERTICAL
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)
-            )
-        )
-        physicsDtField = EditText(this).apply {
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_NUMBER or
-                InputType.TYPE_NUMBER_FLAG_DECIMAL
-            setText(fmtFloat(EditorJni.nativeEditorPhysicsDt(handle)))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(Ui.TEXT)
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
-            setOnEditorActionListener { _, _, _ ->
-                applyPhysicsDt()
-                true
-            }
-        }
-        bar.addView(physicsDtField, LinearLayout.LayoutParams(dp(84), dp(36)))
-        ticksList = ListView(this).apply {
-            onItemClickListener =
-                AdapterView.OnItemClickListener { _, _, position, _ ->
-                    tickLayerRows.getOrNull(position)?.let { layerEditDialog(it) }
-                }
-        }
-        panelContainer.addView(
-            bar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        panelContainer.addView(
-            ticksList,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-    }
-
-    private fun refreshTicks() {
-        if (handle == 0L || !::ticksList.isInitialized) return
-        val tsv = EditorJni.nativeEditorLayerList(handle) ?: return
-        tickLayerRows.clear()
-        val display = mutableListOf<String>()
-        for (line in tsv.lines().filter { it.isNotBlank() }) {
-            val p = line.split('\t')
-            val name = p.getOrNull(0) ?: continue
-            val ts = p.getOrNull(1)?.toFloatOrNull() ?: 1f
-            val u = p.getOrNull(2) == "1"
-            val f = p.getOrNull(3) == "1"
-            val r = p.getOrNull(4) == "1"
-            tickLayerRows.add(LayerRow(name, ts, u, f, r))
-            val flags = listOfNotNull(
-                if (u) "update" else null,
-                if (f) "física" else null,
-                if (r) "render" else null
-            ).joinToString(" · ")
-            display.add("$name — timeScale ${fmtFloat(ts)}\n$flags")
-        }
-        ticksList.adapter = ArrayAdapter(
-            this, android.R.layout.simple_list_item_1, display
-        )
-    }
-
-    private fun applyPhysicsDt() {
-        val v = physicsDtField.text.toString().toFloatOrNull()
-        if (v == null) {
-            toast("Valor inválido (ex.: 0.0167)")
-            return
-        }
-        if (!EditorJni.nativeEditorPhysicsSetDt(handle, v)) {
-            toast(lastErrorText())
-        } else {
-            toast("Timestep da física: ${fmtFloat(v)} s")
-        }
-    }
-
-    private fun addLayerDialog() {
-        inputDialog("Nome da camada", "UI") { name ->
-            if (!EditorJni.nativeEditorLayerAdd(handle, name.trim())) {
-                toast(lastErrorText())
-            }
-            refreshTicks()
-        }
-    }
-
-    /** Edita timeScale + participação (update/física/render) da camada —
-     *  toca o estado REAL da LayerRegistry (ADR-051). */
-    private fun layerEditDialog(row: LayerRow) {
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-        }
-        container.addView(
-            TextView(this).apply {
-                text = "timeScale (0 = camada pausada)"
-                setTextColor(Ui.TEXT_DIM)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            }
-        )
-        val tsField = EditText(this).apply {
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_NUMBER or
-                InputType.TYPE_NUMBER_FLAG_DECIMAL
-            setText(fmtFloat(row.timeScale))
-        }
-        container.addView(tsField)
-        val swUpdate = Switch(this).apply {
-            text = "Participa do UPDATE"
-            isChecked = row.update
-            setTextColor(Ui.TEXT)
-        }
-        val swPhysics = Switch(this).apply {
-            text = "Participa da FÍSICA"
-            isChecked = row.physics
-            setTextColor(Ui.TEXT)
-        }
-        val swRender = Switch(this).apply {
-            text = "Participa do RENDER"
-            isChecked = row.render
-            setTextColor(Ui.TEXT)
-        }
-        container.addView(swUpdate)
-        container.addView(swPhysics)
-        container.addView(swRender)
-        AlertDialog.Builder(this)
-            .setTitle("Camada: ${row.name}")
-            .setView(container)
-            .setPositiveButton("Aplicar") { _, _ ->
-                val ts = tsField.text.toString().toFloatOrNull() ?: Float.NaN
-                if (!EditorJni.nativeEditorLayerSetTimeScale(handle, row.name, ts) ||
-                    !EditorJni.nativeEditorLayerSetParticipation(
-                        handle, row.name,
-                        swUpdate.isChecked, swPhysics.isChecked, swRender.isChecked
-                    )
-                ) {
-                    toast(lastErrorText())
-                }
-                refreshTicks()
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun buildHierarchyPanel() {
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bar.addView(
-            toolButton("+ Entidade") { createEntityDialog() },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        bar.addView(
-            toolButton("+ Sprite") { addSpriteDialog() },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        hierarchyList = ListView(this).apply {
-            adapter = hierarchyAdapter
-            onItemClickListener =
-                AdapterView.OnItemClickListener { _, _, _, _ ->
-                    val packed = hierarchyAdapter.selectedAt()
-                    if (packed != 0L) {
-                        // P1.0 BUG FIX: a seleção via hierarquia precisa
-                        // chegar ao DOCUMENTO (borda no viewport + alvo do
-                        // gizmo) — antes só o Kotlin sabia.
-                        if (!EditorJni.nativeEditorSelect(handle, packed)) {
-                            toast(lastErrorText())
-                        }
-                        selectEntity(packed)
-                    }
-                }
-            onItemLongClickListener =
-                AdapterView.OnItemLongClickListener { _, _, _, _ ->
-                    val packed = hierarchyAdapter.selectedAt()
-                    if (packed != 0L) {
-                        entityMenuDialog(packed)
-                    }
-                    true
-                }
-        }
-        panelContainer.addView(
-            bar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        panelContainer.addView(
-            hierarchyList,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-    }
-
-    private fun buildInspectorPanel() {
-        panelContainer.addView(
-            inspectorScroll,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-    }
-
-    private lateinit var assetsRoot: LinearLayout
-    private lateinit var assetSearch: EditText
-    private var assetQuery: String = ""
-
-    // --- painel de ANIMAÇÃO (P2 §8) ----------------------------------------------
-
-    private lateinit var animList: ListView
-    private val animNames = mutableListOf<String>()
-
-    private fun buildAnimPanel() {
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bar.addView(
-            toolButton("+ Nova animação") { newAnimDialog() },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        bar.addView(
-            toolButton("▶ Preview") { toggleAnimPreview() },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        animList = ListView(this).apply {
-            onItemClickListener =
-                AdapterView.OnItemClickListener { _, _, position, _ ->
-                    animNames.getOrNull(position)?.let { animMenuDialog(it) }
-                }
-        }
-        panelContainer.addView(
-            bar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        panelContainer.addView(
-            animList,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-    }
-
-    private fun refreshAnim() {
-        if (handle == 0L || !::animList.isInitialized) return
-        val tsv = EditorJni.nativeEditorAnimationList(handle) ?: return
-        animNames.clear()
-        val display = mutableListOf<String>()
-        for (line in tsv.lines().filter { it.isNotBlank() }) {
-            val p = line.split('\t')
-            animNames.add(p.getOrNull(0) ?: continue)
-            // name      clip    duration        frames          keys    loop
-            val clip = p.getOrNull(1) ?: "?"
-            val dur = p.getOrNull(2)?.toFloatOrNull() ?: 0f
-            val frames = p.getOrNull(3)?.toIntOrNull() ?: 0
-            val keys = p.getOrNull(4)?.toIntOrNull() ?: 0
-            val loop = p.getOrNull(5) == "1"
-            display.add(
-                "$clip  ${"%.1f".format(dur)}s  ${frames}f ${keys}k" +
-                    (if (loop) " ∞" else "")
-            )
-        }
-        // Linha única: "clip 1.0s 4f 2k ∞" (nome do arquivo no título).
-        animList.adapter = ArrayAdapter(
-            this, android.R.layout.simple_list_item_1, display
-        )
-    }
-
-    private fun newAnimDialog() {
-        inputDialog("Nome da animação", "walk") { name ->
-            if (EditorJni.nativeEditorAnimationCreate(handle, name)) {
-                toast("Animação criada — adicione frames com texturas reais")
-                refreshAnim()
-            } else {
-                toast(lastErrorText())
-            }
-        }
-    }
-
-    /** Menu de contexto da animação: adicionar frame, fps/loop, anexar,
-     * preview, editar JSON, apagar. */
-    private fun animMenuDialog(name: String) {
-        val items = arrayOf(
-            "Adicionar frame (textura)…", "FPS / Loop…", "Anexar à seleção…",
-            "Preview na seleção", "Editar JSON…", "Apagar"
-        )
-        AlertDialog.Builder(this)
-            .setTitle(name)
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> pickFrameTexture(name)
-                    1 -> animMetaDialog(name)
-                    2 -> {
-                        if (selection == 0L) {
-                            toast("Selecione uma entidade primeiro")
-                        } else if (EditorJni.nativeEditorAnimationAssign(
-                                handle, selection, name
-                            )
-                        ) {
-                            toast("Animação anexada — Play executa o clip real")
-                            refreshInspectorIfOpen()
-                        } else {
-                            toast(lastErrorText())
-                        }
-                    }
-                    3 -> {
-                        if (selection == 0L) {
-                            toast("Selecione uma entidade primeiro")
-                        } else if (EditorJni.nativeEditorPreviewStart(
-                                handle, selection, name
-                            )
-                        ) {
-                            toast("Preview RODANDO — o transform original volta no Stop")
-                        } else {
-                            toast(lastErrorText())
-                        }
-                    }
-                    4 -> animJsonEditorDialog(name)
-                    5 -> if (EditorJni.nativeEditorAnimationDelete(handle, name)) {
-                        refreshAnim()
-                    } else {
-                        toast(lastErrorText())
-                    }
-                }
-            }
-            .show()
-    }
-
-    /** Frame = textura REAL do projeto (picker com thumbnails — §8). */
-    private fun pickFrameTexture(animName: String) {
-        val tsv = EditorJni.nativeEditorListTextures(handle) ?: return
-        val names = tsv.lines().filter { it.isNotBlank() }
-        if (names.isEmpty()) {
-            toast("Nenhuma textura importada (Assets → textures → Importar)")
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Frame: textura")
-            .setItems(names.toTypedArray()) { _, which ->
-                val when_ = EditorJni.nativeEditorAnimationAddFrame(
-                    handle, animName, names[which]
-                )
-                if (when_ >= 0f) {
-                    toast("Frame em t=${"%.2f".format(when_)}s")
-                    refreshAnim()
-                } else {
-                    toast(lastErrorText())
-                }
-            }
-            .show()
-    }
-
-    private fun animMetaDialog(name: String) {
-        val input = EditText(this).apply {
-            hint = "FPS (1..120)"
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setPadding(dp(16), dp(10), dp(16), dp(10))
-        }
-        val loopCheck = android.widget.CheckBox(this).apply {
-            text = "Loop"
-            setPadding(dp(16), dp(4), dp(16), dp(10))
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(input); addView(loopCheck)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("FPS / Loop")
-            .setView(box)
-            .setPositiveButton("OK") { _, _ ->
-                val fps = input.text.toString().toFloatOrNull() ?: 8f
-                if (!EditorJni.nativeEditorAnimationSetMeta(
-                        handle, name, loopCheck.isChecked, fps
-                    )
-                ) {
-                    toast(lastErrorText())
-                }
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    /** Editor JSON cru (round-trip validado no C++ — lixo é rejeitado). */
-    private fun animJsonEditorDialog(name: String) {
-        val content = EditorJni.nativeEditorAnimationRead(handle, name) ?: run {
-            toast(lastErrorText()); return
-        }
-        val edit = EditText(this).apply {
-            setText(content)
-            setTypeface(android.graphics.Typeface.MONOSPACE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            minLines = 12
-            gravity = Gravity.TOP
-        }
-        val scroll = ScrollView(this).apply { addView(edit) }
-        AlertDialog.Builder(this)
-            .setTitle(name)
-            .setView(scroll)
-            .setPositiveButton("Salvar") { _, _ ->
-                if (!EditorJni.nativeEditorAnimationWrite(handle, name, edit.text.toString())) {
-                    toast(lastErrorText())
-                }
-            }
-            .setNeutralButton("Cancelar", null)
-            .show()
-    }
-
-    /** Preview liga/desliga na SELEÇÃO (o clip precisa estar anexado ou é
-     * escolhido pelo nome do painel). */
-    private fun toggleAnimPreview() {
-        if (EditorJni.nativeEditorPreviewing(handle)) {
-            EditorJni.nativeEditorPreviewStop(handle)
-            toast("Preview parado — transform restaurado")
-            return
-        }
-        if (selection == 0L) {
-            toast("Selecione uma entidade e anexe uma animação primeiro")
-            return
-        }
-        // Pega o clip do Animator da seleção (Inspector path canônico).
-        val fields = EditorJni.nativeEditorComponentFields(
-            handle, selection, "eng::animation::Animator"
-        ) ?: run { toast("Entidade sem Animator — anexe no painel Animação"); return }
-        val clip = fields.lines().firstOrNull { it.startsWith("clip\t") }
-            ?.split('\t')?.getOrNull(2)
-        if (clip.isNullOrBlank()) {
-            toast("Animator sem clip")
-            return
-        }
-        if (EditorJni.nativeEditorPreviewStart(handle, selection, clip)) {
-            toast("Preview RODANDO (clip '$clip')")
-        } else {
-            toast(lastErrorText())
-        }
-    }
-
-    // --- painel de scripts NI-Script (evolução P0-7, ADR-053) -------------------
-
-    private fun buildScriptsPanel() {
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bar.addView(
-            toolButton("+ Novo script") { newScriptDialog() },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        scriptsList = ListView(this).apply {
-            onItemClickListener =
-                AdapterView.OnItemClickListener { _, _, position, _ ->
-                    val name = scriptNames.getOrNull(position)
-                    if (name != null) scriptEditorDialog(name)
-                }
-        }
-        panelContainer.addView(
-            bar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        panelContainer.addView(
-            scriptsList,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-    }
-
-    private fun refreshScripts() {
-        if (handle == 0L || !::scriptsList.isInitialized) return
-        val tsv = EditorJni.nativeEditorScriptList(handle) ?: return
-        scriptNames.clear()
-        scriptNames.addAll(tsv.lines().filter { it.isNotBlank() })
-        scriptsList.adapter = ArrayAdapter(
-            this, android.R.layout.simple_list_item_1, scriptNames.toList()
-        )
-    }
-
-    private fun newScriptDialog() {
-        inputDialog("Nome do script", "Movimento") { name ->
-            if (EditorJni.nativeEditorScriptCreate(handle, name)) {
-                refreshScripts()
-            } else {
-                toast(lastErrorText())
-            }
-        }
-    }
-
-    /**
-     * Editor de script (P0-7): fonte multi-linha (monospace), Compilar
-     * com diagnósticos line:col, Anexar à entidade selecionada, Salvar.
-     */
-    private fun scriptEditorDialog(name: String) {
-        val content = EditorJni.nativeEditorScriptRead(handle, name) ?: run {
-            toast(lastErrorText()); return
-        }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(4), dp(12), dp(4))
-        }
-        val edit = EditText(this).apply {
-            setText(content)
-            setTypeface(android.graphics.Typeface.MONOSPACE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setTextColor(Ui.TEXT)
-            setHorizontallyScrolling(false)
-            inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            gravity = Gravity.TOP
-            minLines = 12
-            background = rippleBox(Ui.SURFACE_ALT, dp(6))
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-        }
-        val scroller = ScrollView(this).apply { addView(edit) }
-        container.addView(
-            scroller,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-            )
-        )
-
-        // Barra de ações: Compilar | Anexar | Salvar.
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(6), 0, 0)
-        }
-        actions.addView(
-            toolButton("Compilar") {
-                val tsv = EditorJni.nativeEditorScriptCompile(handle, edit.text.toString())
-                if (tsv == null) {
-                    toast(lastErrorText())
-                } else {
-                    showCompileDiags(tsv)
-                }
-            },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        actions.addView(
-            toolButton("Anexar") {
-                if (selection == 0L) {
-                    toast("Selecione uma entidade antes de anexar")
-                } else if (EditorJni.nativeEditorScriptAssign(handle, selection, name)) {
-                    toast("Anexado a ${currentEntityName(selection)}")
-                } else {
-                    toast(lastErrorText())
-                }
-            },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        var dialog: AlertDialog? = null
-        actions.addView(
-            toolButton("Salvar") {
-                if (EditorJni.nativeEditorScriptWrite(handle, name, edit.text.toString())) {
-                    toast("Salvo")
-                    dialog?.dismiss()
-                } else {
-                    toast(lastErrorText())
-                }
-            },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        container.addView(
-            actions,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        dialog = AlertDialog.Builder(this)
-            .setTitle(name)
-            .setView(container)
-            .setPositiveButton("Fechar", null)
-            .show()
-    }
-
-    /** Diagnósticos do Compilar: TSV "1|0" + linhas "line\tcol\tmessage". */
-    private fun showCompileDiags(tsv: String) {
-        val lines = tsv.lines()
-        val ok = lines.firstOrNull() == "1"
-        val builder = AlertDialog.Builder(this)
-            .setTitle(if (ok) "Compilou" else "Erros de compilação")
-        if (ok) {
-            builder.setMessage("O script compila até bytecode.")
-        } else {
-            val rows = lines.drop(1).filter { it.isNotBlank() }
-            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            val scroll = ScrollView(this).apply { addView(list) }
-            for (row in rows) {
-                val p = row.split('\t')
-                list.addView(TextView(this).apply {
-                    text = "${p.getOrNull(0) ?: "?"}:${p.getOrNull(1) ?: "?"}  ${p.getOrNull(2) ?: ""}"
-                    setTextColor(Ui.DANGER)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                    setTypeface(android.graphics.Typeface.MONOSPACE)
-                    setPadding(dp(12), dp(4), dp(12), dp(4))
-                })
-            }
-            builder.setView(scroll)
-        }
-        builder.setPositiveButton("OK", null).show()
-    }
-
-    private fun buildAssetsPanel() {
-        assetsRoot = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        assetCategory = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@EditorActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                mutableListOf<String>()
-            )
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(
-                    p: AdapterView<*>?, v: View?, pos: Int, id: Long
-                ) {
-                    // P4.3 (N1): mudou a categoria — a lista muda de assets;
-                    // a voice do preview morre com o contexto da lista.
-                    stopAudioPreview()
-                    refreshAssets()
-                }
-
-                override fun onNothingSelected(p: AdapterView<*>?) {}
-            }
-        }
-        bar.addView(
-            assetCategory,
-            LinearLayout.LayoutParams(0, dp(36), 1.4f)
-        )
-        importButton = toolButton("Importar") { onImportButton() }
-        bar.addView(
-            importButton,
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        // Busca de assets (P0-6): filtra por nome dentro da categoria.
-        assetSearch = EditText(this).apply {
-            hint = "Buscar…"
-            setSingleLine()
-            textSize = 13f
-            setTextColor(Ui.TEXT)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = rippleBox(Ui.SURFACE_ALT, dp(6))
-            addTextChangedListener(object : android.text.TextWatcher {
-                override fun afterTextChanged(s: android.text.Editable?) {
-                    assetQuery = s?.toString() ?: ""
-                    refreshAssets()
-                }
-                override fun beforeTextChanged(
-                    s: CharSequence?, a: Int, b: Int, c: Int
-                ) {}
-                override fun onTextChanged(
-                    s: CharSequence?, a: Int, b: Int, c: Int
-                ) {}
-            })
-        }
-        assetAdapter = AssetAdapter()
-        assetList = ListView(this).apply {
-            adapter = assetAdapter
-            onItemLongClickListener =
-                AdapterView.OnItemLongClickListener { _, _, _, _ ->
-                    assetAdapter.selectedOrNull()?.let { assetMenuDialog(it) }
-                    true
-                }
-        }
-        assetsRoot.addView(
-            bar,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        assetsRoot.addView(
-            assetSearch,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)
-            )
-        )
-        assetsRoot.addView(
-            assetList,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-    }
-
-    // --- atualização de dados (snapshots TSV do C++) ------------------------------
-
-    private fun selectEntity(packed: Long) {
+    internal fun selectEntity(packed: Long) {
         // P4.1 (T1/D1 — CAUSA RAIZ): a seleção C++ é a FONTE do gizmo,
         // do hit-test e do render — este caminho (hierarquia/menus) só
-        // atualizava a var Kotlin, e o gizmo ficava na entidade velha
-        // ("setas não aparecem, drag não responde"). Fonte ÚNICA: o
-        // documento. Erro (entidade obsoleta) é mostrado, nunca calado.
+        // atualizava a var Kotlin, e o gizmo ficava na entidade velha.
+        // Fonte ÚNICA: o documento. Erro (entidade obsoleta) é mostrado,
+        // nunca calado.
         if (handle != 0L &&
             !EditorJni.nativeEditorSelect(handle, packed)) {
-            toast(lastErrorText())
+            toastErr(lastErrorText())
         }
         selection = packed
         refreshHierarchy()
         refreshInspector()
     }
 
-    private var selection: Long = 0L
+    internal var selection: Long = 0L
 
-    private fun refreshHierarchy() {
+    internal fun refreshHierarchy() {
         val tsv = EditorJni.nativeEditorHierarchy(handle) ?: return
         hierarchyAdapter.reload(tsv)
         if (selection != 0L) {
             hierarchyAdapter.markSelected(selection)
         }
         hierarchyAdapter.notifyDataSetChanged()
+        // P4.5 (§2): empty state da hierarquia (card curvo) ↔ lista.
+        if (::hierarchyList.isInitialized) {
+            (hierarchyList.tag as? View)?.visibility =
+                if (hierarchyAdapter.count == 0) View.VISIBLE else View.GONE
+        }
     }
 
     /**
@@ -1464,10 +862,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
      * Mesma estrutura (mesma seleção, mesmos componentes/campos/kinds) →
      * atualiza os valores IN-PLACE (nenhuma view recriada; view com foco
      * NUNCA é tocada — o IME sobrevive). Estrutura mudou → rebuild completo.
-     * O caminho antigo reconstruía TODAS as views a cada chamada: any
-     * refresh com o teclado aberto destruíaa o EditText focado.
      */
-    private fun refreshInspector() {
+    internal fun refreshInspector() {
         if (handle == 0L) {
             inspectorScroll.removeAllViews()
             inspectorKey = null
@@ -1484,7 +880,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     /** Assinatura da ESTRUTURA do painel (seleção + componentes + campos
-     * + kinds) — barata (TSV nativos, já carregados pelo rebuild). */
+     *  + kinds) — barata (TSV nativos, já carregados pelo rebuild). */
     private fun inspectorStructureKey(): String? {
         if (handle == 0L) return null
         if (selection == 0L) return "none"
@@ -1511,260 +907,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         return sb.toString()
     }
 
-    /** Valores in-place (B-B): diff antes de setText; FOCADO nunca é
-     * tocado (a fonte daquele campo é o teclado até o DONE — P1.9). */
-    private fun updateInspectorValuesInPlace() {
-        val sel = selection
-        if (sel == 0L) return
-        inspectorNameField?.let { f ->
-            if (!f.hasFocus()) {
-                val name = currentEntityName(sel)
-                if (f.text.toString() != name) f.setText(name)
-            }
-        }
-        updateTransformFieldsLive()
-        val componentsTsv =
-            EditorJni.nativeEditorEntityComponents(handle, sel) ?: return
-        for (line in componentsTsv.lines().filter { it.isNotBlank() }) {
-            val parts = line.split('\t')
-            if (parts.size < 2) continue
-            val component = parts[0]
-            val fieldsTsv =
-                EditorJni.nativeEditorComponentFields(handle, sel, component)
-                    ?: continue
-            for (fline in fieldsTsv.lines().filter { it.isNotBlank() }) {
-                val fp = fline.split('\t')
-                if (fp.size < 3) continue
-                val path = fp[0]
-                val value = fp[2]
-                inspectorTextFields["$component\u0001$path"]?.let { f ->
-                    if (!f.hasFocus() && f.text.toString() != value) {
-                        f.setText(value)
-                    }
-                }
-                inspectorValueViews["$component\u0001$path"]?.let { (v, empty) ->
-                    val shown = value.ifEmpty { empty }
-                    if (v.text.toString() != shown) v.text = shown
-                }
-            }
-        }
-    }
-
-    /** Rebuild COMPLETO (estrutura mudou / primeira abertura). Registra
-     * as views atualizáveis nos mapas do sync diferencial. */
-    private fun rebuildInspector(key: String?) {
-        inspectorTextFields.clear()
-        inspectorValueViews.clear()
-        inspectorNameField = null
-        inspectorKey = key
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(16))
-        }
-        if (selection == 0L) {
-            content.addView(labelView("Nenhuma entidade selecionada\n(toca no viewport ou na hierarquia)"))
-            inspectorScroll.removeAllViews()
-            inspectorScroll.addView(content)
-            inspectorContent = content
-            return
-        }
-
-        // Cabeçalho: nome da entidade (editável).
-        val nameField = EditText(this).apply {
-            setSingleLine()
-            setText(currentEntityName(selection))
-            hint = "Nome"
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
-                    val ok = EditorJni.nativeEditorRenameEntity(handle, selection, text.toString())
-                    if (!ok) toast(lastErrorText())
-                    refreshHierarchy()
-                    true
-                } else false
-            }
-        }
-        inspectorNameField = nameField
-        content.addView(nameField)
-
-        // Transform (TRS com Euler em graus — API do documento). Os campos
-        // ficam REFERENCIADOS (transformFields) para o live sync do doFrame
-        // (P1.9: gizmo → Inspector ao vivo, sem rebuild do painel).
-        transformFields.clear()
-        collectTransformFields = true
-        val tr = EditorJni.nativeEditorGetTransform(handle, selection)
-        if (tr != null && tr.size == 9) {
-            content.addView(sectionTitle("Transform"))
-            // Aplica lendo TODOS os 9 campos vivos (não o snapshot `tr`):
-            // o gizmo pode ter mexido rotação/escala DEPOIS do build do
-            // painel — usar `tr` STALE reverteria a edição (P1.9).
-            addVec3Row(content, "Posição", tr[0], tr[1], tr[2]) { _ ->
-                applyTransformFromFields()
-            }
-            addVec3Row(content, "Rotação (°)", tr[3], tr[4], tr[5]) { _ ->
-                applyTransformFromFields()
-            }
-            addVec3Row(content, "Escala", tr[6], tr[7], tr[8]) { _ ->
-                applyTransformFromFields()
-            }
-        }
-        collectTransformFields = false
-
-        // Componentes (catálogo reflect-driven — §8.4; kinds P0-6/ADR-052).
-        val componentsTsv = EditorJni.nativeEditorEntityComponents(handle, selection)
-        if (componentsTsv != null) {
-            for (line in componentsTsv.lines().filter { it.isNotBlank() }) {
-                val parts = line.split('\t')
-                if (parts.size < 2) continue
-                val component = parts[0]
-                val removable = parts[1] == "1"
-                content.addView(sectionTitle(prettyComponent(component)))
-                val fieldsTsv =
-                    EditorJni.nativeEditorComponentFields(handle, selection, component)
-                if (fieldsTsv != null) {
-                    for (fline in fieldsTsv.lines().filter { it.isNotBlank() }) {
-                        val fp = fline.split('\t')
-                        if (fp.size < 3) continue
-                        addFieldRow(
-                            content, component, fp[0], fp[1], fp[2],
-                            fp.getOrElse(3) { "text" }, fp.getOrElse(4) { "" }
-                        )
-                    }
-                }
-                if (removable) {
-                    content.addView(
-                        toolButton("Remover ${prettyComponent(component)}") {
-                            val ok = EditorJni.nativeEditorRemoveComponent(handle, selection, component)
-                            if (!ok) toast(lastErrorText())
-                            refreshPanel()
-                        },
-                        LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(36)
-                        )
-                    )
-                }
-            }
-        }
-        content.addView(
-            toolButton("+ Adicionar componente") { addComponentDialog() },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
-        )
-
-        // Ações rápidas da seleção (P1.7/P1.8 — um toque, sem long-press).
-        val quick = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        quick.addView(
-            toolButton("Duplicar") {
-                val dup = EditorJni.nativeEditorDuplicateEntity(handle, selection)
-                if (dup == 0L) toast(lastErrorText()) else selectEntity(dup)
-            },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        quick.addView(
-            toolButton("Apagar") {
-                if (EditorJni.nativeEditorDeleteEntity(handle, selection)) {
-                    selection = 0L
-                    refreshPanel()
-                } else {
-                    toast(lastErrorText())
-                }
-            },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-        content.addView(quick)
-
-        inspectorScroll.removeAllViews()
-        inspectorScroll.addView(content)
-        inspectorContent = content
-    }
-
-    /** Escreve o transform com os 9 CAMPOS vivos do painel (P1.9). */
-    private fun applyTransformFromFields() {
-        if (transformFields.size != 9) return
-        val values = FloatArray(9) { i ->
-            transformFields[i].text.toString().toFloatOrNull() ?: 0f
-        }
-        // Escala inválida (0/negativa/NaN → 0 por fallback) é recusada no
-        // campo numérico; o documento mantém a última válida.
-        if (!EditorJni.nativeEditorSetTransform(
-                handle, selection,
-                values[0], values[1], values[2],
-                values[3], values[4], values[5],
-                values[6], values[7], values[8]
-            )
-        ) {
-            toast(lastErrorText())
-        }
-        updateTransformFieldsLive()  // ecoa o que o documento aceitou
-    }
-
-    /** Rebuild do Inspector quando aberto (drag de gizmo terminou — P1.9). */
-    private fun refreshInspectorIfOpen() {
-        if (activePanel == PANEL_INSPECTOR && selection != 0L) {
-            refreshInspector()
-        }
-    }
-
-    /**
-     * Live sync (P1.9): atualiza SO os campos de transform do painel
-     * aberto — sem rebuild. Pula campos com FOCO (o usuário está
-     * digitando; o teclado é a fonte daquele campo até o DONE).
-     */
-    private fun updateTransformFieldsLive() {
-        if (activePanel != PANEL_INSPECTOR || selection == 0L) return
-        if (transformFields.size != 9) return
-        val tr = EditorJni.nativeEditorGetTransform(handle, selection)
-            ?: return
-        if (tr.size != 9) return
-        for (i in 0 until 9) {
-            val field = transformFields[i]
-            if (field.hasFocus()) continue  // digitando: não pisca
-            field.setText(fmtFloat(tr[i]))
-        }
-    }
-
-    /** Importar vs "Novo material…" (P3 §3): materiais são AUTORADOS,
-     *  não importados — o botão da categoria reflete isso. */
-    private fun onImportButton() {
-        val category = assetCategory.selectedItem?.toString() ?: ""
-        if (category == "materials") {
-            inputDialog("Nome do material", "NovoMaterial") { name ->
-                if (EditorJni.nativeEditorMaterialCreate(handle, name)) {
-                    toast("Material '$name' criado")
-                    refreshAssets()
-                } else toast(lastErrorText())
-            }
-            return
-        }
-        pickImportFile()
-    }
-
-    private fun refreshAssets() {
-        if (handle == 0L) return
-        val cats = EditorJni.nativeEditorAssetCategories(handle) ?: return
-        val catList = cats.lines().filter { it.isNotBlank() }
-        val adapter = assetCategory.adapter as ArrayAdapter<String>
-        if (adapter.count != catList.size) {
-            adapter.clear()
-            adapter.addAll(catList)
-            assetCategory.setSelection(0)
-        }
-        val category = catList.getOrNull(assetCategory.selectedItemPosition) ?: return
-        if (::importButton.isInitialized) {
-            importButton.text = if (category == "materials") "Novo…" else "Importar"
-        }
-        val tsv = EditorJni.nativeEditorAssetList(handle, category)
-        // Busca (P0-6): filtro por nome, insensível a caixa.
-        val filtered = (tsv ?: "").lines().filter {
-            it.isNotBlank() && (assetQuery.isBlank() ||
-                it.contains(assetQuery, ignoreCase = true))
-        }
-        assetAdapter.reload(filtered)
-        assetAdapter.notifyDataSetChanged()
-    }
-
-    private fun refreshAll() {
+    internal fun refreshAll() {
         refreshHierarchySafe()
-        if (::btnProject.isInitialized && handle != 0L) {
+        if (::brand.isInitialized && handle != 0L) {
             val name = EditorJni.nativeEditorProjectName(handle) ?: ""
             // Marca carrega o projeto: identidade + contexto na MESMA linha
             // (evolução P0-4 — sem botão gigante de projeto).
@@ -1772,7 +917,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
-    private fun refreshHierarchySafe() {
+    internal fun refreshHierarchySafe() {
         if (::hierarchyAdapter.isInitialized && activePanel == PANEL_HIERARCHY) {
             refreshHierarchy()
         }
@@ -1781,8 +926,8 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     // --- helpers de UI ----------------------------------------------------------
 
     /** Nome de exibição de componente: "eng::editor::SpriteData" → "Sprite"
-     * (P0-6: cabeçalhos legíveis; a CHAMADA de API continua com o nome cru). */
-    private fun prettyComponent(raw: String): String {
+     *  (P0-6: cabeçalhos legíveis; a CHAMADA de API continua com o nome cru). */
+    internal fun prettyComponent(raw: String): String {
         var name = raw.substringAfterLast(':')
         if (name.endsWith("Data")) name = name.removeSuffix("Data")
         if (name.endsWith("Component")) name = name.removeSuffix("Component")
@@ -1790,13 +935,13 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     /** Rótulo de campo: último segmento do path; grupo de cor → rótulo base. */
-    private fun prettyFieldLabel(path: String): String {
+    internal fun prettyFieldLabel(path: String): String {
         val leaf = path.substringBefore(',').substringAfterLast('.')
         return leaf.replaceFirstChar { it.uppercase() }
     }
 
     /** Hex "#RRGGBB[AA]" → ARGB int (ou null quando inválido). */
-    private fun parseHexColor(hex: String): Int? {
+    internal fun parseHexColor(hex: String): Int? {
         if (!hex.startsWith("#")) return null
         val digits = hex.substring(1)
         if (digits.length != 6 && digits.length != 8) return null
@@ -1809,658 +954,21 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     /** Escreve o valor de um campo com feedback (toast em erro). */
-    private fun setFieldQuiet(component: String, path: String, value: String) {
+    internal fun setFieldQuiet(component: String, path: String, value: String) {
         val ok = EditorJni.nativeEditorSetComponentField(
             handle, selection, component, path, value
         )
-        if (!ok) toast(lastErrorText())
+        if (!ok) toastErr(lastErrorText())
     }
 
-    private fun labelView(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            setTextColor(Ui.TEXT_DIM)
-            setPadding(dp(8), dp(8), dp(8), dp(4))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        }
-
-    private fun sectionTitle(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            setTextColor(Ui.ACCENT)
-            setPadding(dp(4), dp(10), dp(4), dp(2))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setBackgroundColor(Ui.SURFACE_ALT)
-        }
-
-    private fun addVec3Row(
-        parent: LinearLayout, title: String, x: Float, y: Float, z: Float,
-        apply: (FloatArray) -> Unit
-    ) {
-        parent.addView(labelView(title))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val fields = mutableListOf<EditText>()
-        if (collectTransformFields) transformFields.addAll(fields)
-        for (value in listOf(x, y, z)) {
-            val edit = EditText(this).apply {
-                inputType = InputType.TYPE_CLASS_NUMBER or
-                    InputType.TYPE_NUMBER_FLAG_SIGNED or
-                    InputType.TYPE_NUMBER_FLAG_DECIMAL
-                setSingleLine()
-                setText(fmtFloat(value))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                setTextColor(Ui.TEXT)
-                setPadding(dp(6), dp(8), dp(6), dp(8))
-                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
-                setOnEditorActionListener { _, actionId, _ ->
-                    if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
-                        val values = fields.map { it.text.toString().toFloatOrNull() ?: 0f }
-                        apply(values.toFloatArray())
-                        refreshHierarchySafe()
-                        true
-                    } else false
-                }
-            }
-            fields.add(edit)
-            row.addView(
-                edit,
-                LinearLayout.LayoutParams(0, dp(40), 1f)
-            )
-        }
-        parent.addView(row)
-    }
-
-    /**
-     * Linha de campo do Inspector (P0-6, ADR-052): o kind semântico vindo do
-     * C++ decide o editor — Switch (bool), dropdown (enum), swatch+sliders
-     * (color), picker de textura, campo numérico ou texto. Nada de digitar
-     * "true"/"Sphere"/hex à mão.
-     */
-    private fun addFieldRow(
-        parent: LinearLayout, component: String, path: String,
-        typeName: String, value: String, kind: String, options: String
-    ) {
-        when (kind) {
-            "bool" -> {
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                row.addView(
-                    labelView(prettyFieldLabel(path)),
-                    LinearLayout.LayoutParams(0, dp(44), 1f)
-                )
-                val sw = Switch(this).apply {
-                    isChecked = value == "true"
-                    setTextColor(Ui.TEXT)
-                    setOnCheckedChangeListener { _, checked ->
-                        setFieldQuiet(component, path, if (checked) "true" else "false")
-                    }
-                }
-                row.addView(sw, LinearLayout.LayoutParams(dp(84), dp(44)))
-                parent.addView(row)
-                return
-            }
-            "enum" -> {
-                val choices = options.split('|').filter { it.isNotEmpty() }
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                row.addView(
-                    labelView(prettyFieldLabel(path)),
-                    LinearLayout.LayoutParams(0, dp(44), 0.9f)
-                )
-                val current = TextView(this).apply {
-                    text = value
-                    setTextColor(Ui.ACCENT)
-                    setPadding(dp(8), dp(12), dp(8), dp(12))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                    setOnClickListener {
-                        AlertDialog.Builder(this@EditorActivity)
-                            .setTitle(prettyFieldLabel(path))
-                            .setSingleChoiceItems(
-                                choices.toTypedArray(),
-                                choices.indexOf(value)
-                            ) { dialog, which ->
-                                setFieldQuiet(component, path, choices[which])
-                                dialog.dismiss()
-                                refreshInspector()
-                            }
-                            .setNegativeButton("Cancelar", null)
-                            .show()
-                    }
-                }
-                // P4.2 (B-B): registrado p/ sync diferencial (valor in-place).
-                inspectorValueViews["$component\u0001$path"] = Pair(current, "")
-                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1.1f))
-                parent.addView(row)
-                return
-            }
-            "color" -> {
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                row.addView(
-                    labelView(prettyFieldLabel(path)),
-                    LinearLayout.LayoutParams(0, dp(44), 0.9f)
-                )
-                val initial = parseHexColor(value) ?: 0xFFFFFFFF.toInt()
-                val swatch = TextView(this).apply {
-                    text = value
-                    setTextColor(Ui.TEXT)
-                    textSize = 12f
-                    gravity = Gravity.CENTER_VERTICAL or Gravity.END
-                    setPadding(dp(12), dp(6), dp(12), dp(6))
-                    background = rippleBox(initial and 0xFFFFFF or 0xFF000000.toInt(), dp(6))
-                    setOnClickListener {
-                        colorPickerDialog(component, path, value, initial) { hex, argb ->
-                            background = rippleBox(argb, dp(6))
-                            text = hex
-                        }
-                    }
-                }
-                row.addView(swatch, LinearLayout.LayoutParams(0, dp(44), 1.1f))
-                parent.addView(row)
-                return
-            }
-            "texture" -> {
-                parent.addView(labelView(prettyFieldLabel(path)))
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                val current = TextView(this).apply {
-                    text = value.ifEmpty { "(nenhuma)" }
-                    setTextColor(0xFF8AB4F8.toInt())
-                    setPadding(dp(8), dp(12), dp(8), dp(12))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                }
-                // P4.2 (B-B): registrado p/ sync diferencial.
-                inspectorValueViews["$component\u0001$path"] = Pair(current, "(nenhuma)")
-                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
-                row.addView(
-                    Button(this).apply {
-                        text = "Escolher…"
-                        minHeight = 0
-                        setPadding(dp(10), 0, dp(10), 0)
-                        height = dp(36)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                        isAllCaps = false
-                        setTextColor(Ui.TEXT)
-                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
-                        setOnClickListener {
-                            pickTextureFor(component, path) { chosen ->
-                                current.text = chosen.ifEmpty { "(nenhuma)" }
-                            }
-                        }
-                    },
-                    LinearLayout.LayoutParams(0, dp(36), 0.8f)
-                )
-                parent.addView(row)
-                return
-            }
-            "audio" -> {
-                // P2 (§12): AudioSource.soundAsset — picker de WAVs do projeto
-                // + preview que toca AGORA (mesma via do Play: mixer real).
-                parent.addView(labelView(prettyFieldLabel(path)))
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                val current = TextView(this).apply {
-                    text = value.ifEmpty { "(nenhum)" }
-                    setTextColor(0xFF8AB4F8.toInt())
-                    setPadding(dp(8), dp(12), dp(8), dp(12))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                }
-                // P4.2 (B-B): registrado p/ sync diferencial.
-                inspectorValueViews["$component\u0001$path"] = Pair(current, "(nenhum)")
-                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
-                row.addView(
-                    Button(this).apply {
-                        // P4.3 (N1): TOGGLE — 2º toque para (label muda com o
-                        // estado real do mixer nativo).
-                        text = if (EditorJni.nativeEditorAudioPreviewPlaying(
-                                    handle)
-                            ) "■ Parar" else "▶ Ouvir"
-                        minHeight = 0
-                        setPadding(dp(10), 0, dp(10), 0)
-                        height = dp(36)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                        isAllCaps = false
-                        setTextColor(Ui.TEXT)
-                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
-                        setOnClickListener {
-                            if (value.isNotBlank()) {
-                                // N1: não estava a tocar e não passou a tocar
-                                // = start falhou → erro explícito (o stop
-                                // intencional não é erro).
-                                val wasPlaying =
-                                    EditorJni.nativeEditorAudioPreviewPlaying(handle)
-                                val nowPlaying = toggleAudioPreview(value)
-                                text = if (nowPlaying) "■ Parar" else "▶ Ouvir"
-                                if (!wasPlaying && !nowPlaying) {
-                                    toast(lastErrorText())
-                                }
-                            }
-                        }
-                    },
-                    LinearLayout.LayoutParams(0, dp(36), 0.6f)
-                )
-                row.addView(
-                    Button(this).apply {
-                        text = "Escolher…"
-                        minHeight = 0
-                        setPadding(dp(10), 0, dp(10), 0)
-                        height = dp(36)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                        isAllCaps = false
-                        setTextColor(Ui.TEXT)
-                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
-                        setOnClickListener {
-                            pickAudioFor(component, path) { chosen ->
-                                current.text = chosen.ifEmpty { "(nenhum)" }
-                            }
-                        }
-                    },
-                    LinearLayout.LayoutParams(0, dp(36), 0.8f)
-                )
-                parent.addView(row)
-                return
-            }
-            "material" -> {
-                // P3 §3: SpriteData.materialAsset — picker de materiais do
-                // projeto (vazio = default lit neutro).
-                parent.addView(labelView(prettyFieldLabel(path)))
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                val current = TextView(this).apply {
-                    text = value.ifEmpty { "(default lit)" }
-                    setTextColor(0xFF8AB4F8.toInt())
-                    setPadding(dp(8), dp(12), dp(8), dp(12))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                }
-                // P4.2 (B-B): registrado p/ sync diferencial.
-                inspectorValueViews["$component\u0001$path"] = Pair(current, "(default lit)")
-                row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
-                row.addView(
-                    Button(this).apply {
-                        text = "Escolher…"
-                        minHeight = 0
-                        setPadding(dp(10), 0, dp(10), 0)
-                        height = dp(36)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                        isAllCaps = false
-                        setTextColor(Ui.TEXT)
-                        background = rippleBox(Ui.SURFACE_ALT, dp(6))
-                        setOnClickListener {
-                            pickMaterialFor(component, path) { chosen ->
-                                current.text = chosen.ifEmpty { "(default lit)" }
-                            }
-                        }
-                    },
-                    LinearLayout.LayoutParams(0, dp(36), 0.8f)
-                )
-                parent.addView(row)
-                return
-            }
-        }
-
-        // number/int/text → EditText (numérico quando aplicável).
-        val numeric = kind == "number" || kind == "int"
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(
-            labelView(prettyFieldLabel(path)),
-            LinearLayout.LayoutParams(0, dp(44), 0.7f)
-        )
-        val edit = EditText(this).apply {
-            setSingleLine()
-            inputType = if (numeric) {
-                InputType.TYPE_CLASS_NUMBER or
-                    InputType.TYPE_NUMBER_FLAG_SIGNED or
-                    InputType.TYPE_NUMBER_FLAG_DECIMAL
-            } else {
-                InputType.TYPE_CLASS_TEXT
-            }
-            setText(value)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(Ui.TEXT)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
-                    setFieldQuiet(component, path, text.toString())
-                    true
-                } else false
-            }
-        }
-        // P4.2 (B-B): EditText registrado p/ sync diferencial — o mesmo
-        // campo é ATUALIZADO (sem foco) em vez de recriado a cada refresh.
-        inspectorTextFields["$component\u0001$path"] = edit
-        row.addView(
-            edit,
-            LinearLayout.LayoutParams(0, dp(44), 1.3f)
-        )
-        parent.addView(row)
-    }
-
-    /**
-     * Editor de cor REAL (P0-6): sliders R/G/B (+A quando o grupo tem 4
-     * canais) com preview ao vivo + hex — nativo, sem dependências.
-     */
-    private fun colorPickerDialog(
-        component: String, path: String, initialHex: String, initialArgb: Int,
-        onApplied: (String, Int) -> Unit
-    ) {
-        val hasAlpha = initialHex.length == 9
-        var r = (initialArgb shr 16) and 0xFF
-        var g = (initialArgb shr 8) and 0xFF
-        var b = initialArgb and 0xFF
-        var a = (initialArgb shr 24) and 0xFF
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(4))
-        }
-        val preview = TextView(this).apply {
-            text = initialHex
-            setTextColor(Ui.TEXT)
-            gravity = Gravity.CENTER
-            textSize = 14f
-            height = dp(56)
-        }
-        container.addView(preview)
-
-        fun currentArgb(): Int =
-            (if (hasAlpha) (a shl 24) else 0xFF shl 24) or (r shl 16) or (g shl 8) or b
-
-        fun currentHex(): String = String.format(
-            if (hasAlpha) "#%02X%02X%02X%02X" else "#%02X%02X%02X",
-            r, g, b, a
-        )
-
-        fun refresh() {
-            preview.text = currentHex()
-            preview.setBackgroundColor(currentArgb())
-            preview.setTextColor(
-                if (r * 299 + g * 587 + b * 114 < 128 * 1000)
-                    0xFFFFFFFF.toInt() else 0xFF000000.toInt()
-            )
-        }
-
-        fun slider(label: String, init: Int, on: (Int) -> Unit): LinearLayout {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(
-                TextView(this).apply {
-                    text = label
-                    setTextColor(Ui.TEXT_DIM)
-                    width = dp(28)
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
-            row.addView(
-                SeekBar(this).apply {
-                    max = 255
-                    progress = init
-                    setOnSeekBarChangeListener(
-                        object : SeekBar.OnSeekBarChangeListener {
-                            override fun onProgressChanged(
-                                s: SeekBar?, p: Int, fromUser: Boolean
-                            ) { on(p); refresh() }
-
-                            override fun onStartTrackingTouch(s: SeekBar?) {}
-                            override fun onStopTrackingTouch(s: SeekBar?) {}
-                        }
-                    )
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
-            return row
-        }
-
-        container.addView(slider("R", r) { r = it })
-        container.addView(slider("G", g) { g = it })
-        container.addView(slider("B", b) { b = it })
-        if (hasAlpha) {
-            container.addView(slider("A", a) { a = it })
-        }
-        refresh()
-
-        AlertDialog.Builder(this)
-            .setTitle(prettyFieldLabel(path))
-            .setView(container)
-            .setPositiveButton("OK") { _, _ ->
-                val hex = currentHex()
-                setFieldQuiet(component, path, hex)
-                onApplied(hex, currentArgb())
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    /** kind="material" — picker dos assets/materials (P3 §3). */
-    private fun pickMaterialFor(
-        component: String, path: String, onApplied: (String) -> Unit
-    ) {
-        val tsv = EditorJni.nativeEditorListMaterials(handle)
-        val names = (tsv ?: "").lines().filter { it.isNotBlank() }
-        val options = mutableListOf<String>()
-        options.add("")  // (default lit neutro)
-        options.addAll(names)
-        val labels = options.map { it.ifEmpty { "(default lit)" } }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Material do sprite")
-            .setItems(labels) { _, which ->
-                setFieldQuiet(component, path, options[which])
-                onApplied(options[which])
-            }
-            .setNeutralButton("Novo…") { _, _ ->
-                inputDialog("Nome do material", "NovoMaterial") { name ->
-                    if (EditorJni.nativeEditorMaterialCreate(handle, name)) {
-                        toast("Material '$name' criado (edite em Assets)")
-                        setFieldQuiet(component, path, "${name}.mat.json")
-                        onApplied("${name}.mat.json")
-                    } else toast(lastErrorText())
-                }
-            }
-            .show()
-    }
-
-    /** Edição de material (Assets → materials, long-press): shader + cor.
-     *  Escreve via materialWrite (valida no codec — lixo não entra). */
-    private fun editMaterialDialog(name: String) {
-        val json = EditorJni.nativeEditorMaterialRead(handle, name)
-        if (json == null) {
-            toast(lastErrorText())
-            return
-        }
-        // Estado atual (parse leve do JSON estável do codec).
-        var shader = "lit"
-        var tintR = 1f; var tintG = 1f; var tintB = 1f; var tintA = 1f
-        Regex("\"shader\"\\s*:\\s*\"([^\"]+)\"").find(json)?.let {
-            shader = it.groupValues[1]
-        }
-        Regex("\"tint\"\\s*:\\s*\\[([\\d.eE+-]+),\\s*([\\d.eE+-]+),\\s*([\\d.eE+-]+),\\s*([\\d.eE+-]+)\\]").find(json)?.let {
-            tintR = it.groupValues[1].toFloatOrNull() ?: 1f
-            tintG = it.groupValues[2].toFloatOrNull() ?: 1f
-            tintB = it.groupValues[3].toFloatOrNull() ?: 1f
-            tintA = it.groupValues[4].toFloatOrNull() ?: 1f
-        }
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(8))
-        }
-        val shaderLabel = TextView(this).apply {
-            text = "Shader: ${if (shader == "unlit") "unlit" else "lit"}"
-            setTextColor(Ui.TEXT)
-            setPadding(0, dp(4), 0, dp(8))
-        }
-        val alphaEdit = EditText(this).apply {
-            setSingleLine()
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER or
-                android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-            setText(String.format("%.2f", tintA))
-            hint = "Alfa do tint (0-1)"
-        }
-        layout.addView(shaderLabel)
-        layout.addView(alphaEdit)
-        AlertDialog.Builder(this)
-            .setTitle("Material $name")
-            .setView(layout)
-            .setPositiveButton("Salvar") { _, _ ->
-                val newAlpha = alphaEdit.text.toString().toFloatOrNull()
-                if (newAlpha != null && newAlpha >= 0f && newAlpha <= 1f) {
-                    tintA = newAlpha
-                }
-                // Escreve pelo CAMINHO NATIVO (a cor chega via swatch = JSON):
-                val newJson = "{" +
-                    "\"name\": \"${name.removeSuffix(".mat.json")}\", " +
-                    "\"shader\": \"$shader\", " +
-                    "\"tint\": [${fmtFloat(tintR)}, ${fmtFloat(tintG)}, " +
-                    "${fmtFloat(tintB)}, ${fmtFloat(tintA)}]}"
-                if (EditorJni.nativeEditorMaterialWrite(handle, name, newJson)) {
-                    toast("Material salvo")
-                    refreshAssets()
-                } else toast(lastErrorText())
-            }
-            .setNeutralButton("Shader") { _, _ ->
-                // Alterna lit/unlit e REABRE o diálogo (fluxo simples).
-                val toggled = if (shader == "lit") "unlit" else "lit"
-                val newJson = "{" +
-                    "\"name\": \"${name.removeSuffix(".mat.json")}\", " +
-                    "\"shader\": \"$toggled\", " +
-                    "\"tint\": [${fmtFloat(tintR)}, ${fmtFloat(tintG)}, " +
-                    "${fmtFloat(tintB)}, ${fmtFloat(tintA)}]}"
-                if (EditorJni.nativeEditorMaterialWrite(handle, name, newJson)) {
-                    toast("Shader: $toggled")
-                    refreshAssets()
-                    editMaterialDialog(name)
-                } else toast(lastErrorText())
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    /**
-     * Picker de textura COM THUMBNAILS (P0-6): lista os assets de textura do
-     * projeto com preview real e atribui no campo genérico (qualquer campo
-     * kind="texture" — não apenas SpriteData.textureAsset).
-     */
-    private fun pickTextureFor(
-        component: String, path: String, onApplied: (String) -> Unit
-    ) {
-        val tsv = EditorJni.nativeEditorListTextures(handle) ?: return
-        val names = tsv.lines().filter { it.isNotBlank() }
-        if (names.isEmpty()) {
-            toast("Nenhuma textura importada (Assets → textures → Importar)")
-            return
-        }
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val scroll = ScrollView(this).apply { addView(list) }
-        var picker: AlertDialog? = null
-        for (name in names) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(6), dp(12), dp(6))
-                background = rippleBox(Ui.SURFACE_ALT, dp(6))
-                setOnClickListener {
-                    setFieldQuiet(component, path, name)
-                    onApplied(name)
-                    picker?.dismiss()
-                }
-            }
-            thumbnailOf("textures", name)?.let { bmp ->
-                row.addView(
-                    ImageView(this).apply {
-                        setImageBitmap(bmp)
-                        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                        background = rippleBox(Ui.BORDER, dp(4))
-                        clipToOutline = true
-                    },
-                    LinearLayout.LayoutParams(dp(44), dp(44))
-                )
-                row.addView(
-                    Space(this),
-                    LinearLayout.LayoutParams(dp(10), dp(1))
-                )
-            }
-            row.addView(
-                TextView(this).apply {
-                    text = name
-                    setTextColor(Ui.TEXT)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            )
-            list.addView(
-                row,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
-        }
-        picker = AlertDialog.Builder(this)
-            .setTitle("Textura")
-            .setView(scroll)
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    /** Picker de áudio (P2 §12): WAVs de assets/audio — mesma forma do
-     * picker de texturas (sem thumbnail: áudio não é imagem). */
-    private fun pickAudioFor(
-        component: String, path: String, onApplied: (String) -> Unit
-    ) {
-        val tsv = EditorJni.nativeEditorListAudio(handle) ?: return
-        val names = tsv.lines().filter { it.isNotBlank() }
-        if (names.isEmpty()) {
-            toast("Nenhum áudio importado (Assets → audio → Importar)")
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Áudio")
-            .setItems(names.toTypedArray()) { _, which ->
-                setFieldQuiet(component, path, names[which])
-                onApplied(names[which])
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    // --- thumbnails (P0-6): decode com inSampleSize + cache em memória ---------
-
-    private val thumbCache = HashMap<String, android.graphics.Bitmap>()
-
-    /** Bitmap reduzido do asset (textures) para linhas/pickers — null se não
-     * é imagem decodificável. Cache por nome (chave: categoria/nome). */
-    private fun thumbnailOf(category: String, name: String): android.graphics.Bitmap? {
-        val key = "$category/$name"
-        thumbCache[key]?.let { return it }
-        val project = EditorJni.nativeEditorProjectName(handle) ?: return null
-        val file = File(File(File(filesDir, "projects"), project),
-                        "assets/$category/$name")
-        if (!file.isFile) return null
-        // 1ª passada: só dimensões.
-        val bounds = android.graphics.BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-        }
-        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        // inSampleSize: maior potência de 2 que ainda cabe em 96px.
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= 96 &&
-               bounds.outHeight / (sample * 2) >= 96) {
-            sample *= 2
-        }
-        val opts = android.graphics.BitmapFactory.Options().apply {
-            inSampleSize = sample
-        }
-        val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
-            ?: return null
-        thumbCache[key] = bmp
-        return bmp
-    }
-
-    private fun fmtFloat(v: Float): String =
+    internal fun fmtFloat(v: Float): String =
         if (v == v.toLong().toFloat() && kotlin.math.abs(v) < 1e6f) {
             v.toLong().toString()
         } else {
             String.format("%.3f", v)
         }
 
-    private fun currentEntityName(packed: Long): String {
+    internal fun currentEntityName(packed: Long): String {
         val tsv = EditorJni.nativeEditorHierarchy(handle) ?: return ""
         for (line in tsv.lines()) {
             val parts = line.split('\t')
@@ -2471,820 +979,39 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         return ""
     }
 
-    private fun toast(text: String) {
-        Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
-    }
+    // --- P4.5: toasts pill (§2) com severidade -----------------------------------
 
-    private fun lastErrorText(): String =
-        EditorJni.nativeEditorLastError(handle) ?: "operação falhou"
+    internal fun toast(text: String) = OniToast.show(this, text, Oni.TOAST_INFO)
+    internal fun toastOk(text: String) = OniToast.show(this, text, Oni.TOAST_OK)
+    internal fun toastErr(text: String) = OniToast.show(this, text, Oni.TOAST_ERR)
 
-    // --- diálogos ------------------------------------------------------------------
-
-    private fun inputDialog(
+    /** Input 1 campo (padrão dos "Novo…" — agora OniDialog). */
+    internal fun inputDialog(
         title: String, initial: String, onOk: (String) -> Unit
     ) {
-        val input = EditText(this).apply {
-            setSingleLine()
-            setText(initial)
-        }
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(input)
-            .setPositiveButton("OK") { _, _ -> onOk(input.text.toString()) }
-            .setNegativeButton("Cancelar", null)
-            .show()
+        OniDialog.input(this, title, initial, onOk = onOk)
     }
 
-    /**
-     * Startup do projeto (P3 §0 — bug Android "AlreadyExists").
-     *
-     * CAUSA RAIZ do bug: hasProject() (estado EM MEMÓRIA) era usado como
-     * detector de "primeira execução" — num processo novo ele é SEMPRE
-     * false, então toda reentrada chamava newProject("MeuJogo") sobre o
-     * projeto que JÁ EXISTIA no disco (AlreadyExists + editor sem
-     * projeto). A política correta (criar quando não há NENHUM projeto /
-     * reabrir o último usado / default / primeiro) vive no C++ e é
-     * testada no Linux; aqui só reportamos o erro controlado.
-     */
-    private fun ensureProjectOnFirstRun() {
-        val opened = EditorJni.nativeEditorEnsureProject(handle)
-        if (opened == null) {
-            toast(lastErrorText())
-        }
-    }
-
-    private fun showProjectMenu() {
-        val items = arrayOf(
-            "Configurações do projeto…",
-            "Novo projeto…", "Abrir projeto…", "Salvar projeto",
-            "Pasta de exportação (SAF)…", "Exportar projeto (zip)…",
-            "Importar projeto (zip)…", "Diagnóstico (logcat)",
-            "Exportar diagnóstico (arquivos)…"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Projeto")
-            .setItems(items) { _, which ->
-                when (which) {
-                    // P4.1 (T4/D8): PRIMEIRO item e sheet REAL (nome,
-                    // camadas, timestep de física, estado do backend de
-                    // áudio) — o botão ☰ abria "criar novo" e as
-                    // "configurações" eram só renomear (D8).
-                    0 -> showProjectSettingsSheet()
-                    1 -> inputDialog("Nome do novo projeto", "NovoJogo") { name ->
-                        if (EditorJni.nativeEditorNewProject(handle, name)) {
-                            EditorJni.nativeEditorNewScene(handle)
-                            refreshAll()
-                        } else toast(lastErrorText())
-                    }
-                    2 -> openProjectDialog()
-                    3 -> if (EditorJni.nativeEditorSaveProject(handle)) {
-                        // P4.2 (B-A): "Salvar projeto" persiste PROJETO + CENA
-                        // (a cena vai em scenes/<path>; marker .goni_last_scene
-                        // garante o restore no reload).
-                        toast("Projeto + cena salvos")
-                    } else {
-                        toast(lastErrorText())
-                    }
-                    // P2 §17 — SAF: pasta de exportação com permissão
-                    // PERSISTENTE (takePersistableUriPermission) + zip real
-                    // de ida e volta. O projeto VIVE no workspace privado
-                    // (sem permissões, zero risco); o SAF é o canal de
-                    // intercâmbio com o armazenamento do usuário.
-                    4 -> pickSafFolder()
-                    5 -> exportProjectZip()
-                    6 -> importProjectZip()
-                    // P3 §0 — diagnóstico: estado completo no logcat
-                    // [GONI] (operação/projeto/caminho/backend/frames). Se
-                    // o app fechar de novo, `adb logcat -s GONI` mostra a
-                    // ÚLTIMA operação viva antes da morte.
-                    7 -> {
-                        EditorJni.nativeEditorDumpState(handle, "menu-projeto")
-                        toast("Estado gravado no logcat (tag GONI)")
-                    }
-                    // P3.1 (FASE 6): exporta goni_startup.log + goni_crash.log
-                    // SEM depender de logcat — fluxo de arquivos do usuário.
-                    8 -> exportDiagnosticsZip()
-                }
-            }
-            .show()
-    }
-
-    /**
-     * P4.1 (T4/D8) — CONFIGURAÇÕES REAIS do projeto (a entrada antiga era
-     * só um renomear disfarçado): nome editável, camadas da cena, timestep
-     * da física e estado do backend de áudio (honesto — D6). Tudo que o
-     * sheet mostra é REAL: camadas vêm da cena (LayerSystem), o timestep é
-     * o do PhysicsWorld, o áudio é o backend vivo do host.
-     */
-    private fun showProjectSettingsSheet() {
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(8))
-        }
-        val nameField = EditText(this).apply {
-            setSingleLine()
-            setText(EditorJni.nativeEditorProjectName(handle) ?: "")
-            hint = "Nome do projeto"
-        }
-        content.addView(sectionTitle("Nome do projeto"))
-        content.addView(nameField)
-
-        // Camadas (LayerSystem da cena): nome + participação em render.
-        content.addView(sectionTitle("Camadas da cena"))
-        val layersText = TextView(this).apply {
-            setTextColor(Ui.TEXT)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            text = "Carregando…"
-        }
-        content.addView(layersText)
-
-        // Timestep da física + estado do áudio: valores reais do runtime.
-        content.addView(sectionTitle("Física e áudio"))
-        val runtimeText = TextView(this).apply {
-            setTextColor(Ui.TEXT)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        }
-        content.addView(runtimeText)
-
-        AlertDialog.Builder(this)
-            .setTitle("Configurações do projeto")
-            .setView(content)
-            .setPositiveButton("Salvar nome") { _, _ ->
-                val newName = nameField.text.toString().trim()
-                if (newName.isNotEmpty() &&
-                    !EditorJni.nativeEditorSetProjectName(handle, newName)) {
-                    toast(lastErrorText())
-                } else if (newName.isNotEmpty()) {
-                    refreshAll()
-                }
-            }
-            .setNegativeButton("Fechar", null)
-            .show()
-
-        // Camadas + runtime: preenchidos com os valores VIVOS (o JNI corre
-        // na mesma UI thread — sem trabalho de fundo necessário).
-        layersText.text = "· GAME (padrão — render + física)"
-        runtimeText.text = "Física: timestep fixo 1/60 s (acumulador)\n" +
-            "Áudio: ${EditorJni.nativeEditorAudioStatus(handle) ?: "off"}"
-    }
-
-    // --- SAF (P2 §17): armazenamento do usuário COM permissão persistente ------
-    //
-    // Modelo documentado: os PROJETOS vivem no workspace privado
-    // (filesDir/projects — sem permissões, nunca "assume acesso
-    // irrestrito", paths sempre relativos — RootedFileSystem na
-    // fronteira). O SAF dá ao AUTOR o canal de intercâmbio:
-    //   - Pasta de exportação: ACTION_OPEN_DOCUMENT_TREE +
-    //     takePersistableUriPermission (sobrevive a reboots — o Android
-    //     MANTÉM o grant; guardamos o URI em prefs, NÃO um path absoluto
-    //     de arquivo);
-    //   - Exportar: zip REAL do projeto escrito via ContentResolver;
-    //   - Importar: zip lido via ContentResolver para o workspace.
-
-    private val safPrefs by lazy {
-        getSharedPreferences("goni_saf", Context.MODE_PRIVATE)
-    }
-
-    // Requests de SAF (dispatch no onActivityResult ÚNICO, abaixo).
-    private val reqSafFolder = 4101
-    private val reqSafExport = 4102
-    private val reqSafImport = 4103
-    private val reqSafDiag = 4104
-
-    /** Dispatch SAF (chamado pelo onActivityResult ÚNICO da Activity). */
-    private fun handleSafResult(requestCode: Int, resultCode: Int, uri: Uri?) {
-        if (resultCode != RESULT_OK || uri == null) return
-        when (requestCode) {
-            reqSafFolder -> {
-                // Permissão PERSISTENTE: o grant sobrevive a restarts —
-                // o mecanismo do Android (não um path absoluto salvocrado).
-                try {
-                    contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                    safPrefs.edit().putString("export_tree", uri.toString()).apply()
-                    toast("Pasta de exportação autorizada (permissão persistente)")
-                } catch (e: SecurityException) {
-                    toast("Sem permissão persistível: ${e.message}")
-                }
-            }
-            reqSafExport -> writeProjectZipTo(uri)
-            reqSafImport -> importProjectZipFrom(uri)
-            reqSafDiag -> writeDiagnosticsZipTo(uri)
-        }
-    }
-
-    private fun pickSafFolder() {
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), reqSafFolder)
-    }
-
-    // --- P3.1 (FASE 6): diagnóstico exportável SEM logcat -------------------
-    //
-    // Rota alternativa para quando o editor NEM CHEGA a abrir: o crash
-    // handler persiste a evidência; na PRÓXIMA abertura este diálogo
-    // oferece o export ANTES de qualquer carga pesa.
-
-    private fun maybeOfferCrashExport() {
-        if (!EditorJni.nativeStartupHasCrashReport()) return
-        AlertDialog.Builder(this)
-            .setTitle("Crash anterior detectado")
-            .setMessage(
-                "A execução anterior terminou em crash nativo.\n" +
-                "Exportar o diagnóstico (startup + crash) agora?"
-            )
-            .setPositiveButton("Exportar") { _, _ -> exportDiagnosticsZip() }
-            .setNegativeButton("Agora não", null)
-            .show()
-    }
-
-    private fun exportDiagnosticsZip() {
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
-            putExtra(Intent.EXTRA_TITLE, "goni-diagnostics.zip")
-        }
-        startActivityForResult(intent, reqSafDiag)
-    }
-
-    private fun writeDiagnosticsZipTo(uri: Uri) {
-        try {
-            contentResolver.openOutputStream(uri)?.use { out ->
-                ZipOutputStream(out).use { zip ->
-                    for (name in listOf("goni_startup.log", "goni_crash.log")) {
-                        val f = File(filesDir, name)
-                        if (!f.exists()) continue
-                        zip.putNextEntry(ZipEntry(name))
-                        f.inputStream().use { it.copyTo(zip) }
-                        zip.closeEntry()
-                    }
-                }
-            }
-            toast("Diagnóstico exportado")
-        } catch (e: Exception) {
-            toast("Falha ao exportar: ${e.message}")
-        }
-    }
-
-    private fun exportProjectZip() {
-        val project = EditorJni.nativeEditorProjectName(handle)
-        if (project.isNullOrEmpty()) {
-            toast("Nenhum projeto aberto")
-            return
-        }
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
-            putExtra(Intent.EXTRA_TITLE, "$project.goni.zip")
-        }
-        startActivityForResult(intent, reqSafExport)
-    }
-
-    /** Zip REAL do projeto (P4.2/B-A): o C++ (ProjectZip — testável no
-     *  Linux) escreve .goni_export.zip no workspace com as entradas
-     *  EMBRULHADAS na pasta real do projeto; o Kotlin só copia para o
-     *  SAF. O zip antigo (java.util.zip, sem wrapper) fazia o import
-     *  derivar nome de projeto da ÚLTIMA entrada — lixo no workspace. */
-    private fun writeProjectZipTo(uri: Uri) {
-        val project = EditorJni.nativeEditorProjectName(handle) ?: return
-        val exportFile = File(File(filesDir, "projects"), ".goni_export.zip")
-        try {
-            if (!EditorJni.nativeEditorExportProjectZip(handle, ".goni_export.zip")) {
-                toast(lastErrorText())
-                return
-            }
-            contentResolver.openOutputStream(uri)?.use { out ->
-                exportFile.inputStream().use { it.copyTo(out) }
-            }
-            toast("Projeto '$project' exportado")
-        } catch (e: Exception) {
-            toast("Export falhou: ${e.message}")
-        } finally {
-            exportFile.delete()
-        }
-    }
-
-    private fun importProjectZip() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/octet-stream"))
-        }
-        startActivityForResult(intent, reqSafImport)
-    }
-
-    /** Importa o zip PARA O WORKSPACE (privado) e ABRE o projeto
-     *  (P4.2/B-A): extração + anti-traversal no C++ (ProjectZip); a pasta
-     *  vem do WRAPPER do zip (ou do nome do arquivo). SEM newScene — o
-     *  openProject restaura a última cena via marker; o newScene que
-     *  existia aqui APAGAVA a cena recém-importada. */
-    private fun importProjectZipFrom(uri: Uri) {
-        val importFile = File(File(filesDir, "projects"), ".goni_import.zip")
-        try {
-            contentResolver.openInputStream(uri)?.use { input ->
-                importFile.outputStream().use { output -> input.copyTo(output) }
-            } ?: run {
-                toast("Não foi possível ler o arquivo")
-                return
-            }
-            val suggested = (uri.lastPathSegment?.substringAfterLast('/')
-                ?: "").removeSuffix(".zip").ifEmpty { "Importado" }
-            val folder = EditorJni.nativeEditorImportProjectZip(
-                handle, ".goni_import.zip", suggested
-            )
-            if (folder == null) {
-                toast(lastErrorText())
-                return
-            }
-            if (EditorJni.nativeEditorOpenProject(handle, folder)) {
-                refreshAll()
-                toast("Projeto '$folder' importado e aberto")
-            } else {
-                toast(lastErrorText())
-            }
-        } catch (e: Exception) {
-            toast("Import falhou: ${e.message}")
-        } finally {
-            importFile.delete()
-        }
-    }
-
-    private fun openProjectDialog() {
-        val workspace = File(filesDir, "projects")
-        // Diretórios ocultos (ex.: .import_tmp — staging do SAF) não são
-        // projetos: o seletor lista apenas pastas reais de projeto.
-        val projects = workspace.listFiles()
-            ?.filter { it.isDirectory && !it.name.startsWith(".") } ?: emptyList()
-        if (projects.isEmpty()) {
-            toast("Nenhum projeto em ${workspace.name}")
-            return
-        }
-        val names = projects.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Abrir projeto")
-            .setItems(names) { _, which ->
-                val name = names[which]
-                if (EditorJni.nativeEditorOpenProject(handle, name)) {
-                    // P4.2 (B-A): SEM newScene aqui — openProject restaura a
-                    // ÚLTIMA CENA do projeto (.goni_last_scene); o newScene
-                    // que existia nesta linha APAGAVA a cena recém-carregada
-                    // ("salvei, reabri e o projeto aparece vazio").
-                    refreshAll()
-                } else {
-                    toast(lastErrorText())
-                }
-            }
-            .show()
-    }
-
-    private fun showSceneMenu() {
-        val items = arrayOf("Nova cena", "Salvar cena…", "Carregar cena…")
-        AlertDialog.Builder(this)
-            .setTitle("Cena")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> EditorJni.nativeEditorNewScene(handle).also {
-                        selection = 0L; refreshPanel()
-                    }
-                    1 -> inputDialog("Salvar cena em (relativo)", "main.json") { path ->
-                        if (!EditorJni.nativeEditorSaveScene(handle, path)) {
-                            toast(lastErrorText())
-                        }
-                    }
-                    2 -> loadSceneDialog()
-                }
-            }
-            .show()
-    }
-
-    private fun loadSceneDialog() {
-        // Cenas vivem em <workspace>/<PASTA-do-projeto>/scenes (§8.1 —
-        // scenesRoot do projeto). P4.2 (B-A): o nome da PASTA vem do
-        // documento (config.name pode ter sido renomeado sem rename da
-        // pasta — usar config listava a pasta ERRADA: "Nenhuma cena salva").
-        val project = EditorJni.nativeEditorProjectFolder(handle)
-        if (project.isNullOrEmpty()) {
-            toast("Nenhum projeto aberto")
-            return
-        }
-        val scenesRoot = File(File(File(filesDir, "projects"), project), "scenes")
-        val files = scenesRoot.listFiles()?.filter { it.isFile } ?: emptyList()
-        if (files.isEmpty()) {
-            toast("Nenhuma cena salva em ${project}/scenes")
-            return
-        }
-        val names = files.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Carregar cena")
-            .setItems(names) { _, which ->
-                if (EditorJni.nativeEditorLoadScene(handle, names[which])) {
-                    selection = 0L
-                    refreshPanel()
-                } else {
-                    toast(lastErrorText())
-                }
-            }
-            .show()
-    }
-
-    private fun createEntityDialog() {
-        inputDialog("Nome da entidade", "Entity") { name ->
-            val parent = 0L // raiz (reparent pelo menu de contexto)
-            val packed = EditorJni.nativeEditorCreateEntity(handle, name, parent)
-            if (packed == 0L) {
-                toast(lastErrorText())
-            } else {
-                selectEntity(packed)
-            }
-        }
-    }
-
-    /** ADD → Sprite (P1.10): um toque = entidade com SpriteData default,
-     * selecionada. Sem textura → placeholder xadrez no viewport. */
-    private fun addSpriteDialog() {
-        inputDialog("Nome do sprite", "Sprite") { name ->
-            val packed = EditorJni.nativeEditorCreateSprite(handle, name)
-            if (packed == 0L) {
-                toast(lastErrorText())
-            } else {
-                selectEntity(packed)
-                toast("Sprite criado — importe uma imagem e escolha a textura no Inspector")
-            }
-        }
-    }
-
-    private fun entityMenuDialog(packed: Long) {
-        val items = arrayOf(
-            "Renomear…", "Duplicar", "Apagar", "Adicionar filho…", "Reparent…",
-            "＋ Luz 2D"
-        )
-        AlertDialog.Builder(this)
-            .setTitle(currentEntityName(packed))
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> inputDialog("Novo nome", currentEntityName(packed)) { name ->
-                        if (!EditorJni.nativeEditorRenameEntity(handle, packed, name)) {
-                            toast(lastErrorText())
-                        }
-                        refreshPanel()
-                    }
-                    1 -> {
-                        val dup = EditorJni.nativeEditorDuplicateEntity(handle, packed)
-                        if (dup == 0L) toast(lastErrorText()) else selectEntity(dup)
-                    }
-                    2 -> if (EditorJni.nativeEditorDeleteEntity(handle, packed)) {
-                        if (selection == packed) selection = 0L
-                        refreshPanel()
-                    } else {
-                        toast(lastErrorText())
-                    }
-                    3 -> inputDialog("Nome do filho", "Child") { name ->
-                        val child = EditorJni.nativeEditorCreateEntity(handle, name, packed)
-                        if (child == 0L) toast(lastErrorText()) else selectEntity(child)
-                    }
-                    4 -> reparentDialog(packed)
-                    5 -> {
-                        // P4.3 (Bloco 3): Light2D em 1 toque — o preview do
-                        // alcance aparece no viewport (anel âmbar); cor/
-                        // raio/falloff editáveis no Inspector.
-                        if (!EditorJni.nativeEditorAddComponent(
-                                handle, packed, "eng::render::Light2D")
-                        ) {
-                            toast(lastErrorText())
-                        } else {
-                            selectEntity(packed)
-                            toast("Luz 2D adicionada — veja o anel no viewport")
-                        }
-                    }
-                }
-            }
-            .show()
-    }
-
-    private fun reparentDialog(packed: Long) {
-        val tsv = EditorJni.nativeEditorHierarchy(handle) ?: return
-        val entries = tsv.lines().filter { it.isNotBlank() }
-        val names = entries.map { line ->
-            val p = line.split('\t')
-            val depth = p.getOrNull(0)?.toIntOrNull() ?: 0
-            "${" ".repeat(depth * 2)}${p.getOrNull(1) ?: "?"}"
-        }.toTypedArray()
-        val packedIds = entries.map { line ->
-            line.split('\t').getOrNull(2)?.toLongOrNull() ?: 0L
-        }.toLongArray()
-        AlertDialog.Builder(this)
-            .setTitle("Novo pai (raiz = primeiro item)")
-            .setItems(arrayOf("(raiz)") + names) { _, which ->
-                val newParent = if (which == 0) 0L else packedIds[which - 1]
-                if (!EditorJni.nativeEditorReparentEntity(handle, packed, newParent)) {
-                    toast(lastErrorText())
-                }
-                refreshPanel()
-            }
-            .show()
-    }
-
-    /** Adicionar componente COM BUSCA (P0-6): filtra o catálogo ao digitar. */
-    private fun addComponentDialog() {
-        // P2 (§2/§14): catálogo ADDÁVEL à entidade (sem os presentes/built-ins)
-        // + hint de dependência por tipo — o autor sabe o que falta ANTES de
-        // adicionar. Nada de componentes falsos: vem do registro REAL do
-        // serializer (Reflection → Inspector).
-        val tsv = if (selection != 0L) {
-            EditorJni.nativeEditorAddableComponents(handle, selection)
-        } else {
-            EditorJni.nativeEditorComponentCatalog(handle)
-        } ?: return
-        // TSV: name    dependencyHint.
-        val rawNames = tsv.lines().filter { it.isNotBlank() }
-            .map { it.split('\t').getOrNull(0) ?: "?" }
-        val hints = tsv.lines().filter { it.isNotBlank() }
-            .map { it.split('\t').getOrElse(1) { "" } }
-        val display = rawNames.mapIndexed { i, raw ->
-            val hint = hints.getOrNull(i)?.takeIf { it.isNotBlank() }
-            if (hint != null) "${prettyComponent(raw)} — $hint" else prettyComponent(raw)
-        }
-
-        val search = EditText(this).apply {
-            hint = "Buscar componente…"
-            setSingleLine()
-            setPadding(dp(16), dp(10), dp(16), dp(10))
-        }
-        val list = ListView(this)
-        val adapter = ArrayAdapter(
-            this, android.R.layout.simple_list_item_1, mutableListOf<String>()
-        )
-        list.adapter = adapter
-        var current: List<String> = rawNames
-        fun applyFilter(query: String) {
-            current = if (query.isBlank()) {
-                rawNames
-            } else {
-                rawNames.filterIndexed { i, raw ->
-                    raw.contains(query, ignoreCase = true) ||
-                        display[i].contains(query, ignoreCase = true)
-                }
-            }
-            adapter.clear()
-            adapter.addAll(current.map { n ->
-                val idx = rawNames.indexOf(n)
-                display.getOrElse(idx) { n }
-            })
-        }
-        applyFilter("")
-        search.addTextChangedListener(object : android.text.TextWatcher {
-            override fun afterTextChanged(s: android.text.Editable?) {
-                applyFilter(s?.toString() ?: "")
-            }
-            override fun beforeTextChanged(
-                s: CharSequence?, a: Int, b: Int, c: Int
-            ) {}
-            override fun onTextChanged(
-                s: CharSequence?, a: Int, b: Int, c: Int
-            ) {}
-        })
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(search)
-            addView(
-                list,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(300)
-                )
-            )
-        }
-        var dialog: AlertDialog? = null
-        list.setOnItemClickListener { _, _, which, _ ->
-            if (!EditorJni.nativeEditorAddComponent(handle, selection, current[which])) {
-                toast(lastErrorText())
-            }
-            dialog?.dismiss()
-            refreshPanel()
-        }
-        dialog = AlertDialog.Builder(this)
-            .setTitle("Adicionar componente")
-            .setView(container)
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun assetMenuDialog(asset: AssetEntry) {
-        val category = assetCategory.selectedItem?.toString() ?: ""
-        // P4.1 (T4/D7 — AUDITORIA DE UI MORTA): cada item tem um handler
-        // EXPLÍCITO (não índice compartilhado). O menu de áudio do D7
-        // mostrava 4 opções e o handler de 3 índices: "Ouvir" renomeava,
-        // "Apagar" era no-op. Zero UI morta: ou liga, ou não aparece.
-        val items = mutableListOf<String>()
-        val actions = mutableListOf<() -> Unit>()
-        when (category) {
-            "audio" -> {
-                items.add("▶ Ouvir / ■ Parar (preview)")
-                actions.add {
-                    // P4.3 (N1): TOGGLE — o 2º toque para a voice.
-                    val wasPlaying =
-                        EditorJni.nativeEditorAudioPreviewPlaying(handle)
-                    val nowPlaying = toggleAudioPreview(asset.name)
-                    when {
-                        nowPlaying -> toast("Preview: ${asset.name}")
-                        wasPlaying -> toast("Preview parado")
-                        else -> toast(lastErrorText())  // start falhou
-                    }
-                }
-                items.add("Renomear…")
-                actions.add { renameAssetDialog(asset, category) }
-                items.add("Mover para…")
-                actions.add { moveAssetDialog(asset) }
-                items.add("Apagar")
-                actions.add { deleteAssetDialog(asset, category) }
-            }
-            "materials" -> {
-                items.add("✎ Editar material…")
-                actions.add { editMaterialDialog(asset.name) }
-                items.add("Renomear…")
-                actions.add { renameAssetDialog(asset, category) }
-                items.add("Mover para…")
-                actions.add { moveAssetDialog(asset) }
-                items.add("Apagar")
-                actions.add {
-                    if (EditorJni.nativeEditorMaterialDelete(handle, asset.name)) {
-                        refreshAssets()
-                    } else {
-                        toast(lastErrorText())
-                    }
-                }
-            }
-            "scripts" -> {
-                items.add("✎ Abrir no editor de scripts…")
-                actions.add { scriptEditorDialog(asset.name) }
-                items.add("Renomear…")
-                actions.add { renameAssetDialog(asset, category) }
-                items.add("Mover para…")
-                actions.add { moveAssetDialog(asset) }
-                items.add("Apagar")
-                actions.add { deleteAssetDialog(asset, category) }
-            }
-            "textures" -> {
-                items.add("⬒ Aplicar no sprite selecionado")
-                actions.add { applyTextureToSelection(asset.name) }
-                items.add("Renomear…")
-                actions.add { renameAssetDialog(asset, category) }
-                items.add("Mover para…")
-                actions.add { moveAssetDialog(asset) }
-                items.add("Apagar")
-                actions.add { deleteAssetDialog(asset, category) }
-            }
-            else -> {
-                // Categorias sem operação específica: gerência básica
-                // (todas ligadas de verdade).
-                items.add("Renomear…")
-                actions.add { renameAssetDialog(asset, category) }
-                items.add("Mover para…")
-                actions.add { moveAssetDialog(asset) }
-                items.add("Apagar")
-                actions.add { deleteAssetDialog(asset, category) }
-            }
-        }
-        AlertDialog.Builder(this)
-            .setTitle(asset.name)
-            .setItems(items.toTypedArray()) { _, which ->
-                if (which in actions.indices) actions[which]()
-            }
-            .show()
-    }
-
-    /** P4.1 (D7): renomear asset — extraído (o menu antigo trocava os
-     * índices entre categorias: o defeito D7). */
-    private fun renameAssetDialog(asset: AssetEntry, category: String) {
-        inputDialog("Novo nome", asset.name) { name ->
-            if (!EditorJni.nativeEditorAssetRename(handle, category, asset.name, name)) {
-                toast(lastErrorText())
-            }
-            refreshAssets()
-        }
-    }
-
-    /** P4.1 (D7): apagar asset com confirmação honesta (a opção morta do
-     * menu antigo apagava NADA em áudio). */
-    private fun deleteAssetDialog(asset: AssetEntry, category: String) {
-        AlertDialog.Builder(this)
-            .setTitle("Apagar ${asset.name}?")
-            .setMessage("O arquivo é removido do projeto (sem undo).")
-            .setPositiveButton("Apagar") { _, _ ->
-                if (EditorJni.nativeEditorAssetDelete(handle, category, asset.name)) {
-                    refreshAssets()
-                } else {
-                    toast(lastErrorText())
-                }
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    /** P4.1 (D7): aplica textura ao SpriteData da entidade selecionada
-     * (via Inspector — MESMO caminho do campo de textura). */
-    private fun applyTextureToSelection(textureName: String) {
-        if (selection == 0L) {
-            toast("Nenhuma entidade selecionada")
-            return
-        }
-        val ok = EditorJni.nativeEditorSetComponentField(
-            handle, selection, "eng::editor::SpriteData", "textureAsset",
-            textureName
-        )
-        if (!ok) {
-            toast(lastErrorText())
-        } else {
-            toast("Textura '$textureName' aplicada")
-            refreshInspectorIfOpen()
-        }
-    }
-
-    private fun moveAssetDialog(asset: AssetEntry) {
-        val cats = (EditorJni.nativeEditorAssetCategories(handle) ?: "")
-            .lines().filter { it.isNotBlank() }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Mover para")
-            .setItems(cats) { _, which ->
-                if (!EditorJni.nativeEditorAssetMove(handle, assetCategory.selectedItem.toString(), asset.name, cats[which])) {
-                    toast(lastErrorText())
-                }
-                refreshAssets()
-            }
-            .show()
-    }
-
-    // --- import via SAF (aquisição é papel da plataforma — §D7) ----------------------
-
-    private fun pickImportFile() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            // P4.2 (B-E): import de ÁUDIO filtra WAV no picker — o conteúdo
-            // é revalidado no C++ (EditorDocument::importAsset), mas o
-            // picker certo evita o erro ANTES de copiar o arquivo.
-            if ((assetCategory.selectedItem?.toString() ?: "") == "audio") {
-                putExtra(
-                    Intent.EXTRA_MIME_TYPES,
-                    arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")
-                )
-            }
-        }
-        startActivityForResult(intent, REQUEST_IMPORT)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        // P2 §17 — SAF (pasta de exportação / zip ida-e-volta).
-        handleSafResult(requestCode, resultCode, data?.data)
-        if (requestCode != REQUEST_IMPORT || resultCode != RESULT_OK) return
-        val uri: Uri = data?.data ?: return
-
-        // Copia para o staging DENTRO do workspace e o C++ só vê eng::fs.
-        val tmp = (importTmpDir ?: File(
-            File(filesDir, "projects"), ".import_tmp"
-        ).also { it.mkdirs(); importTmpDir = it })
-        val dest = File(tmp, uri.lastPathSegment?.substringAfterLast('/') ?: "import.bin")
-        contentResolver.openInputStream(uri)?.use { input ->
-            dest.outputStream().use { output -> input.copyTo(output) }
-        } ?: run { toast("Não foi possível ler o arquivo"); return }
-
-        val category = assetCategory.selectedItem?.toString() ?: return
-        inputDialog("Nome do asset", dest.nameWithoutExtension) { name ->
-            // Path relativo ao ROOT do projeto (workspace/projects/<p>/.import_tmp/x)
-            val projectRoot = File(File(filesDir, "projects"),
-                EditorJni.nativeEditorProjectName(handle) ?: "")
-            val rel = ".import_tmp/${dest.name}"
-            if (EditorJni.nativeEditorAssetImport(handle, rel, category, name)) {
-                toast("Importado em $category")
-                // P4.3 (N1): importou — contexto do preview mudou (lista de
-                // assets mudou); voice do preview morre.
-                stopAudioPreview()
-                refreshAssets()
-            } else {
-                toast(lastErrorText())
-            }
-            (projectRoot) // (caminho base documentado; import usa o rel)
-        }
-    }
+    internal fun lastErrorText(): String =
+        EditorJni.nativeEditorLastError(handle) ?: "operação falhou"
 
     // --- play/stop (§8.7) ------------------------------------------------------------
 
-    private fun togglePlay() {
+    internal fun togglePlay() {
         if (EditorJni.nativeEditorIsPlaying(handle)) {
             EditorJni.nativeEditorStop(handle)
             btnPlay.text = "▶"
-            btnPlay.setTextColor(Ui.OK)
+            btnPlay.setTextColor(Oni.ON_ACCENT)
+            btnPlay.background = Oni.ripple(this, Oni.ACCENT, Oni.R_BTN)
             playHud.visibility = View.GONE  // P4.1: HUD some com o Play
             applyGameModeChrome(false)
-            // P4.2 (T5): Stop volta ao editor com SELEÇÃO e CÂMERA intactas
-            // (o documento restaura a seleção da edição; a câmera do editor
-            // nunca saiu do lugar).
+            // P4.2 (T5): Stop volta ao editor com SELEÇÃO e CÂMERA intactas.
             toast("STOP — seleção e câmera intactas")
         } else {
             if (EditorJni.nativeEditorPlay(handle)) {
                 btnPlay.text = "■"
-                btnPlay.setTextColor(Ui.DANGER)
+                btnPlay.setTextColor(Oni.BG)
+                btnPlay.background = Oni.ripple(this, Oni.DANGER, Oni.R_BTN)
                 applyGameModeChrome(true)
                 // P4.1 (T2/D5): o que antes era silêncio agora é texto
                 // IMEDIATO — compilação falhou? faults? HUD + toast.
@@ -3298,16 +1025,16 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     if (found > 0 && failed > 0) {
                         val err = p.getOrNull(6)?.takeIf { it.isNotBlank() }
                             ?: "erro desconhecido"
-                        toast("SCRIPT COM ERRO: $err")
+                        toastErr("SCRIPT COM ERRO: $err")
                     }
                 }
                 // P4.1 (T3/D6): sem som → o autor SABE na hora (e o porquê).
                 val audio = EditorJni.nativeEditorAudioStatus(handle)
                 if (audio != null && audio.startsWith("null")) {
-                    toast("ÁUDIO: ${audio.removePrefix("null:")}")
+                    toastErr("ÁUDIO: ${audio.removePrefix("null:")}")
                 }
             } else {
-                toast(lastErrorText())
+                toastErr(lastErrorText())
             }
         }
         refreshPanel()
@@ -3330,12 +1057,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
-    /** P4.2 (T5): PAUSE/CONTINUE do runtime (estado no DOCUMENTO — o
-     *  tick para de avançar o mundo; render e câmera continuam vivos). */
+    /** P4.2 (T5): PAUSE/CONTINUE do runtime (estado no DOCUMENTO). */
     private fun togglePauseGame() {
         val paused = !EditorJni.nativeEditorIsPaused(handle)
         EditorJni.nativeEditorSetPaused(handle, paused)
-        btnPauseGame?.text = if (paused) "▶ CONTINUAR" else "⏸ PAUSE"
+        btnPauseGame?.text = if (paused) "▶" else "⏸"
         updateGameHudStatus()
         toast(if (paused) "PAUSE — runtime congelado" else "Play — runtime rodando")
     }
@@ -3368,50 +1094,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         playHud.text = "$scriptsLine\nÁudio: $audio"
     }
 
-    // --- backend / ferramenta ------------------------------------------------------------
-
-    private fun showBackendMenu(button: Button) {
-        val options = arrayOf("auto", "vulkan", "gles")
-        AlertDialog.Builder(this)
-            .setTitle("Backend de render")
-            .setItems(options) { _, which ->
-                EditorJni.nativeEditorSetBackend(handle, options[which])
-                button.text = options[which]
-            }
-            .show()
-    }
-
-    /** Menu de ferramentas (P1.6): SELECT / MOVE / ROTATE / SCALE. Pan e
-     * zoom continuam gestos ALWAYS-ON (drag em espaço vazio / pinch). */
-    private fun showToolMenu() {
-        val labels = arrayOf(
-            "Selecionar", "Mover (gizmo)", "Rotacionar (gizmo)", "Escalar (gizmo)"
-        )
-        val current = EditorJni.nativeEditorGetTool(handle)
-        AlertDialog.Builder(this)
-            .setTitle("Ferramenta")
-            .setSingleChoiceItems(labels, current) { dialog, which ->
-                editorTool = which
-                EditorJni.nativeEditorSetTool(handle, which)
-                btnTool.text = toolLabel(which)
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun toolLabel(tool: Int): String = when (tool) {
-        1 -> "MOVER"; 2 -> "ROTAC"; 3 -> "ESCALA"; else -> "SELECT"
-    }
-
     // --- gestos do viewport (§8.6/§8.8 — eventos do EDITOR, não do jogo) ------------------
 
     /**
      * Em PLAY, os toques do viewport vão ao INPUT DO JOGO (§6.4). P4.2
      * (T5 — Modo Jogo): a rota é do JOGO INTEIRO durante o Play — o
-     * chrome some, então não existe gesto de editor a preservar (o gizmo
-     * nem existe em Play, e pan/zoom do editor eram no-op sob câmera de
-     * jogo: rota morta).
+     * chrome some, então não existe gesto de editor a preservar.
      */
     private fun gameWantsTouch(): Boolean =
         handle != 0L && EditorJni.nativeEditorIsPlaying(handle)
@@ -3462,19 +1150,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         )
         view.setOnTouchListener { _, event ->
             // Bugs C-5/C-6 da auditoria final: em Play, os eventos BRUTOS
-            // vão ao input do jogo com fases e pointer IDs REAIS (como o
-            // GoniActivity). P4.2 (T5): em Play a rota é do JOGO inteiro —
-            // o Modo Jogo esconde o chrome e nenhum gesto de editor
-            // sobra (gizmo nem existe em Play — §8.7).
+            // vão ao input do jogo com fases e pointer IDs REAIS. P4.2 (T5):
+            // em Play a rota é do JOGO inteiro.
             if (gameWantsTouch()) {
                 dispatchGameTouch(event)
                 true
             } else {
                 handleGizmoTouch(event)  // P1: raw events p/ drag de gizmo
                 // P4.2 (B-D): durante o drag do gizmo os detectores NÃO
-                // veem o evento — um 2º dedo não vira pinch (o zoom mudaria
-                // NO MEIO do drag e o ponto de agarre, capturado no begin,
-                // re-projetaria com o zoom novo → salto nos dois eixos).
+                // veem o evento — um 2º dedo não vira pinch.
                 if (!gizmoDragging) {
                     scaleDetector.onTouchEvent(event)
                     tapDetector.onTouchEvent(event)
@@ -3488,13 +1172,10 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
      * Drag do GIZMO (P1.3–P1.5) — eventos CRUS: o GestureDetector entrega
      * apenas DELTAS de scroll; rotação/escala precisam da posição
      * ABSOLUTA do pointer. Handles têm PRIORIDADE sobre o corpo da
-     * entidade (P1.6): ACTION_DOWN pergunta ao documento; se um handle
-     * acertou, o drag é do gizmo até o UP — tap/scroll ficam suprimidos.
+     * entidade (P1.6).
      */
     private var gizmoDragging = false
-    /// P4.2 (B-D): pointer ID DONO do drag. event.x/event.y eram SEMPRE
-    /// os do pointer 0 — com um 2º dedo na tela o pointer 0 passa a ser
-    /// O OUTRO dedo e a entidade teletransportava nos dois eixos.
+    /// P4.2 (B-D): pointer ID DONO do drag.
     private var gizmoPointerId = -1
 
     private fun handleGizmoTouch(event: MotionEvent) {
@@ -3527,9 +1208,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                // O DONO do drag levantou → fim honesto; outro dedo levantar
-                // não mata o drag (antes, qualquer POINTER_UP era ignorado e
-                // o MOVE seguinte vinha do pointer errado).
+                // O DONO do drag levantou → fim honesto.
                 if (gizmoDragging &&
                     event.getPointerId(event.actionIndex) == gizmoPointerId
                 ) {
@@ -3666,8 +1345,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     fpsFrames = 0
                     updatePlayHud()
                     // No Modo Jogo o playHud fica FORA (HUD novo mostra
-                    // áudio/fps); em Play com chrome (não existe mais —
-                    // gameMode cobre todo Play) a linha clássica ficaria.
+                    // áudio/fps).
                     if (!gameMode) {
                         playHud.visibility = View.VISIBLE
                     }
@@ -3691,13 +1369,54 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         choreographer?.postFrameCallback(this)
     }
 
+    // --- thumbnails (P0-6): decode com inSampleSize + cache em memória ---------
+
+    internal val thumbCache = HashMap<String, android.graphics.Bitmap>()
+
+    /** Bitmap reduzido do asset do PROJETO ATUAL (textures) — null se não
+     *  é imagem decodificável. Cache por nome. */
+    internal fun thumbnailOf(category: String, name: String): android.graphics.Bitmap? {
+        val project = EditorJni.nativeEditorProjectName(handle) ?: return null
+        return thumbnailOfIn(project, category, name)
+    }
+
+    /** Variante para o project switcher (thumbnail de QUALQUER projeto). */
+    internal fun thumbnailOfIn(
+        project: String, category: String, name: String
+    ): android.graphics.Bitmap? {
+        val key = "$project/$category/$name"
+        thumbCache[key]?.let { return it }
+        val file = File(File(File(filesDir, "projects"), project),
+                        "assets/$category/$name")
+        if (!file.isFile) return null
+        // 1ª passada: só dimensões.
+        val bounds = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        // inSampleSize: maior potência de 2 que ainda cabe em 96px.
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= 96 &&
+               bounds.outHeight / (sample * 2) >= 96) {
+            sample *= 2
+        }
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+        }
+        val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
+            ?: return null
+        thumbCache[key] = bmp
+        return bmp
+    }
+
     // --- adapters ---------------------------------------------------------------------------
 
     /** Linha da hierarquia (TSV depth\tname\tpacked). */
-    private data class HierarchyRow(val depth: Int, val name: String, val packed: Long)
+    internal data class HierarchyRow(val depth: Int, val name: String, val packed: Long)
 
-    private inner class HierarchyAdapter : ArrayAdapter<HierarchyRow>(
-        this@EditorActivity, android.R.layout.simple_list_item_1
+    internal inner class HierarchyAdapter : ArrayAdapter<HierarchyRow>(
+        this@EditorActivity, R.layout.oni_list_item
     ) {
         private val rows = mutableListOf<HierarchyRow>()
         private var selectedPos = -1
@@ -3724,18 +1443,27 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             if (selectedPos in rows.indices) rows[selectedPos].packed else 0L
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-            val view = super.getView(position, convertView, parent)
             val row = rows[position]
-            (view as? TextView)?.apply {
+            // P4.5 (§2): row curva sem divisor, tom+espaço, pressed overlay;
+            // seleção = tint acento + texto acento.
+            val view = LinearLayout(this@EditorActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(48)
+                setPadding(dp(12) + row.depth * dp(12), dp(6), dp(12), dp(6))
+                if (row.packed == selection) {
+                    background = Oni.ripplePill(this@EditorActivity, 0x2E8AB4F8.toInt())
+                } else {
+                    background = Oni.rippleOnly(this@EditorActivity)
+                }
+            }
+            view.addView(TextView(this@EditorActivity).apply {
                 // Densidade de editor: tipo à frente + indentação por
                 // profundidade (evolução P0-4 — hierarquia LEGÍVEL).
-                val icon = if (row.packed == selection) "▶ " else "· "
-                text = "${"  ".repeat(row.depth)}$icon${row.name}"
-                setTextColor(if (row.packed == selection) Ui.ACCENT else Ui.TEXT)
-                setPadding(dp(8) + row.depth * dp(10), dp(9), dp(8), dp(9))
-                minHeight = dp(38)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            }
+                text = if (row.packed == selection) "▶ ${row.name}" else row.name
+                setTextColor(if (row.packed == selection) Oni.ACCENT else Oni.TEXT)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             view.setOnClickListener {
                 selectEntity(row.packed)
             }
@@ -3748,12 +1476,12 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     }
 
     /** Entrada de asset (TSV name\tid\treg\tpath). */
-    private data class AssetEntry(
+    internal data class AssetEntry(
         val name: String, val id: String, val registered: Boolean, val path: String
     )
 
-    private inner class AssetAdapter : ArrayAdapter<AssetEntry>(
-        this@EditorActivity, android.R.layout.simple_list_item_1
+    internal inner class AssetAdapter : ArrayAdapter<AssetEntry>(
+        this@EditorActivity, R.layout.oni_list_item
     ) {
         private val entries = mutableListOf<AssetEntry>()
         private var selected: AssetEntry? = null
@@ -3776,13 +1504,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val entry = entries[position]
-            val category = assetCategory.selectedItem?.toString() ?: ""
+            val category = assetCategoryName
             // Linha densa com THUMBNAIL REAL (P0-6): imagens mostram o
             // conteúdo; demais tipos mostram o nome + id/metadata.
             val row = LinearLayout(this@EditorActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(6), dp(8), dp(6))
+                minimumHeight = dp(56)
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+                background = Oni.rippleOnly(this@EditorActivity)
             }
             if (category == "textures") {
                 val thumb = thumbnailOf("textures", entry.name)
@@ -3791,14 +1521,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                         ImageView(this@EditorActivity).apply {
                             setImageBitmap(thumb)
                             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                            background = rippleBox(Ui.BORDER, dp(4))
+                            background =
+                                Oni.rounded(this@EditorActivity, Oni.RAISED, Oni.R_THUMB)
                             clipToOutline = true
                         },
-                        LinearLayout.LayoutParams(dp(40), dp(40))
+                        LinearLayout.LayoutParams(dp(44), dp(44))
                     )
                     row.addView(
                         Space(this@EditorActivity),
-                        LinearLayout.LayoutParams(dp(8), dp(1))
+                        LinearLayout.LayoutParams(dp(10), dp(1))
                     )
                 }
             }
@@ -3813,9 +1544,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 } else null
             texts.addView(TextView(this@EditorActivity).apply {
                 text = entry.name
-                setTextColor(if (entry.registered) Ui.TEXT else Ui.TEXT_DIM)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setTextColor(if (entry.registered) Oni.TEXT else Oni.TEXT_DIM)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                typeface = Typeface.DEFAULT_BOLD
             })
             texts.addView(TextView(this@EditorActivity).apply {
                 text = when {
@@ -3823,8 +1554,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                     entry.registered -> "id ${entry.id.take(8)}…"
                     else -> "(não catalogado)"
                 }
-                setTextColor(Ui.TEXT_DIM)
+                setTextColor(Oni.TEXT_DIM)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                typeface = Typeface.MONOSPACE
             })
             row.addView(
                 texts,
@@ -3843,46 +1575,114 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
     }
 
-    /** Preview do asset: imagem REAL decodificada em bitmap (thumbnails
-     * nativos do Android — evolução P0: duplo-toque MOSTRA o conteúdo). */
-    private fun assetPreviewDialog(entry: AssetEntry) {
-        val category = assetCategory.selectedItem?.toString() ?: return
-        val info = EditorJni.nativeEditorAssetImageInfo(handle, category, entry.name)
-        val project = EditorJni.nativeEditorProjectName(handle) ?: ""
-        val file = File(File(File(filesDir, "projects"), project),
-                        "assets/$category/${entry.name}")
-        val message = StringBuilder("id: ${entry.id}\nregistrado: ${entry.registered}\n" +
-                            "caminho: ${entry.path}")
-        if (info != null) {
-            message.append("\nimagem: $info")
+    // --- startup do projeto (P3 §0 — política no C++, erro controlado aqui) ---
+
+    private fun ensureProjectOnFirstRun() {
+        val opened = EditorJni.nativeEditorEnsureProject(handle)
+        if (opened == null) {
+            toastErr(lastErrorText())
         }
-        val builder = AlertDialog.Builder(this)
-            .setTitle(entry.name)
-            .setMessage(message.toString())
-            .setPositiveButton("OK", null)
-        if (info != null && file.isFile) {
-            val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-            if (bitmap != null) {
-                val preview = ImageView(this).apply {
-                    adjustViewBounds = true
-                    scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-                    setImageBitmap(bitmap)
-                    setPadding(dp(16), dp(16), dp(16), dp(16))
-                }
-                builder.setView(preview)
-            }
-        }
-        builder.show()
     }
 
-    companion object {
-        private const val PANEL_NONE = 0
-        private const val PANEL_HIERARCHY = 1
-        private const val PANEL_INSPECTOR = 2
-        private const val PANEL_ASSETS = 3
-        private const val PANEL_SCRIPTS = 4
-        private const val PANEL_ANIM = 5
-        private const val PANEL_TICKS = 6
-        private const val REQUEST_IMPORT = 4101
+    // --- SAF (P2 §17): armazenamento do usuário COM permissão persistente ------
+    //
+    // Modelo documentado: os PROJETOS vivem no workspace privado
+    // (filesDir/projects — sem permissões, nunca "assume acesso
+    // irrestrito", paths sempre relativos — RootedFileSystem na fronteira).
+    // O SAF dá ao AUTOR o canal de intercâmbio (zip ida e volta).
+
+    internal val safPrefs by lazy {
+        getSharedPreferences("goni_saf", Context.MODE_PRIVATE)
+    }
+
+    // Requests de SAF (dispatch no onActivityResult ÚNICO, abaixo).
+    private val reqSafFolder = 4101
+    private val reqSafExport = 4102
+    private val reqSafImport = 4103
+    private val reqSafDiag = 4104
+
+    /** Dispatch SAF (chamado pelo onActivityResult ÚNICO da Activity). */
+    private fun handleSafResult(requestCode: Int, resultCode: Int, uri: Uri?) {
+        if (resultCode != RESULT_OK || uri == null) return
+        when (requestCode) {
+            reqSafFolder -> {
+                // Permissão PERSISTENTE: o grant sobrevive a restarts —
+                // o mecanismo do Android (não um path absoluto salvo).
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                    safPrefs.edit().putString("export_tree", uri.toString()).apply()
+                    toastOk("Pasta de exportação autorizada (permissão persistente)")
+                } catch (e: SecurityException) {
+                    toastErr("Sem permissão persistível: ${e.message}")
+                }
+            }
+            reqSafExport -> writeProjectZipTo(uri)
+            reqSafImport -> importProjectZipFrom(uri)
+            reqSafDiag -> writeDiagnosticsZipTo(uri)
+        }
+    }
+
+    internal fun pickImportFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            // P4.2 (B-E): import de ÁUDIO filtra WAV no picker — o conteúdo
+            // é revalidado no C++ (EditorDocument::importAsset), mas o
+            // picker certo evita o erro ANTES de copiar o arquivo.
+            if (assetCategoryName == "audio") {
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")
+                )
+            }
+        }
+        startActivityForResult(intent, REQUEST_IMPORT)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        // P2 §17 — SAF (pasta de exportação / zip ida-e-volta).
+        handleSafResult(requestCode, resultCode, data?.data)
+        if (requestCode != REQUEST_IMPORT || resultCode != RESULT_OK) return
+        val uri: Uri = data?.data ?: return
+
+        // Copia para o staging DENTRO do workspace e o C++ só vê eng::fs.
+        val tmp = (importTmpDir ?: File(
+            File(filesDir, "projects"), ".import_tmp"
+        ).also { it.mkdirs(); importTmpDir = it })
+        val dest = File(tmp, uri.lastPathSegment?.substringAfterLast('/') ?: "import.bin")
+        contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { output -> input.copyTo(output) }
+        } ?: run { toastErr("Não foi possível ler o arquivo"); return }
+
+        val category = assetCategoryName
+        inputDialog("Nome do asset", dest.nameWithoutExtension) { name ->
+            // Path relativo ao ROOT do projeto (workspace/projects/<p>/.import_tmp/x)
+            val rel = ".import_tmp/${dest.name}"
+            if (EditorJni.nativeEditorAssetImport(handle, rel, category, name)) {
+                toastOk("Importado em $category")
+                // P4.3 (N1): importou — contexto do preview mudou (lista de
+                // assets mudou); voice do preview morre.
+                stopAudioPreview()
+                refreshAssets()
+            } else {
+                toastErr(lastErrorText())
+            }
+        }
+    }
+
+    internal companion object {
+        internal const val PANEL_NONE = 0
+        internal const val PANEL_HIERARCHY = 1
+        internal const val PANEL_INSPECTOR = 2
+        internal const val PANEL_ASSETS = 3
+        internal const val PANEL_SCRIPTS = 4
+        internal const val PANEL_ANIM = 5
+        internal const val PANEL_TICKS = 6
+        internal const val REQUEST_IMPORT = 4101
     }
 }

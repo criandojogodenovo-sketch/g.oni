@@ -13,6 +13,8 @@
 
     <application
         android:label="G.ONI Editor"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:hasCode="true"
         android:theme="@style/GoniTheme">
         <activity
