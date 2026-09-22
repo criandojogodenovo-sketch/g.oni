@@ -130,10 +130,13 @@ void pushLitSpriteQuadPx(std::vector<ViewportRenderer::LitSpriteVertex>& out,
     float vx[4];
     float vy[4];
     for (int i = 0; i < 4; ++i) {
+        // P4.3 (N3/N4): offset rotacionado EM MUNDO projetado (y negado —
+        // a mesma projeção de w2sX/w2sY por ponto). Cantos px corretos
+        // (sem cisalhamento) e ordem canónica preservada (UV v0 = topo).
         vx[i] = cxPx + lx[i] * cosR - ly[i] * sinR;
-        vy[i] = cyPx + lx[i] * sinR + ly[i] * cosR;
+        vy[i] = cyPx - (lx[i] * sinR + ly[i] * cosR);
     }
-    // Mundo: mesmo quad em unidades MUNDIAIS (também rotacionado) —
+    // Mundo: mesmo quad em unidades MUNDIAIS (rotacionado, y para cima) —
     // normaliza os offsets px pela meia-extensão px correspondente.
     float wx[4];
     float wy[4];
@@ -172,8 +175,10 @@ void pushSpriteQuadPx(std::vector<ViewportRenderer::SpriteVertex>& out,
     float vx[4];
     float vy[4];
     for (int i = 0; i < 4; ++i) {
+        // P4.3 (N3/N4): projeção do offset rotacionado (y negado — mesmo
+        // flip de w2sY); ordem canónica preservada (UV v0 = topo).
         vx[i] = cxPx + lx[i] * cosR - ly[i] * sinR;
-        vy[i] = cyPx + lx[i] * sinR + ly[i] * cosR;
+        vy[i] = cyPx - (lx[i] * sinR + ly[i] * cosR);
     }
     const ViewportRenderer::SpriteVertex quad[6] = {
         {mapper.toClipX(vx[0]), mapper.toClipY(vy[0]), 0.f, 1.f, r, g, b, a, uu[0], vv[0]},
@@ -568,9 +573,10 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                         -halfWPx + cellW * (static_cast<float>(ix) + 0.5f);
                     const float ly =
                         -halfHPx + cellH * (static_cast<float>(iy) + 0.5f);
+                    // Mesma projeção do quad base (y negado — N3/N4).
                     pushQuadPx(frameVertices_, mapper,
                                centerPxX + lx * cosR - ly * sinR,
-                               centerPxY + lx * sinR + ly * cosR,
+                               centerPxY - (lx * sinR + ly * cosR),
                                cellW * 0.5f, cellH * 0.5f, quad.rotation,
                                kChessR, kChessG, kChessB);
                 }

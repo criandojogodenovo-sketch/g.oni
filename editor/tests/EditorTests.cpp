@@ -7010,6 +7010,20 @@ TEST_CASE("editor: P4.3/N4 — OverlayMath: rotação em px é isotrópica",
     const float backY = (1.f - mapper.toClipY(sy)) * 0.5f * mapper.h;
     CHECK(backX == Catch::Approx(sx).margin(1e-3f));
     CHECK(backY == Catch::Approx(sy).margin(1e-3f));
+
+    // REGRESSÃO do CI (readback PNG): sprite 2x2 em (0.5,-0.5), zoom 48,
+    // surface 128x128 — centro px (88,88), meia-extensão 48px. O canto 3
+    // (topo-esquerda na TELA) TEM de cair em clip y = 0.375 (era −1.125
+    // quando a rotação acontecia sem o flip da projeção — sprite virado).
+    const OverlayMapper spriteMapper{128.f, 128.f};
+    eng::editor::PxCorner sprite[4];
+    quadCornersPx(88.f, 88.f, 48.f, 48.f, 0.f, sprite);
+    CHECK(spriteMapper.toClipY(sprite[3].y) ==
+          Catch::Approx(0.375f).margin(1e-3f));
+    CHECK(spriteMapper.toClipY(sprite[0].y) ==
+          Catch::Approx(-1.125f).margin(1e-3f));
+    CHECK(spriteMapper.toClipX(sprite[3].x) ==
+          Catch::Approx(-0.375f).margin(1e-3f));
 }
 
 TEST_CASE("editor: P4.3/N3 — anel de rotação é CÍRCULO em px no portrait",

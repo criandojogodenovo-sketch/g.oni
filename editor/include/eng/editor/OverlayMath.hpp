@@ -49,10 +49,14 @@ struct PxCorner {
     float y{0.f};
 };
 
-/// Quatro cantos em PX de um quad centrado (cx,cy), meia-extensões
-/// (halfW,halfH) e rotação `rotation` (radianos, mesmo sentido do clip:
-/// px Y cresce para baixo — cos/sin direto). ROTAÇÃO EM PX: cantos de um
-/// quadrado permanecem equidistantes em px para qualquer rotação.
+/// Quatro cantos em PX da PROJEÇÃO de um quad centrado (cx,cy) em px,
+/// meia-extensões (halfW,halfH) em px e rotação `rotation` —ÂNGULO DE
+/// MUNDO (radianos, Y para cima). A projeção mundo→tela flipa Y: o
+/// offset rotacionado é espelhado em y (exatamente o que w2sX/w2sY fazem
+/// com um ponto). Ordem dos cantos compatível com a canônica antiga:
+/// índice 0 = (−,−) em (lx,ly) = base-esquerda na TELA — a associação
+/// vértice↔UV dos sprites não muda. Isotrópico: quadrado é quadrado em
+/// px para qualquer rotação (a reflexão é isometria).
 inline void quadCornersPx(float cx, float cy, float halfW, float halfH,
                           float rotation, PxCorner out[4]) noexcept
 {
@@ -61,8 +65,12 @@ inline void quadCornersPx(float cx, float cy, float halfW, float halfH,
     const float lx[4] = {-halfW, halfW, halfW, -halfW};
     const float ly[4] = {-halfH, -halfH, halfH, halfH};
     for (int i = 0; i < 4; ++i) {
-        out[i].x = cx + lx[i] * cosR - ly[i] * sinR;
-        out[i].y = cy + lx[i] * sinR + ly[i] * cosR;
+        // Offset rotacionado EM MUNDO (y para cima)...
+        const float worldDx = lx[i] * cosR - ly[i] * sinR;
+        const float worldDy = lx[i] * sinR + ly[i] * cosR;
+        // ...projetado na tela: x direto, y NEGADO (px cresce para baixo).
+        out[i].x = cx + worldDx;
+        out[i].y = cy - worldDy;
     }
 }
 
