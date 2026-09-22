@@ -62,8 +62,28 @@ namespace eng::scene {
 // assinatura pública de registerComponentType (P4.7.0 Bloco 1) e o
 // arquivo define o detail DEPOIS da classe.
 namespace detail {
+/// Contrato de autoria de um componente (P4.7.0 Bloco 1). Tudo OPCIONAL
+/// exceto `category` (vazio = grupo "Outros" do Inspector).
+struct ComponentContract {
+    /// Tipos (nome canônico) que PRECISAM estar presentes na entidade
+    /// antes deste componente ser adicionado. ("requires" do contrato —
+    /// o identificador `requires` é palavra-chave C++20, por isso o
+    /// membro chama `required`.)
+    std::vector<std::string> required;
+    /// Tipos que NÃO podem coexistir com este na mesma entidade.
+    std::vector<std::string> conflicts;
+    /// true: instância ÚNICA na cena inteira (ex.: pós-processamento no
+    /// P4.7.1). false: quantas entidades quiserem.
+    bool single = false;
+    /// Grupo do Inspector: "Transform"|"Render"|"Física"|"Lógica"|
+    /// "Áudio"|"Câmera"|"FX" (vazio = "Outros").
+    std::string category;
+    /// Apelido NI-Script do componente ("" = sem apelido; scripts usam o
+    /// nome canônico). Gerado do MESMO registro que alimenta o Inspector.
+    std::string scriptAlias;
+};
+
 struct ComponentEntry;
-struct ComponentContract;
 using HookValidate = eng::core::Result<void>(*)
     (eng::scene::Scene&, eng::ecs::Entity, const ComponentEntry&);
 using HookAttach = void(*)(eng::scene::Scene&, eng::ecs::Entity,
@@ -116,26 +136,6 @@ namespace eng::scene::detail {
 // declarados ANTES de SceneSerializer — ver topo do arquivo; aqui ficam
 // as DEFINIÇÕES completas.)
 
-/// Contrato de autoria de um componente (P4.7.0 Bloco 1). Tudo OPCIONAL
-/// exceto `category` (vazio = grupo "Outros" do Inspector).
-struct ComponentContract {
-    /// Tipos (nome canônico) que PRECISAM estar presentes na entidade
-    /// antes deste componente ser adicionado. ("requires" do contrato —
-    /// o identificador `requires` é palavra-chave C++20, por isso o
-    /// membro chama `required`.)
-    std::vector<std::string> required;
-    /// Tipos que NÃO podem coexistir com este na mesma entidade.
-    std::vector<std::string> conflicts;
-    /// true: instância ÚNICA na cena inteira (ex.: pós-processamento no
-    /// P4.7.1). false: quantas entidades quiserem.
-    bool single = false;
-    /// Grupo do Inspector: "Transform"|"Render"|"Física"|"Lógica"|
-    /// "Áudio"|"Câmera"|"FX" (vazio = "Outros").
-    std::string category;
-    /// Apelido NI-Script do componente ("" = sem apelido; scripts usam o
-    /// nome canônico). Gerado do MESMO registro que alimenta o Inspector.
-    std::string scriptAlias;
-};
 
 /// Hooks de ciclo de vida — registrados pelo AUTOR do componente
 /// (ComponentRegistration.cpp no editor; built-ins no próprio scene).
