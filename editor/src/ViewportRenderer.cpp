@@ -33,6 +33,63 @@ ENG_LOG_CATEGORY("editor");
     return Error{code, "ViewportRenderer: " + std::move(message)};
 }
 
+/// P4.6 (L2): default da grade quando o host não passa config (caminho
+/// legado de testes) — o MESMO default do project.goni.json.
+const eng::project::GridConfig kDefaultGridConfig{};
+
+/// Cor de fundo do clear do viewport (usada pelo fade da grade e pelo
+/// outline subtil dos handles — P4.6 L2/L4).
+constexpr float kViewportBgR = 0.13f;
+constexpr float kViewportBgG = 0.14f;
+constexpr float kViewportBgB = 0.16f;
+
+/// Um quad (2 triângulos) em PX DE TELA com cor uniforme e rotação.
+void pushQuadPx(std::vector<ViewportRenderer::Vertex>& out,
+                const OverlayMapper& mapper, float cxPx, float cyPx,
+                float halfWPx, float halfHPx, float rotation, float r,
+                float g, float b)
+{
+    // Cantos em ordem CCW: (-,-), (+,-), (+,+), (-,+) — rotação em px.
+    PxCorner corners[4];
+    quadCornersPx(cxPx, cyPx, halfWPx, halfHPx, rotation, corners);
+    const ViewportRenderer::Vertex quad[6] = {
+        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[1].x), mapper.toClipY(corners[1].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
+        {mapper.toClipX(corners[3].x), mapper.toClipY(corners[3].y), 0.f, 1.f, r, g, b, 1.f},
+    };
+    out.insert(out.end(), std::begin(quad), std::end(quad));
+}
+
+/// P4.6 (L4): quadrado CHAMFERADO (octógono — "handle arredondado" sobre
+/// um pipeline de quads): fill + 4 cortes de canto a 45°. A face do corte
+/// é EXATA: h = c/√2 com c = 0.4*half — zero bleed além da face (a face
+/// do quadrado rotacionado É a corda P1P2 do octógono).
+void pushChamferQuadPx(std::vector<ViewportRenderer::Vertex>& out,
+                       const OverlayMapper& mapper, float cxPx, float cyPx,
+                       float halfPx, float rotation, float r, float g,
+                       float b)
+{
+    pushQuadPx(out, mapper, cxPx, cyPx, halfPx, halfPx, rotation, r, g, b);
+    constexpr float kPiOver2 = 1.57079637f;
+    const float cut = halfPx * 0.4f;
+    const float h = cut * 0.70710678f;
+    const float cosr = std::cos(rotation);
+    const float sinr = std::sin(rotation);
+    for (int sx = -1; sx <= 1; sx += 2) {
+        for (int sy = -1; sy <= 1; sy += 2) {
+            const float lx = sx * halfPx;
+            const float ly = sy * halfPx;
+            pushQuadPx(out, mapper, cxPx + lx * cosr - ly * sinr,
+                       cyPx + lx * sinr + ly * cosr, h, h,
+                       rotation + kPiOver2, kViewportBgR, kViewportBgG,
+                       kViewportBgB);
+        }
+    }
+}
+
 /// Paleta do editor (HSV→RGB simples p/ tints determinísticos).
 [[nodiscard]] float hueToRgb(float p, float q, float t) noexcept
 {
@@ -68,25 +125,6 @@ void hsvToRgb(std::uint32_t hue, float& r, float& g,
 // qualquer aspect — o clip-space anisotrópico nunca mais vê uma rotação
 // (era a causa do sprite deformado a 90° e do anel "elíptico").
 
-/// Um quad (2 triângulos) em PX DE TELA com cor uniforme e rotação.
-void pushQuadPx(std::vector<ViewportRenderer::Vertex>& out,
-                const OverlayMapper& mapper, float cxPx, float cyPx,
-                float halfWPx, float halfHPx, float rotation, float r,
-                float g, float b)
-{
-    // Cantos em ordem CCW: (-,-), (+,-), (+,+), (-,+) — rotação em px.
-    PxCorner corners[4];
-    quadCornersPx(cxPx, cyPx, halfWPx, halfHPx, rotation, corners);
-    const ViewportRenderer::Vertex quad[6] = {
-        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
-        {mapper.toClipX(corners[1].x), mapper.toClipY(corners[1].y), 0.f, 1.f, r, g, b, 1.f},
-        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
-        {mapper.toClipX(corners[0].x), mapper.toClipY(corners[0].y), 0.f, 1.f, r, g, b, 1.f},
-        {mapper.toClipX(corners[2].x), mapper.toClipY(corners[2].y), 0.f, 1.f, r, g, b, 1.f},
-        {mapper.toClipX(corners[3].x), mapper.toClipY(corners[3].y), 0.f, 1.f, r, g, b, 1.f},
-    };
-    out.insert(out.end(), std::begin(quad), std::end(quad));
-}
 
 /// Segmento ESPESSO em PX (RECOVERY §10 — contornos de collider; N3 —
 /// espessura constante em px em QUALQUER direção): perpendicular
@@ -417,7 +455,8 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
                                     const std::vector<ParticleQuad>& particles,
                                     bool playMode, const AssetBrowser* assets,
                                     TextureCache* textures,
-                                    const GizmoDrawData* gizmo)
+                                    const GizmoDrawData* gizmo,
+                                    const eng::project::GridConfig* grid)
 {
     frameVertices_.clear();
     spriteVertices_.clear();
@@ -478,42 +517,84 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
         drawList.lights.push_back(std::move(light));
     }
 
-    // --- grade ---------------------------------------------------------------
-    // Linhas nos inteiros do mundo; passo 5 quando o zoom não comporta 1.
-    // P4.3 (N4): conversão canônica ÚNICA — pontos via Viewport (câmera em
-    // foco), px→clip pelo OverlayMapper; nenhuma conversão local duplicada.
+    // --- grade (P4.6 Bloco 5/L2 — Grid v2, padrão Godot/Unity/3ds Max) ------
+    // Passo em UNIDADES DE MUNDO (config do projeto), linhas minor/major
+    // ("Primary Line Every" a cada N — major mais clara e GROSSA), LOD
+    // adaptativo ao zoom (anti-moiré: minors fazem fade e somem; subdivisão
+    // emerge ao aproximar — majors viram minors do nível seguinte) e EIXOS
+    // DA ORIGEM coloridos (X vermelho / Y verde — coerentes com o gizmo).
+    // P4.3 (N4): conversão canônica ÚNICA — px→clip pelo OverlayMapper.
     const float w = viewport.screenWidth();
     const float h = viewport.screenHeight();
     const OverlayMapper mapper{w, h};
     auto w2sX = [&](float wx) { return viewport.worldToScreenX(wx); };
     auto w2sY = [&](float wy) { return viewport.worldToScreenY(wy); };
-    const float step =
-        viewport.effectiveCamera().zoom < 14.f ? 5.f : 1.f;  // P0-5: câmera em foco
-    const float x0 = std::floor(viewport.screenToWorldX(0.f) / step) * step;
-    const float x1 = viewport.screenToWorldX(w);
-    const float y0 = std::floor(viewport.screenToWorldY(h) / step) * step;
-    const float y1 = viewport.screenToWorldY(0.f);
-    // P4.3 (N4): espessuras em PX — half = N/2 px (N px de espessura total).
-    const float kGridHalfThickPx = 0.7f;  // 1.4 px de linha (como prometido)
-    const float kGridR = 0.20f;
-    const float kGridG = 0.21f;
-    const float kGridB = 0.24f;
-    const float kAxisR = 0.30f;
-    const float kAxisG = 0.31f;
-    const float kAxisB = 0.35f;
-    for (float gx = x0; gx <= x1; gx += step) {
-        const bool axis = std::abs(gx) < 0.5f * step;
-        pushQuadPx(frameVertices_, mapper, w2sX(gx), h * 0.5f,
-                   kGridHalfThickPx, h * 0.5f, 0.f,
-                   axis ? kAxisR : kGridR, axis ? kAxisG : kGridG,
-                   axis ? kAxisB : kGridB);
-    }
-    for (float gy = y0; gy <= y1; gy += step) {
-        const bool axis = std::abs(gy) < 0.5f * step;
-        pushQuadPx(frameVertices_, mapper, w * 0.5f, w2sY(gy),
-                   w * 0.5f, kGridHalfThickPx, 0.f,
-                   axis ? kAxisR : kGridR, axis ? kAxisG : kGridG,
-                   axis ? kAxisB : kGridB);
+    const eng::project::GridConfig& gridConf =
+        grid != nullptr ? *grid : kDefaultGridConfig;
+    if (gridConf.visible) {
+        const float zoom = viewport.effectiveCamera().zoom;  // P0-5
+        const eng::project::GridLod lod =
+            eng::project::computeGridLod(gridConf, zoom);
+        // O fade das minors é um LERP para o FUNDO (pipeline sem
+        // blending: cor = alpha visual).
+        const float bgR = kViewportBgR, bgG = kViewportBgG, bgB = kViewportBgB;
+        const float kGridHalfThickPx = 0.7f;  // minor: 1.4 px
+        const float kMajorHalfThickPx = 1.0f; // major: 2 px (mais grossa)
+        // Minors (com fade; alpha 0 → NEM desenham — anti-moiré duro).
+        if (lod.minorAlpha > 0.f) {
+            const float a = lod.minorAlpha;
+            const float r = bgR + (gridConf.minorR - bgR) * a;
+            const float g = bgG + (gridConf.minorG - bgG) * a;
+            const float b = bgB + (gridConf.minorB - bgB) * a;
+            const float x0 = std::floor(viewport.screenToWorldX(0.f) /
+                                        lod.minorStep) *
+                            lod.minorStep;
+            const float x1 = viewport.screenToWorldX(w);
+            const float y0 = std::floor(viewport.screenToWorldY(h) /
+                                        lod.minorStep) *
+                            lod.minorStep;
+            const float y1 = viewport.screenToWorldY(0.f);
+            for (float gx = x0; gx <= x1; gx += lod.minorStep) {
+                pushQuadPx(frameVertices_, mapper, w2sX(gx), h * 0.5f,
+                           kGridHalfThickPx, h * 0.5f, 0.f, r, g, b);
+            }
+            for (float gy = y0; gy <= y1; gy += lod.minorStep) {
+                pushQuadPx(frameVertices_, mapper, w * 0.5f, w2sY(gy),
+                           w * 0.5f, kGridHalfThickPx, 0.f, r, g, b);
+            }
+        }
+        // Majors (sempre no nível do LOD — mais claras e grossas).
+        {
+            const float x0 = std::floor(viewport.screenToWorldX(0.f) /
+                                        lod.majorStep) *
+                            lod.majorStep;
+            const float x1 = viewport.screenToWorldX(w);
+            const float y0 = std::floor(viewport.screenToWorldY(h) /
+                                        lod.majorStep) *
+                            lod.majorStep;
+            const float y1 = viewport.screenToWorldY(0.f);
+            for (float gx = x0; gx <= x1; gx += lod.majorStep) {
+                pushQuadPx(frameVertices_, mapper, w2sX(gx), h * 0.5f,
+                           kMajorHalfThickPx, h * 0.5f, 0.f, gridConf.majorR,
+                           gridConf.majorG, gridConf.majorB);
+            }
+            for (float gy = y0; gy <= y1; gy += lod.majorStep) {
+                pushQuadPx(frameVertices_, mapper, w * 0.5f, w2sY(gy),
+                           w * 0.5f, kMajorHalfThickPx, 0.f, gridConf.majorR,
+                           gridConf.majorG, gridConf.majorB);
+            }
+        }
+        // Eixos da ORIGEM coloridos (X vermelho / Y verde — mesma família
+        // do gizmo de move: TransformGizmo::kXAxis*/kYAxis*).
+        pushQuadPx(frameVertices_, mapper, w * 0.5f,
+                   w2sY(0.f), w * 0.5f, 1.0f, 0.f,
+                   eng::editor::TransformGizmo::kXAxisR,
+                   eng::editor::TransformGizmo::kXAxisG,
+                   eng::editor::TransformGizmo::kXAxisB);
+        pushQuadPx(frameVertices_, mapper, w2sX(0.f), h * 0.5f, 1.0f,
+                   h * 0.5f, 0.f, eng::editor::TransformGizmo::kYAxisR,
+                   eng::editor::TransformGizmo::kYAxisG,
+                   eng::editor::TransformGizmo::kYAxisB);
     }
 
     // --- entidades SEM textura + BORDAS de sprites (pipeline pos+cor) -------
@@ -1040,20 +1121,32 @@ bool ViewportRenderer::buildAndDraw(const Viewport& viewport,
     if (frameOk && gizmo != nullptr &&
         (!gizmo->quads.empty() || !gizmo->segments.empty())) {
         gizmoVertices_.clear();
+        // P4.6 (L4): OUTLINE subtil (rim escuro da cor do fundo) sob cada
+        // handle — contraste garantido sobre sprites claros — e handles
+        // CHAMFERADOS (octógono, "arredondados" no pipeline de quads).
+        const float rim = std::max(1.f, viewport.uiScale()) * 1.2f;
         for (const GizmoQuad& quad : gizmo->quads) {
             // P4.3 (N3/N4): half (mundo) × zoom = px; rotação em px —
             // handles quadrados em QUALQUER aspect (eram paralelogramos).
-            pushQuadPx(gizmoVertices_, mapper, w2sX(quad.worldX),
-                       w2sY(quad.worldY), quad.halfW * zoom,
-                       quad.halfH * zoom, quad.rotation, quad.r, quad.g,
-                       quad.b);
+            const float cxPx = w2sX(quad.worldX);
+            const float cyPx = w2sY(quad.worldY);
+            const float halfPx = quad.halfW * zoom;
+            const float halfHPx = quad.halfH * zoom;
+            pushChamferQuadPx(gizmoVertices_, mapper, cxPx, cyPx,
+                              halfPx + rim, quad.rotation, kViewportBgR,
+                              kViewportBgG, kViewportBgB);
+            pushChamferQuadPx(gizmoVertices_, mapper, cxPx, cyPx, halfPx,
+                              quad.rotation, quad.r, quad.g, quad.b);
+            (void)halfHPx;  // handles são quadrados (halfW == halfH)
         }
         for (const GizmoSegment& segment : gizmo->segments) {
-            // P4.3 (N3): espessura de 2 px CONSTANTES (px space) — o anel
-            // de rotação é um círculo com linha uniforme (era elíptico).
+            // P4.3 (N3) + P4.6 (L4): espessura 2dp CONSISTENTE (densidade —
+            // 2px na densidade 1, 4px na densidade 2): o anel é círculo de
+            // linha uniforme em qualquer surface.
             pushSegmentPx(gizmoVertices_, mapper, w2sX(segment.x0),
                           w2sY(segment.y0), w2sX(segment.x1),
-                          w2sY(segment.y1), 1.f, segment.r,
+                          w2sY(segment.y1),
+                          std::max(1.f, viewport.uiScale()), segment.r,
                           segment.g, segment.b);
         }
         if (!gizmoVertices_.empty() && ensureCapacity(gizmoVertices_.size())) {
@@ -1100,7 +1193,7 @@ bool ViewportRenderer::renderFrame(const Viewport& viewport,
         return false;
     }
     return buildAndDraw(viewport, quads, particles, playMode, nullptr,
-                        nullptr, nullptr);
+                        nullptr, nullptr, nullptr);
 }
 
 bool ViewportRenderer::renderFrame(const Viewport& viewport,
@@ -1108,13 +1201,14 @@ bool ViewportRenderer::renderFrame(const Viewport& viewport,
                                    const std::vector<ParticleQuad>& particles,
                                    bool playMode, const AssetBrowser* assets,
                                    TextureCache& textures,
-                                   const GizmoDrawData* gizmo)
+                                   const GizmoDrawData* gizmo,
+                                   const eng::project::GridConfig* grid)
 {
     if (!renderer_.has_value() || !shaders_.valid()) {
         return false;
     }
     return buildAndDraw(viewport, quads, particles, playMode, assets,
-                        &textures, gizmo);
+                        &textures, gizmo, grid);
 }
 
 eng::rhi::BackendType ViewportRenderer::activeBackend() const noexcept

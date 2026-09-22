@@ -273,3 +273,69 @@ TEST_CASE("p46 project: collisionLayers inválidas são REJEITADAS",
         CHECK(parsed.isError());
     }
 }
+
+TEST_CASE("p46 project: grid ausente = default; round-trip byte-estável; "
+          "valores inválidos rejeitados",
+          "[project][p46]")
+{
+    // Ausente (projeto pré-L2) → default.
+    const eng::project::ProjectId id = eng::project::ProjectId::generate();
+    const auto parsed = eng::project::ProjectFile::parse(
+        eng::fs::Path{"/j/project.goni.json"}, validProjectText(id.toString()));
+    REQUIRE(parsed.ok());
+    CHECK(parsed.value().config.grid.visible == true);
+    CHECK(parsed.value().config.grid.cell == 1.f);
+    CHECK(parsed.value().config.grid.majorEvery == 8);
+
+    // Com grid: round-trip byte-estável.
+    const std::string text =
+        "{\"assetRegistryPath\":\"asset_registry.json\","
+        "\"engineVersion\":\"0.3.0\",\"formatVersion\":1,"
+        "\"grid\":{\"cell\":0.5,\"majorB\":0.5,\"majorEvery\":4,"
+        "\"majorR\":0.4,\"majorG\":0.45,\"minorB\":0.2,\"minorR\":0.15,"
+        "\"minorG\":0.2,\"visible\":true},\"name\":\"J\",\"projectId\":\"" +
+        id.toString() + "\",\"sceneRoots\":[\"scenes\"]}";
+    const auto withGrid = eng::project::ProjectFile::parse(
+        eng::fs::Path{"/j/project.goni.json"}, text);
+    REQUIRE(withGrid.ok());
+    CHECK(withGrid.value().config.grid.cell == 0.5f);
+    CHECK(withGrid.value().config.grid.majorEvery == 4);
+    const auto serialized = withGrid.value().serialize();
+    REQUIRE(serialized.ok());
+    const auto reparsed = eng::project::ProjectFile::parse(
+        eng::fs::Path{"/j/project.goni.json"}, serialized.value());
+    REQUIRE(reparsed.ok());
+    CHECK(reparsed.value().serialize().value() == serialized.value());
+
+    // Inválidos rejeitados (nunca silêncio).
+    const std::string base =
+        "\"engineVersion\":\"0.3.0\",\"formatVersion\":1,\"name\":\"J\","
+        "\"projectId\":\"" +
+        id.toString() + "\",\"sceneRoots\":[\"scenes\"]";
+    {
+        const std::string bad =
+            "{\"grid\":{\"cell\":0},\"name\":\"J\",\"projectId\":\"" +
+            id.toString() + "\"}"; // JSON incompleto — nem precisa
+        (void)bad;
+    }
+    {
+        const std::string bad =
+            "{\"grid\":{\"cell\":0},\"formatVersion\":1,\"name\":\"J\","
+            "\"projectId\":\"" +
+            id.toString() + "\"}";
+        const auto p = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"},
+            "{\"assetRegistryPath\":\"a\"," + bad + ",\"sceneRoots\":[]}");
+        // cell 0 → rejected
+        CHECK(p.isError());
+    }
+    {
+        const std::string bad =
+            "{\"assetRegistryPath\":\"a\",\"formatVersion\":1,"
+            "\"grid\":{\"majorEvery\":1},\"name\":\"J\",\"projectId\":\"" +
+            id.toString() + "\",\"sceneRoots\":[]}";
+        const auto p = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"}, bad);
+        CHECK(p.isError());
+    }
+}

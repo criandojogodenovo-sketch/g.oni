@@ -11,6 +11,7 @@
 
 #include "eng/core/Version.hpp"
 #include "eng/fs/Path.hpp"
+#include "eng/project/GridConfig.hpp"
 #include "eng/project/ProjectId.hpp"
 
 namespace eng::project {
@@ -43,6 +44,9 @@ struct ProjectConfig {
     /// Vazio = tabela default (defaultCollisionLayers) — o parse preenche
     /// quando a chave ausente; toJson SEMPRE escreve (aditivo, ADR-031).
     std::vector<CollisionLayerName> collisionLayers{};
+    /// P4.6 (Bloco 5/L2): grade do viewport em unidades de mundo (chave
+    /// aditiva "grid" — ausente = default).
+    GridConfig grid{};
 
     [[nodiscard]] bool operator==(const ProjectConfig&) const = default;
 };

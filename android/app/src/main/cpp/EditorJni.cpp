@@ -2432,6 +2432,60 @@ Java_com_goni_runtime_EditorJni_nativeEditorAddCollisionLayer(
     return static_cast<jlong>(added.value());
 }
 
+// --- P4.6 (Bloco 5/L2): grade do viewport (Grid v2 — project settings) -----
+
+/// TSV: visible\tcell\tmajorEvery\tminorR\tminorG\tminorB\tmajorR\tmajorG\tmajorB
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorGetGrid(JNIEnv* env,
+                                                    jobject /*thiz*/,
+                                                    jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    const eng::project::GridConfig& g = host->document().gridConfig();
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "%d\t%.6g\t%d\t%.4g\t%.4g\t%.4g\t%.4g\t%.4g\t%.4g",
+                  g.visible ? 1 : 0, static_cast<double>(g.cell),
+                  g.majorEvery, static_cast<double>(g.minorR),
+                  static_cast<double>(g.minorG), static_cast<double>(g.minorB),
+                  static_cast<double>(g.majorR), static_cast<double>(g.majorG),
+                  static_cast<double>(g.majorB));
+    return stringToJni(env, buf);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetGrid(JNIEnv* /*env*/,
+                                                    jobject /*thiz*/,
+                                                    jlong handle,
+                                                    jboolean visible,
+                                                    jfloat cell, jint every,
+                                                    jfloat minorR,
+                                                    jfloat minorG,
+                                                    jfloat minorB,
+                                                    jfloat majorR,
+                                                    jfloat majorG,
+                                                    jfloat majorB)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    eng::project::GridConfig g;
+    g.visible = visible == JNI_TRUE;
+    g.cell = static_cast<float>(cell);
+    g.majorEvery = static_cast<int>(every);
+    g.minorR = static_cast<float>(minorR);
+    g.minorG = static_cast<float>(minorG);
+    g.minorB = static_cast<float>(minorB);
+    g.majorR = static_cast<float>(majorR);
+    g.majorG = static_cast<float>(majorG);
+    g.majorB = static_cast<float>(majorB);
+    return record(handle, host->document().setGridConfig(g)) ? JNI_TRUE
+                                                             : JNI_FALSE;
+}
+
 /// Nomes dos assets de ÁUDIO (linhas \n) — picker do Inspector (kind audio).
 JNIEXPORT jstring JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorListAudio(JNIEnv* env,

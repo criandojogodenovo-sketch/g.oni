@@ -243,6 +243,19 @@ public:
     [[nodiscard]] eng::core::Result<std::uint32_t> addCollisionLayer(
         std::string_view name);
 
+    // --- P4.6 (Bloco 5/L2): grade do viewport (project settings) -----------
+    /// Config corrente (default honesto quando sem projeto). O
+    /// ViewportRenderer consome isto por frame (EditorHost repassa).
+    [[nodiscard]] const eng::project::GridConfig& gridConfig() const noexcept
+    {
+        static const eng::project::GridConfig kDefaultGrid{};
+        return hasProject() ? project_->config.grid : kDefaultGrid;
+    }
+    /// Define a grade (validação: cell > 0 finito; majorEvery 2..1024;
+    /// cores 0..1). Marca projectDirty_ (flush em saveProject).
+    [[nodiscard]] eng::core::Result<void> setGridConfig(
+        const eng::project::GridConfig& grid);
+
     [[nodiscard]] bool sceneDirty() const noexcept { return sceneDirty_; }
     [[nodiscard]] bool projectDirty() const noexcept { return projectDirty_; }
     /// Path da cena ATUAL relativo ao projeto ("main.json") — definido por
@@ -301,8 +314,21 @@ public:
     {
         if (tool_ != tool) {
             gizmoDragEnd();
+            // P4.6 (L4): transição 120ms — o pop do gizmo recomeça a cada
+            // troca EFETIVA de ferramenta.
+            toolChangedAt_ = std::chrono::steady_clock::now();
         }
         tool_ = tool;
+    }
+
+    /// P4.6 (L4): escala corrente do pop da transição (0.88..1.0) — o
+    /// gizmoDraw multiplica os halfes dos handles por isto.
+    [[nodiscard]] float gizmoHandlePop() const noexcept
+    {
+        const float ms = std::chrono::duration<float, std::milli>(
+                             std::chrono::steady_clock::now() - toolChangedAt_)
+                             .count();
+        return TransformGizmo::transitionScale(ms);
     }
 
     /// Bounds REAIS da entidade selecionada (posição/rotação/escala/
@@ -855,6 +881,9 @@ private:
     /// vive no DOCUMENTO (não na Activity): o ECS continua a única
     /// fonte de verdade autoral; o gizmo só calcula alvos.
     EditorTool tool_{EditorTool::Select};
+    /// P4.6 (L4): instante da ÚLTIMA troca de ferramenta (pop 120ms).
+    std::chrono::steady_clock::time_point toolChangedAt_
+        = std::chrono::steady_clock::now() - std::chrono::hours(24);
     TransformGizmo gizmo_{};
 
     /// Contexto do DRAG (P2, bug §5): texturas capturadas no begin (o

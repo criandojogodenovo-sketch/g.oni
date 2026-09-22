@@ -21,6 +21,7 @@
 
 #include "eng/core/Result.hpp"
 #include "eng/editor/Gizmo.hpp"
+#include "eng/project/GridConfig.hpp"
 #include "eng/render/RenderTypes.hpp"
 #include "eng/render/ShaderLibrary.hpp"
 #include "eng/editor/Viewport.hpp"
@@ -53,13 +54,15 @@ public:
     /// Um frame do viewport: quads + grade + seleção + partículas + SPRITES
     /// (texturas reais via TextureCache — evolução P0-3) + GIZMO (P1: lote
     /// de cor POR CIMA dos sprites). `assets` nulo (sem projeto) = sprites
-    /// caem no caminho de cor. `gizmo` nulo/vazio = sem gizmo. false = não
-    /// desenhou (minimizado/out-of-date persistente) — NUNCA lança.
+    /// caem no caminho de cor. `gizmo` nulo/vazio = sem gizmo. `grid` nulo
+    /// = default (P4.6/L2). false = não desenhou (minimizado/out-of-date
+    /// persistente) — NUNCA lança.
     bool renderFrame(const Viewport& viewport,
                      const std::vector<EntityQuad>& quads,
                      const std::vector<ParticleQuad>& particles, bool playMode,
                      const AssetBrowser* assets, TextureCache& textures,
-                     const GizmoDrawData* gizmo = nullptr);
+                     const GizmoDrawData* gizmo = nullptr,
+                     const eng::project::GridConfig* grid = nullptr);
 
     /// Caminho legado (testes/hosts sem sprites) — sem texturas.
     bool renderFrame(const Viewport& viewport,
@@ -160,7 +163,8 @@ private:
                                     const std::vector<ParticleQuad>& particles,
                                     bool playMode, const AssetBrowser* assets,
                                     TextureCache* textures,
-                                    const GizmoDrawData* gizmo);
+                                    const GizmoDrawData* gizmo,
+                                    const eng::project::GridConfig* grid);
 
     std::optional<eng::rhi::Renderer> renderer_{};
     eng::rhi::ShaderHandle shader_{};

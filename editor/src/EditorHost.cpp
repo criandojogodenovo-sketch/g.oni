@@ -731,9 +731,12 @@ bool EditorHost::renderFrame(float deltaSeconds)
     document_->resolveMaterials(quads);
     const auto particles = document_->viewport().buildParticleQuads(*scene);
     gizmoDraw_ = document_->gizmoDraw(&textureCache_);
+    // P4.6 (L2): a grade consome a config do PROJETO (passo em unidades,
+    // primary-every, cores, show/hide — Grid v2).
+    const eng::project::GridConfig& gridConfig = document_->gridConfig();
     const bool drew = viewportRenderer_->renderFrame(
         document_->viewport(), quads, particles, document_->isPlaying(),
-        document_->assets(), textureCache_, &gizmoDraw_);
+        document_->assets(), textureCache_, &gizmoDraw_, &gridConfig);
 
     if (drew) {
         if (!stats_.startupComplete) {

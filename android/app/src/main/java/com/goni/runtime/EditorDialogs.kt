@@ -1602,6 +1602,130 @@ internal fun EditorActivity.showProjectSettingsSheet() {
             collisionLayerRow(act, collisionBox, parts[0], bit))
     }
 
+    // P4.6 (Bloco 5/L2): grade do viewport — passo em UNIDADES DE MUNDO,
+    // primary-every, cores e show/hide (Grid v2, padrão Godot/Unity).
+    // Cores = presets de paleta do editor (aplicação imediata, honesta).
+    content.addView(sectionTitle("Grade (viewport)"))
+    val g = (EditorJni.nativeEditorGetGrid(handle) ?: "").split('\t')
+    var curVisible = g.getOrNull(0) == "1"
+    var curCell = g.getOrNull(1)?.toFloatOrNull() ?: 1f
+    var curEvery = g.getOrNull(2)?.toIntOrNull() ?: 8
+    fun f2b(v: String?, dflt: Float): Int =
+        ((v?.toFloatOrNull() ?: dflt) * 255f).toInt().coerceIn(0, 255)
+    var curMinor = 0xFF000000.toInt() or
+        (f2b(g.getOrNull(3), 0.20f) shl 16) or
+        (f2b(g.getOrNull(4), 0.21f) shl 8) or
+        f2b(g.getOrNull(5), 0.24f)
+    var curMajor = 0xFF000000.toInt() or
+        (f2b(g.getOrNull(6), 0.32f) shl 16) or
+        (f2b(g.getOrNull(7), 0.34f) shl 8) or
+        f2b(g.getOrNull(8), 0.40f)
+    fun applyGrid() {
+        val mr = (curMinor shr 16) and 0xFF
+        val mg = (curMinor shr 8) and 0xFF
+        val mb = curMinor and 0xFF
+        val jr = (curMajor shr 16) and 0xFF
+        val jg = (curMajor shr 8) and 0xFF
+        val jb = curMajor and 0xFF
+        if (!EditorJni.nativeEditorSetGrid(
+                handle, curVisible, curCell, curEvery,
+                mr / 255f, mg / 255f, mb / 255f,
+                jr / 255f, jg / 255f, jb / 255f)) {
+            toastErr(lastErrorText())
+        }
+    }
+    val gridRow = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    val gridToggle = Oni.chip(
+        this, if (curVisible) "Grade ON" else "Grade OFF",
+        active = curVisible, textSizeSp = 12f)
+    gridToggle.setOnClickListener {
+        curVisible = !curVisible
+        gridToggle.text = if (curVisible) "Grade ON" else "Grade OFF"
+        gridToggle.setTextColor(if (curVisible) Oni.ON_ACCENT else Oni.TEXT)
+        gridToggle.background = Oni.ripplePill(
+            act, if (curVisible) Oni.ACCENT else Oni.RAISED)
+        applyGrid()
+    }
+    gridRow.addView(gridToggle, LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+    val cellField = Oni.field(this, mono = true).apply {
+        setSingleLine()
+        hint = "passo (unid.)"
+        inputType = InputType.TYPE_CLASS_NUMBER or
+            InputType.TYPE_NUMBER_FLAG_DECIMAL
+        setText("%.4g".format(curCell))
+        imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                val v = text.toString().toFloatOrNull()
+                if (v != null && v > 0f) {
+                    curCell = v
+                    applyGrid()
+                } else {
+                    toastErr("Passo deve ser > 0")
+                }
+                true
+            } else false
+        }
+    }
+    gridRow.addView(cellField, LinearLayout.LayoutParams(0, dp(48), 1f))
+    val everyField = Oni.field(this, mono = true).apply {
+        setSingleLine()
+        hint = "major a cada N"
+        inputType = InputType.TYPE_CLASS_NUMBER
+        setText(curEvery.toString())
+        imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                val v = text.toString().toIntOrNull()
+                if (v != null && v >= 2) {
+                    curEvery = v
+                    applyGrid()
+                } else {
+                    toastErr("Major a cada N (>= 2)")
+                }
+                true
+            } else false
+        }
+    }
+    gridRow.addView(everyField, LinearLayout.LayoutParams(0, dp(48), 1f))
+    content.addView(gridRow)
+    fun gridColorRow(label: String, isMinor: Boolean) {
+        content.addView(TextView(this).apply {
+            text = label
+            setTextColor(Oni.TEXT_DIM)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(4), dp(8), 0, 0)
+        })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val presets = if (isMinor) {
+            listOf("#33363D", "#2E3A4E", "#31424A", "#3A2E4E", "#2E4238", "#463B33")
+        } else {
+            listOf("#565D6E", "#4E6E8E", "#4E7E8E", "#6E5E8E", "#5E8E6E", "#8E7E5E")
+        }
+        for (hex in presets) {
+            val argb = parseHexColor(hex) ?: 0xFF888888.toInt()
+            row.addView(TextView(this).apply {
+                text = ""
+                background = Oni.pill(act, argb, Oni.R_THUMB)
+                setOnClickListener {
+                    if (isMinor) curMinor = argb else curMajor = argb
+                    applyGrid()
+                }
+            }, LinearLayout.LayoutParams(dp(40), dp(32)).apply {
+                setMargins(dp(4), dp(4), dp(4), dp(4))
+            })
+        }
+        content.addView(row)
+    }
+    gridColorRow("Linhas minor", true)
+    gridColorRow("Linhas major", false)
+
     // Timestep da física + estado do áudio: valores reais do runtime.
     content.addView(sectionTitle("Física e áudio"))
     val runtimeText = TextView(this).apply {

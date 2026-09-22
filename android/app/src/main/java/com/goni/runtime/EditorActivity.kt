@@ -394,12 +394,11 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             it.setOnClickListener { showProjectMenu() }
         }
         topBar.addView(btnProject, LinearLayout.LayoutParams(dp(48), dp(48)))
-        topBar.addView(
-            Oni.chip(this, "Cena", textSizeSp = 13f).also {
-                it.setOnClickListener { showSceneMenu() }
-            },
-            LinearLayout.LayoutParams(0, dp(48), 0.9f)
-        )
+        // P4.6 (L1): referência p/ modo COMPATO da top bar em landscape.
+        btnScene = Oni.chip(this, "Cena", textSizeSp = 13f).also {
+            it.setOnClickListener { showSceneMenu() }
+        }
+        topBar.addView(btnScene, LinearLayout.LayoutParams(0, dp(48), 0.9f))
         // Play = icon-button ACENTO circular (§2 — chamada do acento).
         btnPlay = Oni.button(this, "▶", kind = Oni.BTN_PRIMARY, textSizeSp = 16f)
         btnPlay.setOnClickListener { togglePlay() }
@@ -419,7 +418,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        val chromeRow = LinearLayout(this).apply {
+        // P4.6 (L1): a orientação desta row FLIP em landscape (pills lado a
+        // lado — thumb zone horizontal) sem re-parent (regra N2).
+        chromeRowView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
         }
@@ -446,7 +447,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             toolPill.addView(seg, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48), 1f))
         }
-        chromeRow.addView(toolPill, LinearLayout.LayoutParams(
+        chromeRowView?.addView(toolPill, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ))
@@ -469,7 +470,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
         snapRow.addView(snapAngleChip, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
-        chromeRow.addView(snapRow, LinearLayout.LayoutParams(
+        chromeRowView?.addView(snapRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(6) })
@@ -501,7 +502,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 0, dp(48), 1f))
         }
 
-        bottomBar.addView(chromeRow, LinearLayout.LayoutParams(
+        bottomBar.addView(chromeRowView, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { setMargins(dp(8), 0, dp(8), dp(8)) })
@@ -679,6 +680,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         updatePanelPlacement()
         updateToolSegments()
         updateTabStates()
+        applyChromePlacement()  // P4.6 (L1): chrome nas duas orientações
         zoomCluster?.visibility = View.VISIBLE
         undoCluster?.visibility = View.VISIBLE
         syncSnapChips()
@@ -818,6 +820,73 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     private var panelPlacementLandscape = false
 
+    // P4.6 (L1): referências do chrome reposicionável nas duas orientações.
+    private var btnScene: TextView? = null
+    private var chromeRowView: LinearLayout? = null
+    private var chromePlacementLandscape = false
+
+    /**
+     * P4.6 (Bloco 5/L1) — chrome SEM BUGS nas duas orientações:
+     *   portrait  = layout atual (pills empilhados, zoom/undo a 178dp);
+     *   landscape = top bar COMPACTA (Cena/backend fora), pills da tool
+     *               switcher LADO A LADO com o snap row (thumb zone
+     *               horizontal) e clusters de zoom/undo colados ao rodapé.
+     * ZERO re-parent (regra N2): só orientation do chromeRow, visibility e
+     * margins — nada que possa destacar uma view com foco/IME.
+     */
+    private fun applyChromePlacement(force: Boolean = false) {
+        val isLandscape = resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        if (!force && chromePlacementLandscape == isLandscape) {
+            return  // mesmo modo — insets/refresh não re-flipam (padrão B-B)
+        }
+        chromePlacementLandscape = isLandscape
+        if (isLandscape) {
+            btnScene?.visibility = View.GONE
+            btnBackend.visibility = View.GONE
+            chromeRowView?.orientation = LinearLayout.HORIZONTAL
+            chromeRowView?.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
+            // Espaço entre as duas pills na row horizontal.
+            (chromeRowView?.getChildAt(1)?.layoutParams as? LinearLayout.LayoutParams)
+                ?.topMargin = 0
+            (chromeRowView?.getChildAt(1)?.layoutParams as? LinearLayout.LayoutParams)
+                ?.leftMargin = dp(8)
+            zoomCluster?.let { cluster ->
+                (cluster.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    setMargins(dp(10), 0, 0, dp(12))
+                }
+                cluster.requestLayout()
+            }
+            undoCluster?.let { cluster ->
+                (cluster.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    setMargins(0, 0, dp(10), dp(12))
+                }
+                cluster.requestLayout()
+            }
+        } else {
+            btnScene?.visibility = View.VISIBLE
+            btnBackend.visibility = View.VISIBLE
+            chromeRowView?.orientation = LinearLayout.VERTICAL
+            chromeRowView?.gravity = Gravity.CENTER_HORIZONTAL
+            (chromeRowView?.getChildAt(1)?.layoutParams as? LinearLayout.LayoutParams)
+                ?.leftMargin = 0
+            (chromeRowView?.getChildAt(1)?.layoutParams as? LinearLayout.LayoutParams)
+                ?.topMargin = dp(6)
+            zoomCluster?.let { cluster ->
+                (cluster.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    setMargins(dp(10), 0, 0, dp(178))
+                }
+                cluster.requestLayout()
+            }
+            undoCluster?.let { cluster ->
+                (cluster.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    setMargins(0, 0, dp(10), dp(178))
+                }
+                cluster.requestLayout()
+            }
+        }
+    }
+
     /** Portrait: painel = sheet inferior (máx 62% da altura, viewport
      *  continua por trás). Landscape: drawer lateral direito (46%). */
     private fun updatePanelPlacement() {
@@ -836,6 +905,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             return
         }
         panelPlacementLandscape = isLandscape
+        applyChromePlacement()  // P4.6 (L1): chrome acompanha a orientação
         (panelContainer.parent as? FrameLayout)?.removeView(panelContainer)
         if (isLandscape) {
             panelHost.addView(

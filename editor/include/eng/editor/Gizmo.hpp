@@ -129,6 +129,7 @@ public:
     static constexpr float kHandleDp = 32.f;   ///< lado do handle visual
     static constexpr float kArrowHeadDp = 40.f; ///< ponta de seta (MOVE)
     static constexpr float kEdgeDp = 24.f;     ///< marca de aresta (SCALE)
+    static constexpr float kEdgeArrowDp = 28.f; ///< seta de aresta (SCALE, P4.6/L3)
     static constexpr float kAxisDp = 96.f;     ///< comprimento do eixo
     static constexpr float kRingPadDp = 26.f;  ///< folga do anel p/ fora
     static constexpr float kRingMinDp = 64.f;  ///< raio mínimo do anel
@@ -156,6 +157,11 @@ public:
     [[nodiscard]] static float edgePx(float uiScale) noexcept
     {
         return std::clamp(kEdgeDp * uiScale, 20.f, 30.f);
+    }
+    /// Lado visual da seta de aresta (SCALE — P4.6/L3) em px.
+    [[nodiscard]] static float edgeArrowPx(float uiScale) noexcept
+    {
+        return std::clamp(kEdgeArrowDp * uiScale, 22.f, 34.f);
     }
     /// Comprimento do eixo (MOVE) em px.
     [[nodiscard]] static float axisPx(float uiScale) noexcept
@@ -219,6 +225,21 @@ public:
     }
 
     // --- desenho ----------------------------------------------------------------
+
+    /// P4.6 (L4): transição entre ferramentas — POP de 120ms (ease-out
+    /// cúbico; 0.88 → 1.0). Função PURA do tempo decorrido (testável sem
+    /// clock); o renderer só multiplica os halfes dos handles.
+    static constexpr float kToolTransitionMs = 120.f;
+    [[nodiscard]] static float transitionScale(
+        float elapsedMs) noexcept
+    {
+        if (!(elapsedMs >= 0.f) || elapsedMs >= kToolTransitionMs) {
+            return 1.f;
+        }
+        const float t = elapsedMs / kToolTransitionMs;
+        const float eased = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+        return 0.88f + 0.12f * eased;
+    }
 
     /// Geometria da ferramenta (em MUNDO) para o renderer. Vazia quando
     /// a ferramenta não tem gizmo (Select) ou bounds inválido.

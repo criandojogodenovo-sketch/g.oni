@@ -1,5 +1,7 @@
 #include "eng/project/ProjectFile.hpp"
 
+#include <cmath>
+
 #include "eng/serial/Json.hpp"
 
 namespace eng::project {
@@ -160,6 +162,61 @@ eng::core::Result<ProjectConfig> ProjectFile::configFromJson(
         }
     }
 
+    // P4.6 (Bloco 5/L2): grade do viewport — chave ADITIVA (ausente =
+    // default). Estrita quando presente (valores do nosso writer).
+    GridConfig grid{};
+    const auto gridKey = value.find("grid");
+    if (gridKey.has_value()) {
+        if (!gridKey->isObject()) {
+            return makeUnexpected(bad("grid não é objeto"));
+        }
+        const auto visible = gridKey->find("visible");
+        if (visible.has_value() && visible->isBool()) {
+            grid.visible = visible->asBool();
+        }
+        const auto cell = gridKey->find("cell");
+        if (cell.has_value() && cell->isNumber()) {
+            const double v = cell->asF64();
+            if (!std::isfinite(v) || v <= 0.0 || v > 4096.0) {
+                return makeUnexpected(
+                    bad("grid.cell inválido (0 < cell <= 4096)"));
+            }
+            grid.cell = static_cast<float>(v);
+        }
+        const auto every = gridKey->find("majorEvery");
+        if (every.has_value() && every->isUnsigned()) {
+            const std::uint64_t v = every->asU64();
+            if (v < 2 || v > 1024) {
+                return makeUnexpected(
+                    bad("grid.majorEvery inválido (2..1024)"));
+            }
+            grid.majorEvery = static_cast<int>(v);
+        }
+        // Cores: R/G/B independentes (cada uma com seu limite).
+        const auto apply = [&](const char* key, float& out)
+            -> eng::core::Result<void> {
+            const auto v = gridKey->find(key);
+            if (v.has_value() && v->isNumber()) {
+                const double f = v->asF64();
+                if (!std::isfinite(f) || f < 0.0 || f > 1.0) {
+                    return makeUnexpected(bad(std::string("grid.") + key +
+                                              " fora de [0,1]"));
+                }
+                out = static_cast<float>(f);
+            }
+            return {};
+        };
+        auto result = apply("minorR", grid.minorR);
+        if (result.ok()) { result = apply("minorG", grid.minorG); }
+        if (result.ok()) { result = apply("minorB", grid.minorB); }
+        if (result.ok()) { result = apply("majorR", grid.majorR); }
+        if (result.ok()) { result = apply("majorG", grid.majorG); }
+        if (result.ok()) { result = apply("majorB", grid.majorB); }
+        if (result.isError()) {
+            return makeUnexpected(result.error());
+        }
+    }
+
     ProjectConfig config;
     config.projectId = projectId.value();
     config.name = name->asString();
@@ -167,6 +224,7 @@ eng::core::Result<ProjectConfig> ProjectFile::configFromJson(
     config.assetRegistryPath = assetRegistryPath.value();
     config.sceneRoots = std::move(sceneRoots);
     config.collisionLayers = std::move(collisionLayers);
+    config.grid = grid;
     return config;
 }
 
@@ -204,6 +262,22 @@ eng::core::Result<eng::serial::JsonValue> ProjectFile::toJson(
         layersJson.append(std::move(entry));
     }
     value.set("collisionLayers", std::move(layersJson));
+    // P4.6 (Bloco 5/L2): grade do viewport — SEMPRE escreve (aditivo).
+    {
+        JsonValue gridJson = JsonValue::object();
+        gridJson.set("visible", JsonValue::boolean(config.grid.visible));
+        gridJson.set("cell", JsonValue::real(config.grid.cell));
+        gridJson.set("majorEvery",
+                     JsonValue::uinteger(static_cast<std::uint64_t>(
+                         config.grid.majorEvery)));
+        gridJson.set("minorR", JsonValue::real(config.grid.minorR));
+        gridJson.set("minorG", JsonValue::real(config.grid.minorG));
+        gridJson.set("minorB", JsonValue::real(config.grid.minorB));
+        gridJson.set("majorR", JsonValue::real(config.grid.majorR));
+        gridJson.set("majorG", JsonValue::real(config.grid.majorG));
+        gridJson.set("majorB", JsonValue::real(config.grid.majorB));
+        value.set("grid", std::move(gridJson));
+    }
     return value;
 }
 

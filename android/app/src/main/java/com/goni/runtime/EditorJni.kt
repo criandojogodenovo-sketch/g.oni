@@ -268,6 +268,11 @@ object EditorJni {
     external fun nativeEditorSetCollisionLayerName(handle: Long, bit: Long, name: String): Boolean
     /** Nova camada com o menor bit livre; devolve o bit (0 = erro). */
     external fun nativeEditorAddCollisionLayer(handle: Long, name: String): Long
+
+    // --- P4.6 (Bloco 5/L2): grade do viewport (Grid v2) ------------------------
+    /** TSV: visible\tcell\tmajorEvery\tminorR\tminorG\tminorB\tmajorR\tmajorG\tmajorB */
+    external fun nativeEditorGetGrid(handle: Long): String?
+    external fun nativeEditorSetGrid(handle: Long, visible: Boolean, cell: Float, majorEvery: Int, minorR: Float, minorG: Float, minorB: Float, majorR: Float, majorG: Float, majorB: Float): Boolean
     /** Nomes dos assets de áudio (linhas \n) — picker do Inspector (kind audio). */
     external fun nativeEditorListAudio(handle: Long): String?
 

@@ -636,6 +636,39 @@ Result<std::uint32_t> EditorDocument::addCollisionLayer(
     return freeBit;
 }
 
+Result<void> EditorDocument::setGridConfig(
+    const eng::project::GridConfig& grid)
+{
+    if (!hasProject()) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidState, "sem projeto aberto"));
+    }
+    if (mode_ == Mode::Play) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                             "projeto é somente-leitura em Play"));
+    }
+    if (!std::isfinite(grid.cell) || grid.cell <= 0.f ||
+        grid.cell > 4096.f) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument, "grid.cell inválido (0..4096]"));
+    }
+    if (grid.majorEvery < 2 || grid.majorEvery > 1024) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidArgument, "grid.majorEvery inválido (2..1024)"));
+    }
+    const float colors[] = {grid.minorR, grid.minorG, grid.minorB,
+                            grid.majorR, grid.majorG, grid.majorB};
+    for (const float c : colors) {
+        if (!std::isfinite(c) || c < 0.f || c > 1.f) {
+            return makeUnexpected(documentError(
+                StatusCode::InvalidArgument, "cor da grade fora de [0,1]"));
+        }
+    }
+    project_->config.grid = grid;
+    projectDirty_ = true;
+    return {};
+}
+
 eng::fs::Path EditorDocument::projectRoot() const
 {
     return hasProject() ? project_->paths().projectDir()
@@ -1471,6 +1504,15 @@ GizmoDrawData EditorDocument::gizmoDraw(TextureCache* textures) const
     }
     draw.quads = gizmo_.layoutQuads(viewport_, tool_, bounds);
     draw.segments = gizmo_.layoutSegments(viewport_, tool_, bounds);
+    // P4.6 (L4): transição entre tools — POP de 120ms nos handles (a
+    // hit-test NÃO muda: alvo de toque constante, só o visual escala).
+    const float pop = gizmoHandlePop();
+    if (pop < 1.f) {
+        for (GizmoQuad& quad : draw.quads) {
+            quad.halfW *= pop;
+            quad.halfH *= pop;
+        }
+    }
     return draw;
 }
 

@@ -498,6 +498,28 @@ std::vector<GizmoQuad> TransformGizmo::layoutQuads(const Viewport& viewport,
                      bounds.rotation, kScaleR, kScaleG, kScaleB});
     quads.push_back({edges.s.first, edges.s.second, edgeHalf, edgeHalf,
                      bounds.rotation, kScaleR, kScaleG, kScaleB});
+    // P4.6 (L3): SETAS nas arestas — affordance direcional coerente com as
+    // setas do move: cada marca de aresta ganha uma ponta apontando PARA
+    // FORA do bounds ao longo do eixo local (E/W no X local, N/S no Y local).
+    const float arrowHalf =
+        pxToWorld(viewport, edgeArrowPx(scale)) * 0.5f;
+    const float dirX = std::cos(bounds.rotation);
+    const float dirY = std::sin(bounds.rotation);
+    const float perpX = -dirY;
+    const float perpY = dirX;
+    const float outward = edgeHalf + arrowHalf * 0.9f;
+    quads.push_back({edges.e.first + dirX * outward,
+                     edges.e.second + dirY * outward, arrowHalf, arrowHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({edges.w.first - dirX * outward,
+                     edges.w.second - dirY * outward, arrowHalf, arrowHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({edges.n.first + perpX * outward,
+                     edges.n.second + perpY * outward, arrowHalf, arrowHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
+    quads.push_back({edges.s.first - perpX * outward,
+                     edges.s.second - perpY * outward, arrowHalf, arrowHalf,
+                     bounds.rotation, kScaleR, kScaleG, kScaleB});
     return quads;
 }
 

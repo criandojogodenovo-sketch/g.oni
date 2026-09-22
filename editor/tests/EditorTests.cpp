@@ -3689,12 +3689,12 @@ TEST_CASE("editor: P1 — renderer desenha GIZMO por cima do sprite (readback)",
     REQUIRE(owned->renderFrame(1.f / 60.f));
     const auto& gizmoVerts = renderer->lastFrameGizmoVertices();
     REQUIRE_FALSE(gizmoVerts.empty());
-    // P4.1 (D3/D4 — affordance de toque do MOVE REDESENHADA): quadrado
-    // central + 4 pontas de seta (5 quads × 6 vértices) + 4 hastes
-    // (4 segmentos × 6) = 54. O P1 desenhava 3 handles + 2 eixos (30);
-    // o contrato de contagem acompanha a especificação nova (o gizmo
-    // continua INTEIRO por cima do sprite — a prova de pixel abaixo).
-    CHECK(gizmoVerts.size() == 54);
+    // P4.1 (D3/D4) + P4.6 (L4 — handle chamferado com outline): por handle
+    // = outline (1 quad + 4 cortes) + fill (1 quad + 4 cortes) = 10 quads;
+    // 5 handles × 10 quads × 6 vértices = 300 + 4 hastes (4 segmentos × 6)
+    // = 324. O contrato acompanha a especificação (o gizmo continua
+    // INTEIRO por cima do sprite — a prova de pixel abaixo).
+    CHECK(gizmoVerts.size() == 324);
 
     // Prova VISUAL: o pixel central da tela é o HANDLE CENTRAL amarelo
     // (kCenter 0.96/0.82/0.30) DESENHADO SOBRE o sprite vermelho/verde.
@@ -8021,6 +8021,7 @@ static constexpr const char* kExpectedJniSymbols[] = {
     "Java_com_goni_runtime_EditorJni_nativeEditorEntityComponents",
     "Java_com_goni_runtime_EditorJni_nativeEditorExportProjectZip",
     "Java_com_goni_runtime_EditorJni_nativeEditorGameTouch",
+    "Java_com_goni_runtime_EditorJni_nativeEditorGetGrid",
     "Java_com_goni_runtime_EditorJni_nativeEditorGetSnapRotate",
     "Java_com_goni_runtime_EditorJni_nativeEditorGetSnapTranslate",
     "Java_com_goni_runtime_EditorJni_nativeEditorGetTool",
@@ -8084,6 +8085,7 @@ static constexpr const char* kExpectedJniSymbols[] = {
     "Java_com_goni_runtime_EditorJni_nativeEditorSetBackend",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetCollisionLayerName",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetComponentField",
+    "Java_com_goni_runtime_EditorJni_nativeEditorSetGrid",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetGameViewportSize",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetPaused",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetProjectName",
@@ -8113,8 +8115,8 @@ static constexpr const char* kExpectedJniSymbols[] = {
     // P4.6: 120 (P4.5.2) + 3 camadas de colisão nomeadas = 123.
     constexpr std::size_t kExpected =
         sizeof(kExpectedJniSymbols) / sizeof(kExpectedJniSymbols[0]);
-    // P4.6: 123 (blocos 0-3) + 4 keys TRS da timeline = 127.
-    STATIC_REQUIRE(kExpected == 127);
+    // P4.6: 127 + 2 da grade (Grid v2) = 129.
+    STATIC_REQUIRE(kExpected == 129);
 
     std::vector<std::string> missing;
     for (const char* name : kExpectedJniSymbols) {
@@ -8622,4 +8624,131 @@ TEST_CASE("p46: timeline TRS reproduz no PLAY (AnimationTick real) — "
     CHECK(y2 <= 4.01); // loop amarra ao range do clip
 
     f.doc->stop();
+}
+
+TEST_CASE("p46: Grid v2 — LOD adaptativo (fade/hide/subdivisão) e validação",
+          "[editor][p46]")
+{
+    using eng::project::computeGridLod;
+    using eng::project::GridConfig;
+
+    GridConfig g; // cell 1, majorEvery 8 (defaults)
+
+    // Zoom padrão 48 px/unidade: minors plenas (48 px), majors a 8u (384 px).
+    {
+        const auto lod = computeGridLod(g, 48.f);
+        CHECK(lod.minorStep == 1.f);
+        CHECK(lod.majorStep == 8.f);
+        CHECK(lod.minorAlpha == 1.f);
+    }
+    // Zoom 2: minors abaixo do FIM do fade → ESCONDIDAS (anti-moiré duro);
+    // majors (16 px) seguem visíveis.
+    {
+        const auto lod = computeGridLod(g, 2.f);
+        CHECK(lod.minorStep == 1.f);
+        CHECK(lod.majorStep == 8.f);
+        CHECK(lod.minorAlpha == 0.f);
+    }
+    // Zoom 1: subiu de nível (majors viram minors — subdivisão emerge ao
+    // aproximar): minorStep 8 com fade parcial (8 px → alpha 0.2).
+    {
+        const auto lod = computeGridLod(g, 1.f);
+        CHECK(lod.minorStep == 8.f);
+        CHECK(lod.majorStep == 64.f);
+        CHECK(lod.minorAlpha == Catch::Approx(0.2f).margin(1e-5f));
+    }
+    // Zoom 0.5: minors do nível escondidas (4 px), majors (32 px) visíveis.
+    {
+        const auto lod = computeGridLod(g, 0.5f);
+        CHECK(lod.minorStep == 8.f);
+        CHECK(lod.majorStep == 64.f);
+        CHECK(lod.minorAlpha == 0.f);
+    }
+
+    // Config via documento: valida e persiste no project.goni.json.
+    DocFixture f;
+    f.withProject();
+    eng::project::GridConfig custom;
+    custom.cell = 0.5f;
+    custom.majorEvery = 4;
+    custom.minorR = 0.15f;
+    REQUIRE(f.doc->setGridConfig(custom).ok());
+    CHECK(f.doc->gridConfig().cell == 0.5f);
+    CHECK(f.doc->gridConfig().majorEvery == 4);
+    CHECK(f.doc->gridConfig().minorR == 0.15f);
+    // Inválidos rejeitados (honesto).
+    eng::project::GridConfig badCell;
+    badCell.cell = 0.f;
+    CHECK(f.doc->setGridConfig(badCell).isError());
+    eng::project::GridConfig badEvery;
+    badEvery.majorEvery = 1;
+    CHECK(f.doc->setGridConfig(badEvery).isError());
+    eng::project::GridConfig badColor;
+    badColor.minorR = 2.f;
+    CHECK(f.doc->setGridConfig(badColor).isError());
+    // Persistência (projectDirty → saveProject escreve a chave "grid").
+    REQUIRE(f.doc->saveProject().ok());
+    auto text = f.fs->readAllText(eng::fs::Path{"TestGame/project.goni.json"});
+    REQUIRE(text.ok());
+    CHECK(text.value().find("\"grid\"") != std::string::npos);
+}
+
+TEST_CASE("p46: SCALE com setas nas arestas (L3) — 12 quads apontando para "
+          "fora; transição 120ms (L4)",
+          "[editor][p46]")
+{
+    using eng::editor::EditorTool;
+    using eng::editor::GizmoBounds;
+    using eng::editor::TransformGizmo;
+
+    // --- L4: função pura da transição (pop 0.88 → 1.0) ----------------------
+    CHECK(TransformGizmo::transitionScale(0.f) == Catch::Approx(0.88f));
+    CHECK(TransformGizmo::transitionScale(-5.f) == 1.f);
+    CHECK(TransformGizmo::transitionScale(120.f) == 1.f);
+    CHECK(TransformGizmo::transitionScale(1000.f) == 1.f);
+    CHECK(TransformGizmo::transitionScale(60.f) > 0.94f);
+    CHECK(TransformGizmo::transitionScale(60.f) < 1.f);
+    // Monótona crescente.
+    CHECK(TransformGizmo::transitionScale(30.f) <
+          TransformGizmo::transitionScale(90.f));
+
+    // --- gizmoHandlePop: < 1 logo após a troca; == 1 depois da janela -------
+    DocFixture f;
+    f.withProject();
+    auto e = f.doc->createEntity("Hero", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->select(e.value()).ok());
+    f.doc->setTool(EditorTool::Scale);
+    const float popRightAfter = f.doc->gizmoHandlePop();
+    CHECK(popRightAfter >= 0.88f);
+    CHECK(popRightAfter < 1.f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(140));
+    CHECK(f.doc->gizmoHandlePop() == 1.f);
+
+    // --- L3: layoutQuads SCALE = 4 cantos + 4 marcas + 4 setas = 12 ---------
+    TransformGizmo gizmo;
+    const GizmoBounds bounds = f.doc->selectionBounds(nullptr);
+    REQUIRE(bounds.valid);
+    auto quads = gizmo.layoutQuads(f.doc->viewport(), EditorTool::Scale,
+                                   bounds);
+    REQUIRE(quads.size() == 12);
+    // Setas apontam PARA FORA: as 4 últimas (arrows) estão além das marcas.
+    // Ordem de push: 4 cantos, 4 marcas, 4 setas — a seta E está além da
+    // marca E (mesma direção do eixo local, deslocada para fora).
+    const float markE = quads[4].worldX;
+    const float arrowE = quads[8].worldX;
+    CHECK(arrowE > markE);
+    const float markW = quads[5].worldX;
+    const float arrowW = quads[9].worldX;
+    CHECK(arrowW < markW);
+    const float markN = quads[6].worldY;
+    const float arrowN = quads[10].worldY;
+    CHECK(arrowN > markN);
+    const float markS = quads[7].worldY;
+    const float arrowS = quads[11].worldY;
+    CHECK(arrowS < markS);
+
+    // Alvos de toque ≥ 48dp: o hitPx continua 24dp de raio (48 ⌀).
+    CHECK(TransformGizmo::hitPx(1.f) == Catch::Approx(24.f));
+    CHECK(TransformGizmo::hitPx(2.f) == Catch::Approx(48.f));
 }
