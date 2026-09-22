@@ -213,4 +213,18 @@ evidência por bloco com o status por item.
   snap/fit, 120⇄120); B-A/B-B/N1/N2 sem regressão (suítes verdes);
   flipbook coexistindo; zero UI morta (todo controle novo escreve em
   estado real via JNI/documento).
-- **CI final + APK + SHA256 + round 6 no C33**: no fecho da fase.
+- **CI final**: Linux #66 ✅ + Android #60 ✅ @ `cbacb72` (runs
+  35721741580 / 35721741537). Fix intermediário: 3 erros de Kotlin no
+  primeiro push (#59 falhou — `collisionLayerRow` via receiver +
+  `Oni.pill` sem radius), corrigidos em commit cirúrgico.
+- **APK do CI**: SHA256
+  `530420bf46a781c22220c99c400d8e5a19f20e71a5d0bf7cb377de45e2a03380`.
+  Auditoria local do artefato: **0 símbolos JNI manglados**, 139 JNI
+  limpos, **9/9 novos do P4.6 presentes** (GetGrid/SetGrid/
+  CollisionLayerList/SetCollisionLayerName/AddCollisionLayer/
+  AnimationAddKey/KeyList/KeySet/KeyDelete), caption do splash nas 4
+  densidades embutido.
+- **Round 6 no C33** (usuário): 1. repro colisão; 2. luz em lit + hint
+  unlit; 3. chips filtram colisão/luz; 4. timeline grava e reproduz no
+  Play; 5. landscape fluxo completo; 6. grid majors/fade/axes; 7. scale
+  com setas; 8. splash/settings mostram `P4.6 · 0.6.0`.
