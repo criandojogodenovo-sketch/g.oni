@@ -521,7 +521,7 @@ internal fun EditorActivity.addComponentDialog() {
     val container = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(search, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
         addView(list, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(300)).apply {
             topMargin = dp(8)
@@ -783,7 +783,7 @@ internal fun EditorActivity.editMaterialDialog(name: String) {
     }
     layout.addView(shaderLabel)
     layout.addView(alphaEdit, LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
     OniDialog.custom(
         this, "Material $name", layout,
         listOf(
@@ -849,7 +849,7 @@ internal fun EditorActivity.pickTextureFor(
                     background = Oni.rounded(act, Oni.RAISED, Oni.R_THUMB)
                     clipToOutline = true
                 },
-                LinearLayout.LayoutParams(dp(44), dp(44))
+                LinearLayout.LayoutParams(dp(48), dp(48))
             )
             row.addView(
                 View(this),
@@ -1039,7 +1039,7 @@ internal fun EditorActivity.layerEditDialog(row: LayerRow) {
         setText(fmtFloat(row.timeScale))
     }
     container.addView(tsField, LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
         topMargin = dp(4)
     })
     fun oniSwitchRow(label: String, checked: Boolean): LinearLayout {
@@ -1169,7 +1169,7 @@ internal fun EditorActivity.animMetaDialog(name: String) {
         inputType = InputType.TYPE_CLASS_NUMBER
     }
     container.addView(input, LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
     val loopRow = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -1288,7 +1288,7 @@ internal fun EditorActivity.showProjectSettingsSheet() {
     }
     content.addView(sectionTitle("Nome do projeto"))
     content.addView(nameField, LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
 
     // Camadas (LayerSystem da cena): nome + participação em render.
     content.addView(sectionTitle("Camadas da cena"))

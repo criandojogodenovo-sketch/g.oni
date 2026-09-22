@@ -167,7 +167,7 @@ object Oni {
         }
         val vPad = dp(c, 12)
         f.setPadding(dp(c, 14), vPad, dp(c, 14), vPad)
-        f.minimumHeight = dp(c, 44)
+        f.minimumHeight = dp(c, 48)
         if (minLines_ > 0) f.minLines = minLines_
         return f
     }

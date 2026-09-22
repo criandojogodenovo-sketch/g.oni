@@ -98,11 +98,11 @@ class ScriptWindow(private val activity: EditorActivity) {
             minimumWidth = Oni.dp(ctx, 44)
             setOnClickListener { togglePanel(funcsPanel, this, "ƒ") }
         }
-        header.addView(btnVars, LinearLayout.LayoutParams(Oni.dp(ctx, 44), Oni.dp(ctx, 44)))
-        header.addView(btnFuncs, LinearLayout.LayoutParams(Oni.dp(ctx, 44), Oni.dp(ctx, 44)))
+        header.addView(btnVars, LinearLayout.LayoutParams(Oni.dp(ctx, 48), Oni.dp(ctx, 48)))
+        header.addView(btnFuncs, LinearLayout.LayoutParams(Oni.dp(ctx, 48), Oni.dp(ctx, 48)))
         header.addView(Oni.chip(ctx, "✕", textSizeSp = 13f).apply {
             setOnClickListener { dialog?.dismiss() }
-        }, LinearLayout.LayoutParams(Oni.dp(ctx, 44), Oni.dp(ctx, 44)))
+        }, LinearLayout.LayoutParams(Oni.dp(ctx, 48), Oni.dp(ctx, 48)))
         column.addView(header)
 
         // --- superfície de código: números + código num ScrollView --------
@@ -204,13 +204,13 @@ class ScriptWindow(private val activity: EditorActivity) {
         }
         toolbar.addView(Oni.chip(ctx, "Compilar", active = true, textSizeSp = 13f).apply {
             setOnClickListener { compile() }
-        }, LinearLayout.LayoutParams(0, Oni.dp(ctx, 44), 1f))
+        }, LinearLayout.LayoutParams(0, Oni.dp(ctx, 48), 1f))
         toolbar.addView(Oni.chip(ctx, "Anexar", textSizeSp = 13f).apply {
             setOnClickListener { attach() }
-        }, LinearLayout.LayoutParams(0, Oni.dp(ctx, 44), 1f))
+        }, LinearLayout.LayoutParams(0, Oni.dp(ctx, 48), 1f))
         toolbar.addView(Oni.chip(ctx, "Salvar", active = true, textSizeSp = 13f).apply {
             setOnClickListener { save() }
-        }, LinearLayout.LayoutParams(0, Oni.dp(ctx, 44), 1f))
+        }, LinearLayout.LayoutParams(0, Oni.dp(ctx, 48), 1f))
         card.addView(toolbar, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL

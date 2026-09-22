@@ -315,21 +315,21 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         btnProject = Oni.chip(this, "☰", textSizeSp = 14f).also {
             it.setOnClickListener { showProjectMenu() }
         }
-        topBar.addView(btnProject, LinearLayout.LayoutParams(dp(48), dp(44)))
+        topBar.addView(btnProject, LinearLayout.LayoutParams(dp(48), dp(48)))
         topBar.addView(
             Oni.chip(this, "Cena", textSizeSp = 13f).also {
                 it.setOnClickListener { showSceneMenu() }
             },
-            LinearLayout.LayoutParams(0, dp(44), 0.9f)
+            LinearLayout.LayoutParams(0, dp(48), 0.9f)
         )
         // Play = icon-button ACENTO circular (§2 — chamada do acento).
         btnPlay = Oni.button(this, "▶", kind = Oni.BTN_PRIMARY, textSizeSp = 16f)
         btnPlay.setOnClickListener { togglePlay() }
-        topBar.addView(btnPlay, LinearLayout.LayoutParams(dp(48), dp(44)))
+        topBar.addView(btnPlay, LinearLayout.LayoutParams(dp(48), dp(48)))
         btnBackend = Oni.chip(this, "auto", mono = true, textSizeSp = 12f).also {
             it.setOnClickListener { b -> showBackendMenu(b as TextView) }
         }
-        topBar.addView(btnBackend, LinearLayout.LayoutParams(0, dp(44), 0.7f))
+        topBar.addView(btnBackend, LinearLayout.LayoutParams(0, dp(48), 0.7f))
 
         // ---- chrome inferior: linha de ferramentas flutuante + tab bar card ----
         bottomBar = LinearLayout(this).apply {
@@ -349,7 +349,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         val segments = listOf("Select" to 0, "Move" to 1, "Rotation" to 2, "Scale" to 3)
         toolSegments = segments.map { (label, tool) ->
             Oni.chip(this, label, textSizeSp = 12f).also { seg ->
-                seg.minHeight = dp(40)
+                seg.minHeight = dp(48)
                 seg.setPadding(dp(12), 0, dp(12), 0)
                 seg.setOnClickListener {
                     editorTool = tool
@@ -360,7 +360,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         for (seg in toolSegments) {
             toolPill.addView(seg, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40), 1f))
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48), 1f))
         }
         chromeRow.addView(toolPill, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -374,17 +374,17 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
         snapGradeChip = Oni.chip(this, "Grade", textSizeSp = 11f).apply {
-            minimumHeight = dp(36)
+            minimumHeight = dp(48)
             setOnClickListener { toggleSnap(translate = true) }
         }
         snapAngleChip = Oni.chip(this, "15°", mono = true, textSizeSp = 11f).apply {
-            minimumHeight = dp(36)
+            minimumHeight = dp(48)
             setOnClickListener { toggleSnap(translate = false) }
         }
         snapRow.addView(snapGradeChip, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
         snapRow.addView(snapAngleChip, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
         chromeRow.addView(snapRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -407,14 +407,14 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         )
         tabButtons = tabs.map { (label, panel) ->
             Oni.chip(this, label, textSizeSp = 11f).also { tab ->
-                tab.minHeight = dp(40)
+                tab.minHeight = dp(48)
                 tab.setPadding(dp(4), 0, dp(4), 0)
                 tab.setOnClickListener { togglePanel(panel) }
             }
         }
         for (tab in tabButtons) {
             tabCard.addView(tab, LinearLayout.LayoutParams(
-                0, dp(40), 1f))
+                0, dp(48), 1f))
         }
 
         bottomBar.addView(chromeRow, LinearLayout.LayoutParams(
@@ -463,15 +463,15 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         fun zoomChip(label: String, monoGlyph: Boolean, onClick: () -> Unit): TextView =
             Oni.chip(this, label, mono = monoGlyph, textSizeSp = 16f).apply {
-                minimumWidth = dp(44)
+                minimumWidth = dp(48)
                 setOnClickListener { onClick() }
             }
         zoomCluster?.addView(zoomChip("+", true) { zoomBy(1.25f) },
-            LinearLayout.LayoutParams(dp(44), dp(44)))
+            LinearLayout.LayoutParams(dp(48), dp(48)))
         zoomCluster?.addView(zoomChip("−", true) { zoomBy(0.8f) },
-            LinearLayout.LayoutParams(dp(44), dp(44)))
+            LinearLayout.LayoutParams(dp(48), dp(48)))
         zoomCluster?.addView(zoomChip("⛶", false) { fitViewport() },
-            LinearLayout.LayoutParams(dp(44), dp(44)))
+            LinearLayout.LayoutParams(dp(48), dp(48)))
         root.addView(zoomCluster, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -532,13 +532,13 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 it.setTextColor(Oni.DANGER)
                 it.setOnClickListener { togglePlay() }
             },
-            LinearLayout.LayoutParams(dp(52), dp(44))
+            LinearLayout.LayoutParams(dp(52), dp(48))
         )
         btnPauseGame = Oni.chip(this, "⏸", textSizeSp = 14f).also {
             it.setTextColor(Oni.WARN)
             it.setOnClickListener { togglePauseGame() }
         }
-        gameHudBar?.addView(btnPauseGame, LinearLayout.LayoutParams(dp(48), dp(44)))
+        gameHudBar?.addView(btnPauseGame, LinearLayout.LayoutParams(dp(48), dp(48)))
         gameHudStatus = TextView(this).apply {
             setTextColor(Oni.TEXT_DIM)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
@@ -547,7 +547,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
         }
         gameHudBar?.addView(
             gameHudStatus,
-            LinearLayout.LayoutParams(0, dp(44), 1.5f)
+            LinearLayout.LayoutParams(0, dp(48), 1.5f)
         )
         root.addView(
             gameHudBar,
@@ -836,7 +836,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
                 it.minimumWidth = dp(48)
                 it.setOnClickListener { togglePanel(panel) }
             },
-            LinearLayout.LayoutParams(dp(48), dp(44))
+            LinearLayout.LayoutParams(dp(48), dp(48))
         )
         panelContainer.addView(
             header,

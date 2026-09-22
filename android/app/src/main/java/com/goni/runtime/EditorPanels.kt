@@ -45,7 +45,7 @@ fun EditorActivity.buildTicksPanel() {
         Oni.chip(this, "+ Camada", active = true, textSizeSp = 12f).also {
             it.setOnClickListener { addLayerDialog() }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     // Timestep FIXO da física (s) — configura o PhysicsTick do Play.
     // Aplica no IME_ACTION_DONE (campo vivo — zero UI morta).
@@ -58,7 +58,7 @@ fun EditorActivity.buildTicksPanel() {
             gravity = Gravity.CENTER_VERTICAL
         },
         LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)
         )
     )
     val physicsDtField = Oni.field(this, mono = true).apply {
@@ -73,7 +73,7 @@ fun EditorActivity.buildTicksPanel() {
             true
         }
     }
-    bar.addView(physicsDtField, LinearLayout.LayoutParams(dp(84), dp(44)))
+    bar.addView(physicsDtField, LinearLayout.LayoutParams(dp(84), dp(48)))
     val tickView = ListView(this).apply {
         divider = null
         dividerHeight = 0
@@ -184,13 +184,13 @@ fun EditorActivity.buildHierarchyPanel() {
         Oni.chip(this, "+ Entidade", active = true, textSizeSp = 12f).also {
             it.setOnClickListener { createEntityDialog() }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     bar.addView(
         Oni.chip(this, "+ Sprite", textSizeSp = 12f).also {
             it.setOnClickListener { addSpriteDialog() }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     hierarchyList = ListView(this).apply {
         adapter = hierarchyAdapter
@@ -347,7 +347,7 @@ fun EditorActivity.rebuildInspector(key: String?) {
     }
     inspectorNameField = nameField
     content.addView(nameField, LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
 
     // Transform (TRS com Euler em graus — API do documento). Os campos
     // ficam REFERENCIADOS (transformFields) para o live sync do doFrame
@@ -405,7 +405,7 @@ fun EditorActivity.rebuildInspector(key: String?) {
                         }
                     },
                     LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
                     ).apply { topMargin = dp(6) }
                 )
             }
@@ -416,7 +416,7 @@ fun EditorActivity.rebuildInspector(key: String?) {
             it.setOnClickListener { addComponentDialog() }
         },
         LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
         ).apply { topMargin = dp(10) }
     )
 
@@ -432,7 +432,7 @@ fun EditorActivity.rebuildInspector(key: String?) {
                 if (dup == 0L) toastErr(lastErrorText()) else selectEntity(dup)
             }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     quick.addView(
         Space(this), LinearLayout.LayoutParams(dp(8), dp(1))
@@ -449,7 +449,7 @@ fun EditorActivity.rebuildInspector(key: String?) {
                 }
             }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     content.addView(quick)
 
@@ -543,7 +543,7 @@ fun EditorActivity.addVec3Row(
         }
         row.addView(
             edit,
-            LinearLayout.LayoutParams(0, dp(44), 1f)
+            LinearLayout.LayoutParams(0, dp(48), 1f)
         )
     }
     parent.addView(row)
@@ -581,11 +581,11 @@ fun EditorActivity.buildAssetsPanel() {
     assetCategoryChip = Oni.chip(this, "textures", mono = true, textSizeSp = 12f).also {
         it.setOnClickListener { showCategoryPicker() }
     }
-    bar.addView(assetCategoryChip, LinearLayout.LayoutParams(0, dp(44), 1.4f))
+    bar.addView(assetCategoryChip, LinearLayout.LayoutParams(0, dp(48), 1.4f))
     val btnImport = Oni.button(this, "Importar", kind = Oni.BTN_GHOST, textSizeSp = 13f)
     importButton = btnImport
     btnImport.setOnClickListener { onImportButton() }
-    bar.addView(btnImport, LinearLayout.LayoutParams(0, dp(44), 1f))
+    bar.addView(btnImport, LinearLayout.LayoutParams(0, dp(48), 1f))
     // Busca de assets (P0-6): filtra por nome dentro da categoria.
     assetSearch = Oni.field(this).apply {
         setSingleLine()
@@ -641,7 +641,7 @@ fun EditorActivity.buildAssetsPanel() {
     root.addView(
         assetSearch,
         LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
         ).apply { topMargin = dp(4) }
     )
     root.addView(
@@ -706,7 +706,7 @@ fun EditorActivity.buildScriptsPanel() {
         Oni.chip(this, "+ Novo script", active = true, textSizeSp = 12f).also {
             it.setOnClickListener { newScriptDialog() }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     scriptsList = ListView(this).apply {
         divider = null
@@ -803,13 +803,13 @@ fun EditorActivity.buildAnimPanel() {
         Oni.chip(this, "+ Nova animação", active = true, textSizeSp = 12f).also {
             it.setOnClickListener { newAnimDialog() }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     bar.addView(
         Oni.chip(this, "▶ Preview", textSizeSp = 12f).also {
             it.setOnClickListener { toggleAnimPreview() }
         },
-        LinearLayout.LayoutParams(0, dp(44), 1f)
+        LinearLayout.LayoutParams(0, dp(48), 1f)
     )
     animList = ListView(this).apply {
         divider = null
@@ -1008,7 +1008,7 @@ fun EditorActivity.addFieldRow(
             }
             // P4.2 (B-B): registrado p/ sync diferencial (valor in-place).
             inspectorValueViews["$component\u0001$path"] = Pair(current, "")
-            row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1.1f))
+            row.addView(current, LinearLayout.LayoutParams(0, dp(48), 1.1f))
             parent.addView(row)
             return
         }
@@ -1040,7 +1040,7 @@ fun EditorActivity.addFieldRow(
                     }
                 }
             }
-            row.addView(swatch, LinearLayout.LayoutParams(0, dp(44), 1.1f))
+            row.addView(swatch, LinearLayout.LayoutParams(0, dp(48), 1.1f))
             parent.addView(row)
             return
         }
@@ -1058,7 +1058,7 @@ fun EditorActivity.addFieldRow(
             }
             // P4.2 (B-B): registrado p/ sync diferencial.
             inspectorValueViews["$component\u0001$path"] = Pair(current, "(nenhuma)")
-            row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
+            row.addView(current, LinearLayout.LayoutParams(0, dp(48), 1f))
             row.addView(
                 Oni.chip(this, "Escolher…", textSizeSp = 12f).apply {
                     setOnClickListener {
@@ -1068,7 +1068,7 @@ fun EditorActivity.addFieldRow(
                     }
                 },
                 LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44))
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
             )
             parent.addView(row)
             return
@@ -1089,7 +1089,7 @@ fun EditorActivity.addFieldRow(
             }
             // P4.2 (B-B): registrado p/ sync diferencial.
             inspectorValueViews["$component\u0001$path"] = Pair(current, "(nenhum)")
-            row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
+            row.addView(current, LinearLayout.LayoutParams(0, dp(48), 1f))
             row.addView(
                 Oni.chip(this, "▶", textSizeSp = 12f).apply {
                     // P4.3 (N1): TOGGLE — 2º toque para (label muda com o
@@ -1112,7 +1112,7 @@ fun EditorActivity.addFieldRow(
                         }
                     }
                 },
-                LinearLayout.LayoutParams(dp(48), dp(44))
+                LinearLayout.LayoutParams(dp(48), dp(48))
             )
             row.addView(
                 Oni.chip(this, "Escolher…", textSizeSp = 12f).apply {
@@ -1123,7 +1123,7 @@ fun EditorActivity.addFieldRow(
                     }
                 },
                 LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44))
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
             )
             parent.addView(row)
             return
@@ -1144,7 +1144,7 @@ fun EditorActivity.addFieldRow(
             }
             // P4.2 (B-B): registrado p/ sync diferencial.
             inspectorValueViews["$component\u0001$path"] = Pair(current, "(default lit)")
-            row.addView(current, LinearLayout.LayoutParams(0, dp(44), 1f))
+            row.addView(current, LinearLayout.LayoutParams(0, dp(48), 1f))
             row.addView(
                 Oni.chip(this, "Escolher…", textSizeSp = 12f).apply {
                     setOnClickListener {
@@ -1154,7 +1154,7 @@ fun EditorActivity.addFieldRow(
                     }
                 },
                 LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44))
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
             )
             parent.addView(row)
             return
@@ -1195,7 +1195,7 @@ fun EditorActivity.addFieldRow(
     inspectorTextFields["$component\u0001$path"] = edit
     row.addView(
         edit,
-        LinearLayout.LayoutParams(0, dp(44), 1.3f)
+        LinearLayout.LayoutParams(0, dp(48), 1.3f)
     )
     parent.addView(row)
 }
