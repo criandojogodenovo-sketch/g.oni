@@ -233,6 +233,67 @@ struct WorldShape {
     return (a.layer & b.mask) != 0u && (b.layer & a.mask) != 0u;
 }
 
+/// P4.6 (Bloco 1): massa inversa EFETIVA na resolução. Static e
+/// Kinematic não são empurrados (inv 0 — empurram os dinâmicos e os
+/// impulsos não lhes aplicam); DynamicLite = regra da massa atual.
+[[nodiscard]] float effectiveInvMass(const RigidBody* body)
+{
+    if (body == nullptr) {
+        return 0.f;
+    }
+    if (body->bodyType == BodyType::Static ||
+        body->bodyType == BodyType::Kinematic) {
+        return 0.f;
+    }
+    return body->mass > 0.f ? 1.f / body->mass : 0.f;
+}
+
+/// Um passo do deslize (mesma matemática do v1 — §7.5): avança ao
+/// destino, acha a MAIOR penetração da esfera e projeta para fora ao
+/// longo da normal — a componente normal do movimento é absorvida, a
+/// tangential desliza. `selfMask` (P4.6): o mask do PRÓPRIO corpo
+/// decide contra quem o deslize acontece (padrão Godot p/ cinemáticos;
+/// 0xFFFFFFFF = colide com tudo — default, não muda cenários antigos).
+[[nodiscard]] Vec3 sweepSphereOnce(const eng::scene::Scene& scene,
+                                   eng::ecs::Entity body, Vec3 position,
+                                   Vec3 chunk, float radius,
+                                   std::uint32_t selfMask)
+{
+    const Vec3 target = position + chunk;
+    float deepest = 0.f;
+    Vec3 pushNormal{0.f, 1.f, 0.f};
+    bool collided = false;
+
+    scene.world().each<Collider>([&](eng::ecs::Entity e,
+                                     const Collider& collider) {
+        if (e == body || collider.isTrigger ||
+            !scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
+            return;
+        }
+        if ((selfMask & collider.layer) == 0u) {
+            return; // P4.6: filtragem por mask do corpo (uma direção)
+        }
+        const WorldShape other = worldShapeOf(scene, e, collider);
+        WorldShape self;
+        self.isSphere = true;
+        self.center = target;
+        self.radius = radius;
+        Vec3 normal;
+        float depth = 0.f;
+        if (!shapesCollide(self, other, normal, depth)) {
+            return;
+        }
+        if (depth > deepest) {
+            deepest = depth;
+            pushNormal = normal;
+            collided = true;
+        }
+    });
+
+    return collided ? target + pushNormal * (deepest * 1.001f + 0.001f)
+                    : target;
+}
+
 }  // namespace
 
 // =============================================================================
@@ -249,11 +310,26 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
     //    mundo físico (sem resposta, sem trigger, sem raycast).
     scene.world().each<RigidBody>(
         [&](eng::ecs::Entity e, RigidBody& body) {
+            if (body.bodyType == BodyType::Static) {
+                return; // P4.6: nunca integra (mesmo com mass > 0)
+            }
             if (body.mass <= 0.f) {
-                return; // estático
+                return; // legado pré-P4.6: massa 0 = estático
             }
             if (!scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
                 return; // camada sem física (ADR-051)
+            }
+            if (body.bodyType == BodyType::Kinematic) {
+                // P4.6 (Bloco 1): cinemático — a velocidade é 100%
+                // AUTORADA (script/Inspector): sem gravidade, sem
+                // damping. Integra e EMPURRA os dinâmicos na resolução
+                // (massa inversa efetiva 0 — ver effectiveInvMass).
+                auto* kinematic = scene.localTransform(e);
+                if (kinematic != nullptr) {
+                    kinematic->position =
+                        kinematic->position + body.velocity * fixedDt;
+                }
+                return;
             }
             if (body.useGravity) {
                 body.velocity = body.velocity + body.gravity * fixedDt;
@@ -310,14 +386,12 @@ void PhysicsWorld::step(eng::scene::Scene& scene, float fixedDt)
 
             // 3) Resolução: projeção posicional proporcional às massas
             //    inversas + impulso escalar ao longo da normal.
+            //    P4.6: invA/invB via effectiveInvMass — Static/Kinematic
+            //    têm massa inversa efetiva 0 (não são empurrados).
             RigidBody* bodyA = scene.world().get<RigidBody>(a);
             RigidBody* bodyB = scene.world().get<RigidBody>(b);
-            const float invA =
-                bodyA != nullptr && bodyA->mass > 0.f ? 1.f / bodyA->mass
-                                                      : 0.f;
-            const float invB =
-                bodyB != nullptr && bodyB->mass > 0.f ? 1.f / bodyB->mass
-                                                      : 0.f;
+            const float invA = effectiveInvMass(bodyA);
+            const float invB = effectiveInvMass(bodyB);
             const float invSum = invA + invB;
             if (invSum <= 0.f) {
                 continue; // dois estáticos
@@ -453,45 +527,39 @@ Vec3 PhysicsWorld::moveAndSlide(const eng::scene::Scene& scene,
         return motion;
     }
 
-    // Esfera do personagem no destino proposto.
+    // Esfera do personagem na posição atual.
     const eng::math::Mat4 world = scene.computeWorldMatrix(body);
     Vec3 position = {world.at(3, 0), world.at(3, 1), world.at(3, 2)};
     const float radius = character->radius;
 
-    // PASSADA ÚNICA (documentada §7.5): move ao destino; se bloqueado,
-    // a projeção para fora da superfície ao longo da normal ABSORVE a
-    // componente normal do movimento — o resultado é o deslize na
-    // superfície. Multi-hit re-slide é extensão futura.
-    const Vec3 target = position + motion;
-    float deepest = 0.f;
-    Vec3 pushNormal{0.f, 1.f, 0.f};
-    bool collided = false;
+    // P4.6 (Bloco 1 — anti-túnel): o v1 fazia UMA passada (checava só o
+    // destino — movimento > raio atravessava paredes finas). Agora o
+    // motion é fatiado em substeps de no máximo meio raio; cada substep
+    // projeta a penetração (sweepSphereOnce) — parar/deslizar é a
+    // composição. Teto de 64 substeps: motion por chamada acima disso
+    // É teletransporte por definição (documentado no §07-bindings).
+    const float len = std::sqrt(motion.x * motion.x + motion.y * motion.y +
+                                motion.z * motion.z);
+    const float maxStep = std::max(radius * 0.5f, 0.05f);
+    const std::uint32_t substeps = static_cast<std::uint32_t>(
+        std::min(64.0, std::max(1.0, std::ceil(
+            static_cast<double>(len) / static_cast<double>(maxStep)))));
+    const Vec3 chunk{motion.x / static_cast<float>(substeps),
+                     motion.y / static_cast<float>(substeps),
+                     motion.z / static_cast<float>(substeps)};
 
-    scene.world().each<Collider>([&](eng::ecs::Entity e,
-                                     const Collider& collider) {
-        if (e == body || collider.isTrigger ||
-            !scene.participatesIn(e, eng::scene::LayerStage::Physics)) {
-            return;
-        }
-        const WorldShape other = worldShapeOf(scene, e, collider);
-        WorldShape self;
-        self.isSphere = true;
-        self.center = target;
-        self.radius = radius;
-        Vec3 normal;
-        float depth = 0.f;
-        if (!shapesCollide(self, other, normal, depth)) {
-            return;
-        }
-        if (depth > deepest) {
-            deepest = depth;
-            pushNormal = normal;
-            collided = true;
-        }
-    });
+    // Mask do próprio corpo (Collider no self, se houver) filtra contra
+    // quem o deslize acontece (uma direção — padrão Godot cinemático).
+    std::uint32_t selfMask = 0xFFFFFFFFu;
+    if (const Collider* selfCollider = scene.world().get<Collider>(body)) {
+        selfMask = selfCollider->mask;
+    }
 
-    Vec3 resolved =
-        collided ? target + pushNormal * (deepest * 1.001f + 0.001f) : target;
+    Vec3 resolved = position;
+    for (std::uint32_t step = 0; step < substeps; ++step) {
+        resolved = sweepSphereOnce(scene, body, resolved, chunk, radius,
+                                   selfMask);
+    }
 
     // Bug C-18 da auditoria final: snapToGround era serializado e nunca
     // aplicado. Semântica: com o movimento (quase) horizontal e chão a até

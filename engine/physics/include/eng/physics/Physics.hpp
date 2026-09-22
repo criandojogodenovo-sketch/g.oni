@@ -29,12 +29,31 @@ namespace eng::physics {
 // Componentes (§7.1–§7.3/§7.5) — refletidos p/ inspector/serialização
 // =============================================================================
 
+/// Tipo de corpo (P4.6 Bloco 1). Enum de NAMESPACE (ADR-021 — nested
+/// quebra o traço canônico do reflect, ver ColliderShape).
+///   Static      — NUNCA integra (mesmo com mass > 0 autorado);
+///                 massa inversa efetiva 0 na resolução.
+///   Kinematic   — integra SOMENTE a velocidade AUTORADA (script/);
+///                 sem gravidade/damping; empurra dinâmicos, não é
+///                 empurrado (massa inversa efetiva 0).
+///   DynamicLite — comportamento integral pré-P4.6 (gravidade +
+///                 damping + impulso arcade). DEFAULT: cenas antigas
+///                 migram 1:1 (mass == 0 → Static, senão DynamicLite).
+enum class BodyType : std::uint8_t {
+    Static = 0,
+    Kinematic = 1,
+    DynamicLite = 2,
+};
+
 struct RigidBody {
     float mass{1.f};              ///< 0 = estático (colisor fixo)
     eng::math::Vec3 velocity{0.f, 0.f, 0.f};
     eng::math::Vec3 gravity{0.f, -9.81f, 0.f};
     bool useGravity{true};
     float linearDamping{0.f};     ///< 0..1 por segundo
+    /// P4.6 (Bloco 1 — padrões Godot/Unity). ÚLTIMO campo: agregados
+    /// posicionais existentes (testes/fixtures) continuam compilando.
+    BodyType bodyType{BodyType::DynamicLite};
 };
 
 /// Forma do colisor (enum de namespace — o reflect cobre enums de
@@ -66,7 +85,15 @@ ENG_REFLECT_BEGIN(eng::physics::RigidBody)
     ENG_REFLECT_FIELD_AS(gravity, "eng::math::Vec3")
     ENG_REFLECT_FIELD(useGravity)
     ENG_REFLECT_FIELD(linearDamping)
+    ENG_REFLECT_FIELD_AS(bodyType, "eng::physics::BodyType")
 ENG_REFLECT_END()
+
+// P4.6 (Bloco 1): tipo de corpo refletido (Inspector = enum dropdown).
+ENG_REFLECT_ENUM_BEGIN(eng::physics::BodyType)
+    ENG_REFLECT_ENUM_VALUE(Static)
+    ENG_REFLECT_ENUM_VALUE(Kinematic)
+    ENG_REFLECT_ENUM_VALUE(DynamicLite)
+ENG_REFLECT_ENUM_END()
 
 // BUG FIX (evolução P0-6): era ENG_REFLECT_BEGIN (STRUCT) — o enum era
 // registrado como struct sem propriedades: o campo `shape` do Collider

@@ -608,6 +608,88 @@ void noHost(NiFault& fault, const char* who)
     return true;
 }
 
+/// P4.6 (Bloco 1): extrai um número (Float OU Int) dos argumentos de
+/// move/move_and_slide — scripts autoram com literais dos dois tipos.
+[[nodiscard]] bool argNumber(const NiValue& v, float& out,
+                             const char* who, NiFault& fault)
+{
+    if (v.type == NiType::Float) {
+        out = static_cast<float>(v.d[0]);
+        return true;
+    }
+    if (v.type == NiType::Int) {
+        out = static_cast<float>(v.i);
+        return true;
+    }
+    fault.kind = NiFault::Kind::Type;
+    fault.message = std::string(who) + " exige números (dx, dy)";
+    return false;
+}
+
+/// self + host comuns aos dois verbos de movimento.
+[[nodiscard]] bool moveSelf(NiExecContext& ctx, const NiValue* args,
+                            float& dx, float& dy, const char* who,
+                            eng::ecs::Entity& self, NiFault& fault)
+{
+    NiHost* host = ctx.host();
+    if (host == nullptr) {
+        noHost(fault, who);
+        return false;
+    }
+    NiScriptState* instance = ctx.currentInstance();
+    if (instance == nullptr) {
+        fault.kind = NiFault::Kind::NativeError;
+        fault.message = std::string(who)
+                        + " fora de execução de script";
+        return false;
+    }
+    self = instance->self();
+    if (!argNumber(args[0], dx, who, fault) ||
+        !argNumber(args[1], dy, who, fault)) {
+        return false;
+    }
+    return true;
+}
+
+/// move(dx,dy): translação CRUA (teletransporte — SEM resolução).
+[[nodiscard]] bool fnMove(NiExecContext& ctx, const NiValue* args,
+                          std::uint16_t /*argc*/, NiValue& out,
+                          NiFault& fault)
+{
+    float dx = 0.f;
+    float dy = 0.f;
+    eng::ecs::Entity self{0xFFFFFFFFu, 0xFFFFFFFFu};
+    if (!moveSelf(ctx, args, dx, dy, "move", self, fault)) {
+        return false;
+    }
+    NiHost* host = ctx.host();
+    out = niBool(host->translate(self, dx, dy));
+    return true;
+}
+
+/// move_and_slide(dx,dy): varredura com deslize (CharacterBody).
+[[nodiscard]] bool fnMoveAndSlide(NiExecContext& ctx, const NiValue* args,
+                                  std::uint16_t /*argc*/, NiValue& out,
+                                  NiFault& fault)
+{
+    float dx = 0.f;
+    float dy = 0.f;
+    eng::ecs::Entity self{0xFFFFFFFFu, 0xFFFFFFFFu};
+    if (!moveSelf(ctx, args, dx, dy, "move_and_slide", self, fault)) {
+        return false;
+    }
+    NiHost* host = ctx.host();
+    eng::math::Vec3 resolved{0.f, 0.f, 0.f};
+    if (!host->moveAndSlide(self, dx, dy, resolved)) {
+        fault.kind = NiFault::Kind::NativeError;
+        fault.message =
+            "move_and_slide: a entidade precisa de CharacterBody";
+        return false;
+    }
+    out = niBool(true);
+    return true;
+}
+
 } // namespace hostn
 
 void NiNativeTable::addStandardHost()
@@ -630,6 +712,10 @@ void NiNativeTable::addStandardHost()
         {"despawn", 1, hostn::fnDespawn, NiType::Bool},
         {"self", 0, hostn::fnSelf, NiType::Entity},
         {"find", 1, hostn::fnFind, NiType::Entity},
+        // P4.6 (Bloco 1): movimento de gameplay — move cru (teletransporte
+        // documentado) e move_and_slide (varredura com deslize).
+        {"move", 2, hostn::fnMove, NiType::Bool},
+        {"move_and_slide", 2, hostn::fnMoveAndSlide, NiType::Bool},
     };
     for (const Reg& r : kHost) {
         names_.push_back(r.name);

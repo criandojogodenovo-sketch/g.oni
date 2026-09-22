@@ -120,6 +120,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
     internal val inspectorTextFields = mutableMapOf<String, EditText>() // "comp\u0001path"
     internal val inspectorValueViews =
         mutableMapOf<String, Pair<TextView, String>>()    // view + placeholder
+    // P4.6 (Bloco 1): rows de bitfield nomeado (chips) p/ sync diferencial
+    // — mesmo contrato do B-B: valor in-place, focado nunca é tocado.
+    internal val inspectorBitfieldRows = mutableMapOf<String, LinearLayout>()
 
     // P4.2 (T5 — Modo Jogo G1): chrome escondido + HUD fullscreen.
     internal var gameMode = false

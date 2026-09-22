@@ -248,6 +248,16 @@ object EditorJni {
     /** Timestep fixo da física em segundos (config da cena). */
     external fun nativeEditorPhysicsDt(handle: Long): Float
     external fun nativeEditorPhysicsSetDt(handle: Long, dt: Float): Boolean
+
+    // --- P4.6 (Bloco 1): camadas de COLISÃO nomeadas (project settings) --------
+    // ≠ nativeEditorLayerList (camadas de CENA/tick, ADR-051): estes
+    // bitfields filtram pares de colisão e moram no project.goni.json.
+    /** TSV: name\tbit (uma linha por camada nomeada, ordem da tabela). */
+    external fun nativeEditorCollisionLayerList(handle: Long): String?
+    /** Renomeia a camada do bit (erro = false + lastError). */
+    external fun nativeEditorSetCollisionLayerName(handle: Long, bit: Long, name: String): Boolean
+    /** Nova camada com o menor bit livre; devolve o bit (0 = erro). */
+    external fun nativeEditorAddCollisionLayer(handle: Long, name: String): Long
     /** Nomes dos assets de áudio (linhas \n) — picker do Inspector (kind audio). */
     external fun nativeEditorListAudio(handle: Long): String?
 

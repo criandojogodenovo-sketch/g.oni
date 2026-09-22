@@ -222,6 +222,27 @@ public:
     /// Erro se não finito, <= 0 ou > 0.25 s (honesto — sem clamp calado).
     [[nodiscard]] eng::core::Result<void> setPhysicsFixedDt(float fixedDt);
 
+    // --- P4.6 (Bloco 1): camadas de COLISÃO nomeadas (project settings) ---
+    // ≠ camadas de cena/tick (LayerInfo/ADR-051): estes bitfields filtram
+    // PARES de colisão — (A.mask & B.layer) && (B.mask & A.layer) — e são
+    // persistidos no project.goni.json ("collisionLayers", chave aditiva).
+    struct CollisionLayerInfo {
+        std::string name;
+        std::uint32_t bit = 1;
+    };
+    /// Tabela do projeto (vazio = sem projeto; NUNCA vazio com projeto —
+    /// default "default"/1 garantido pelo ProjectFile::configFromJson).
+    [[nodiscard]] std::vector<CollisionLayerInfo> collisionLayers() const;
+    /// Renomeia a camada do bit (valida: bit existe na tabela; nome não
+    /// vazio/único). Marca projectDirty_ (flush em saveProject, padrão
+    /// setProjectName).
+    [[nodiscard]] eng::core::Result<void> setCollisionLayerName(
+        std::uint32_t bit, std::string_view name);
+    /// Nova camada com o MENOR bit livre (1..2^31). Erro: sem projeto,
+    /// nome vazio/duplicado, sem bits livres.
+    [[nodiscard]] eng::core::Result<std::uint32_t> addCollisionLayer(
+        std::string_view name);
+
     [[nodiscard]] bool sceneDirty() const noexcept { return sceneDirty_; }
     [[nodiscard]] bool projectDirty() const noexcept { return projectDirty_; }
     /// Path da cena ATUAL relativo ao projeto ("main.json") — definido por

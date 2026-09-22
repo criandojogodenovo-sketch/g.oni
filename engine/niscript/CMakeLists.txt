@@ -47,6 +47,8 @@ add_executable(eng_niscript_tests tests/NiScriptTests.cpp)
 target_link_libraries(eng_niscript_tests PRIVATE
     eng::niscript
     eng::scene
+    # P4.6 (Bloco 1): o TestHost delega move_and_slide para a física REAL.
+    eng::physics
     Catch2::Catch2WithMain)
 eng_apply_test_policy(eng_niscript_tests)
 add_test(NAME niscript COMMAND eng_niscript_tests)

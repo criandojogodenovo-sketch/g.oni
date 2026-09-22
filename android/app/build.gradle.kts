@@ -17,8 +17,20 @@ android {
         applicationId = "com.goni.runtime"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // P4.6 Bloco 0 (R4 micro: versão visível) — fase/versionamento
+        // centralizados aqui; a UI lê SEMPRE de BuildConfig (zero hardcode).
+        versionCode = 60
+        versionName = "0.6.0"
+        // P4.6 Bloco 0: BuildConfig explícito (AGP 8 desliga por default) —
+        // PHASE_LABEL/BUILD_*/GONI_COMMIT alimentam splash-caption e a linha
+        // "Versão" da sheet de Configurações.
+        buildConfigField("String", "PHASE_LABEL", "\"P4.6\"")
+        buildConfigField("String", "BUILD_NAME", "\"0.6.0\"")
+        buildConfigField("int", "BUILD_CODE", "60")
+        // Hash de commit é OPCIONAL via CI (export GONI_COMMIT=<sha> antes
+        // de ./gradlew); builds locais ficam com string vazia.
+        buildConfigField("String", "GONI_COMMIT",
+            "\"${System.getenv("GONI_COMMIT") ?: ""}\"")
         // Backend por argumento (missão §XV): intent extra "backend"
         // ∈ {auto, vulkan, gles}; default auto.
         //
@@ -45,6 +57,10 @@ android {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.31.6"
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

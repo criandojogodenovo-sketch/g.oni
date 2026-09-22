@@ -233,6 +233,9 @@ Result<void> EditorDocument::newProject(std::string_view name)
     file.config.engineVersion = eng::core::Version{0, 1, 0};
     file.config.assetRegistryPath = eng::fs::Path{"assets/asset_registry.json"};
     file.config.sceneRoots = {eng::fs::Path{"scenes"}};
+    // P4.6 (Bloco 1): projetos novos já nascem com a tabela de camadas
+    // de colisão nomeada ("default" bit 1).
+    file.config.collisionLayers = eng::project::defaultCollisionLayers();
     file.filePath = root / eng::fs::Path{"project.goni.json"};
     auto written = file.writeTo(*fs_);
     if (written.isError()) {
@@ -524,6 +527,115 @@ Result<void> EditorDocument::setProjectName(std::string_view name)
     return {};
 }
 
+// --- P4.6 (Bloco 1): camadas de colisão nomeadas (project settings) -------
+
+std::vector<EditorDocument::CollisionLayerInfo>
+EditorDocument::collisionLayers() const
+{
+    std::vector<CollisionLayerInfo> out;
+    if (!hasProject()) {
+        return out;
+    }
+    out.reserve(project_->config.collisionLayers.size());
+    for (const eng::project::CollisionLayerName& layer :
+         project_->config.collisionLayers) {
+        out.push_back(CollisionLayerInfo{layer.name, layer.bit});
+    }
+    return out;
+}
+
+Result<void> EditorDocument::setCollisionLayerName(std::uint32_t bit,
+                                                   std::string_view name)
+{
+    if (!hasProject()) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidState, "sem projeto aberto"));
+    }
+    if (mode_ == Mode::Play) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                             "projeto é somente-leitura em Play"));
+    }
+    if (name.empty()) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidArgument, "nome vazio"));
+    }
+    bool found = false;
+    for (eng::project::CollisionLayerName& layer :
+         project_->config.collisionLayers) {
+        if (layer.bit == bit) {
+            found = true;
+            continue;
+        }
+        if (layer.name == name) {
+            return makeUnexpected(documentError(
+                StatusCode::AlreadyExists,
+                "camada de colisão '" + std::string(name) + "' já existe"));
+        }
+    }
+    if (!found) {
+        return makeUnexpected(documentError(
+            StatusCode::NotFound, "bit não tem camada nomeada na tabela"));
+    }
+    for (eng::project::CollisionLayerName& layer :
+         project_->config.collisionLayers) {
+        if (layer.bit == bit) {
+            layer.name = std::string(name);
+        }
+    }
+    projectDirty_ = true;
+    return {};
+}
+
+Result<std::uint32_t> EditorDocument::addCollisionLayer(
+    std::string_view name)
+{
+    if (!hasProject()) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidState, "sem projeto aberto"));
+    }
+    if (mode_ == Mode::Play) {
+        return makeUnexpected(documentError(StatusCode::InvalidState,
+                                             "projeto é somente-leitura em Play"));
+    }
+    if (name.empty()) {
+        return makeUnexpected(
+            documentError(StatusCode::InvalidArgument, "nome vazio"));
+    }
+    for (const eng::project::CollisionLayerName& layer :
+         project_->config.collisionLayers) {
+        if (layer.name == name) {
+            return makeUnexpected(documentError(
+                StatusCode::AlreadyExists,
+                "camada de colisão '" + std::string(name) + "' já existe"));
+        }
+    }
+    // Menor bit livre (1..2^31) — 31 camadas nomeáveis no u32.
+    std::uint32_t freeBit = 0u;
+    for (std::uint32_t candidate = 1u; candidate != 0u;
+         candidate <<= 1u) {
+        bool used = false;
+        for (const eng::project::CollisionLayerName& layer :
+             project_->config.collisionLayers) {
+            if (layer.bit == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            freeBit = candidate;
+            break;
+        }
+    }
+    if (freeBit == 0u) {
+        return makeUnexpected(documentError(
+            StatusCode::InvalidState, "sem bits livres (32 camadas)"));
+    }
+    project_->config.collisionLayers.push_back(
+        eng::project::CollisionLayerName{std::string(name), freeBit});
+    projectDirty_ = true;
+    return freeBit;
+}
+
 eng::fs::Path EditorDocument::projectRoot() const
 {
     return hasProject() ? project_->paths().projectDir()
@@ -704,6 +816,92 @@ Result<void> EditorDocument::saveScene(std::string_view scenePath)
     return {};
 }
 
+namespace {
+
+// --- P4.6 (Blocos 1/2): migração ADITIVA de cenas pré-P4.6 -----------------
+//
+// O decode refletido é ESTRITO com campo ausente (ADR-031 — chaves
+// desconhecidas são ignoradas, mas campos novos REFLETIDOS obrigatórios
+// quebrariam o load de cenas antigas). A migração injeta os defaults
+// ANTES do SceneSerializer::load, preservando a semântica pré-P4.6:
+//
+//   eng::physics::RigidBody sem "bodyType"
+//       → mass <= 0 ? "Static" : "DynamicLite"  (massa 0 ERA o estático)
+//
+// Blocos seguintes estendem migrateComponentDataP46 (Light2D/SpriteData —
+// Bloco 2). Idempotente: cenas novas já trazem os campos (encode escreve
+// tudo) → nenhum campo injetado → nenhum re-dump (fast path).
+
+/// Migra `data` (cópia mutável do componente `type`). true = alterado.
+[[nodiscard]] bool migrateComponentDataP46(const std::string& type,
+                                           eng::serial::JsonValue& data)
+{
+    using eng::serial::JsonValue;
+    if (type == "eng::physics::RigidBody" &&
+        !data.find("bodyType").has_value()) {
+        bool staticBody = false;
+        if (const auto mass = data.find("mass");
+            mass.has_value() && mass->isNumber()) {
+            staticBody = mass->asF64() <= 0.0;
+        }
+        data.set("bodyType", JsonValue::string(
+                                 staticBody ? "Static" : "DynamicLite"));
+        return true;
+    }
+    return false;
+}
+
+/// Percorre entities[].components[] e injeta os campos novos ausentes.
+/// true = algo foi injetado (o chamador re-dumpa o JSON para o load).
+[[nodiscard]] bool migrateSceneJsonAdditiveP46(eng::serial::JsonValue& root)
+{
+    using eng::serial::JsonValue;
+    if (!root.isObject()) {
+        return false;
+    }
+    const auto entities = root.find("entities");
+    if (!entities.has_value() || !entities->isArray()) {
+        return false;
+    }
+    bool changed = false;
+    JsonValue newEntities = JsonValue::array();
+    for (std::size_t i = 0; i < entities->size(); ++i) {
+        JsonValue entity = entities->at(i);
+        if (entity.isObject()) {
+            if (const auto components = entity.find("components");
+                components.has_value() && components->isArray()) {
+                bool entityChanged = false;
+                JsonValue newComponents = JsonValue::array();
+                for (std::size_t c = 0; c < components->size(); ++c) {
+                    JsonValue component = components->at(c);
+                    if (component.isObject()) {
+                        const auto type = component.find("type");
+                        auto data = component.find("data");
+                        if (type.has_value() && type->isString() &&
+                            data.has_value() && data->isObject() &&
+                            migrateComponentDataP46(type->asString(), *data)) {
+                            component.set("data", std::move(*data));
+                            entityChanged = true;
+                        }
+                    }
+                    newComponents.append(std::move(component));
+                }
+                if (entityChanged) {
+                    entity.set("components", std::move(newComponents));
+                    changed = true;
+                }
+            }
+        }
+        newEntities.append(std::move(entity));
+    }
+    if (changed) {
+        root.set("entities", std::move(newEntities));
+    }
+    return changed;
+}
+
+}  // namespace
+
 Result<void> EditorDocument::loadScene(std::string_view scenePath)
 {
     if (!hasProject()) {
@@ -741,6 +939,14 @@ Result<void> EditorDocument::loadScene(std::string_view scenePath)
                 if (std::isfinite(v) && v > 0.0 && v <= 0.25) {
                     physicsAccumulator_.setFixedDt(static_cast<float>(v));
                 }
+            }
+            // P4.6 (Blocos 1/2): MIGRAÇÃO ADITIVA — campos refletidos
+            // novos não existem em cenas pré-P4.6 e o decode é ESTRITO
+            // com campo ausente (ADR-031). Injeta defaults ANTES do load
+            // (mesmo padrão do physicsFixedDt); cenas novas já trazem os
+            // campos (encode escreve tudo) e a migração é idempotente.
+            if (migrateSceneJsonAdditiveP46(parsed.value())) {
+                text = eng::serial::dumpJson(parsed.value());
             }
         }
     }

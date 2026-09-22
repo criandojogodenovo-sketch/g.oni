@@ -1273,6 +1273,71 @@ internal fun EditorActivity.showCompileDiags(tsv: String) {
 // --- configurações do projeto (P4.1 T4/D8) --------------------------------------------
 
 /**
+ * P4.6 (Bloco 1) — row de camada de colisão: nome (toque → renomear) +
+ * bit em mono. `container` permite remover/reinserir após rename (o nome
+ * é chave de unicidade da tabela).
+ */
+internal fun EditorActivity.collisionLayerRow(
+    container: LinearLayout, name: String, bit: Long
+): LinearLayout {
+    val act = this
+    val row = LinearLayout(act).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    val nameView = TextView(act).apply {
+        text = name
+        setTextColor(Oni.ACCENT)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        typeface = Typeface.MONOSPACE
+        setPadding(dp(12), 0, dp(12), 0)
+        background = Oni.ripple(act, Oni.RAISED, Oni.R_THUMB)
+    }
+    nameView.setOnClickListener {
+        val field = Oni.field(act).apply {
+            setSingleLine()
+            setText(name)
+            hint = "Nome da camada"
+        }
+        val box = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        box.addView(field, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
+        OniDialog.custom(
+            act, "Renomear camada de colisão", box,
+            listOf(
+                OniDialog.Btn("Cancelar", accent = false),
+                OniDialog.Btn("Renomear") {
+                    val newName = field.text.toString().trim()
+                    if (newName.isEmpty() || newName == name) return@Btn
+                    if (!EditorJni.nativeEditorSetCollisionLayerName(
+                            handle, bit, newName)) {
+                        toastErr(lastErrorText())
+                    } else {
+                        container.removeView(row)
+                        container.addView(
+                            collisionLayerRow(container, newName, bit))
+                    }
+                }
+            )
+        )
+    }
+    row.addView(nameView, LinearLayout.LayoutParams(
+        0, dp(48), 1f))
+    val bitLabel = TextView(act).apply {
+        text = "bit ${java.lang.Long.numberOfTrailingZeros(bit)} (0x%08X)".format(bit)
+        setTextColor(Oni.TEXT_DIM)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        typeface = Typeface.MONOSPACE
+        setPadding(dp(12), 0, dp(12), 0)
+    }
+    row.addView(bitLabel, LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+    return row
+}
+
+/**
  * P4.1 (T4/D8) — CONFIGURAÇÕES REAIS do projeto: nome editável, camadas da
  * cena, timestep da física e estado do backend de áudio (honesto — D6).
  */
@@ -1300,6 +1365,54 @@ internal fun EditorActivity.showProjectSettingsSheet() {
     }
     content.addView(layersText)
 
+    // P4.6 (Bloco 1): camadas de COLISÃO nomeadas (bitfields) — conceito
+    // SEPARADO das camadas de cena/tick acima: filtram pares de colisão
+    // ((A.mask & B.layer) && (B.mask & A.layer)) e moram no projeto.
+    // Toque no nome → renomear; "+ Camada" → adiciona com o menor bit livre.
+    content.addView(sectionTitle("Camadas de colisão (bitfields)"))
+    val collisionBox = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+    content.addView(collisionBox)
+    val addCollisionChip = Oni.chip(this, "+ Camada de colisão", textSizeSp = 12f)
+    addCollisionChip.setOnClickListener {
+        val field = Oni.field(act).apply {
+            setSingleLine()
+            hint = "Nome (ex.: player)"
+        }
+        val box = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(field, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
+        OniDialog.custom(
+            act, "Nova camada de colisão", box,
+            listOf(
+                OniDialog.Btn("Cancelar", accent = false),
+                OniDialog.Btn("Adicionar") {
+                    val newName = field.text.toString().trim()
+                    if (newName.isEmpty()) return@Btn
+                    val bit = EditorJni.nativeEditorAddCollisionLayer(
+                        handle, newName)
+                    if (bit == 0L) {
+                        toastErr(lastErrorText())
+                    } else {
+                        collisionBox.addView(collisionLayerRow(
+                            act, collisionBox, newName, bit))
+                    }
+                }
+            )
+        )
+    }
+    content.addView(addCollisionChip, LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+    for (line in (EditorJni.nativeEditorCollisionLayerList(handle) ?: "")
+        .lines().filter { it.isNotEmpty() }) {
+        val parts = line.split('\t')
+        if (parts.size < 2) continue
+        val bit = parts[1].toLongOrNull() ?: continue
+        collisionBox.addView(
+            collisionLayerRow(act, collisionBox, parts[0], bit))
+    }
+
     // Timestep da física + estado do áudio: valores reais do runtime.
     content.addView(sectionTitle("Física e áudio"))
     val runtimeText = TextView(this).apply {
@@ -1310,6 +1423,24 @@ internal fun EditorActivity.showProjectSettingsSheet() {
             "Áudio: ${EditorJni.nativeEditorAudioStatus(handle) ?: "off"}"
     }
     content.addView(runtimeText)
+
+    // P4.6 Bloco 0 (R4 micro: versão visível) — TUDO lê de BuildConfig;
+    // zero hardcode (o hash entra via CI: export GONI_COMMIT=<sha>).
+    content.addView(sectionTitle("Versão"))
+    val versionText = TextView(this).apply {
+        setTextColor(Oni.TEXT)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        typeface = Typeface.MONOSPACE
+        text = buildString {
+            append(BuildConfig.PHASE_LABEL)
+            append(" · build ").append(BuildConfig.BUILD_NAME)
+            append(" (").append(BuildConfig.BUILD_CODE).append(")")
+            if (BuildConfig.GONI_COMMIT.isNotEmpty()) {
+                append(" · ").append(BuildConfig.GONI_COMMIT)
+            }
+        }
+    }
+    content.addView(versionText)
 
     OniDialog.custom(
         this, "Configurações do projeto", content,

@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "eng/ecs/Ecs.hpp"
+#include "eng/math/Vec3.hpp"
 #include "eng/niscript/NiValue.hpp"
 
 namespace eng::ni {
@@ -103,6 +104,22 @@ public:
     /// Primeira entidade viva com este Name (nula = ausente).
     [[nodiscard]] virtual eng::ecs::Entity find(
         std::string_view name) const = 0;
+
+    // --- P4.6 (Bloco 1): movimento de gameplay (padrão Godot/Unity) -------
+    // Ambos operam sobre a PRÓPRIA entidade (self do script), em unidades
+    // de MUNDO, no eixo XY (z preservado).
+    /// move(dx,dy): translação CRUA — SEM resolução de penetração
+    /// (teletransporte; escrever `position` direto equivale a isto —
+    /// documentado). false = entidade sem transform (no-op seguro).
+    [[nodiscard]] virtual bool translate(
+        eng::ecs::Entity self, float dx, float dy) = 0;
+    /// move_and_slide(dx,dy): varredura da esfera do CharacterBody com
+    /// deslize (substeps anti-túnel; o mask do próprio corpo decide
+    /// contra quem desliza). false = sem CharacterBody/transform — o
+    /// chamador vira fault PRECISO (nunca deslize silencioso).
+    [[nodiscard]] virtual bool moveAndSlide(
+        eng::ecs::Entity self, float dx, float dy,
+        eng::math::Vec3& outPosition) = 0;
 };
 
 /// Resolução de caminhos de entidade — `e.<alias>.<campo>.<subcampo>…`.

@@ -13,4 +13,12 @@
         android:gravity="center"
         android:top="96dp"
         android:drawable="@drawable/oni_splash_wordmark" />
+    <!-- P4.6 Bloco 0 (R4): caption de fase 12sp secundário sob o wordmark
+         (wordmark termina a ~118dp do centro; caption a 122dp). Asset
+         GERADO por scripts/gen_splash_caption.py (regenerável por fase);
+         o texto dinâmico real lê BuildConfig na sheet de Configurações. -->
+    <item
+        android:gravity="center"
+        android:top="122dp"
+        android:drawable="@drawable/oni_splash_caption" />
 </layer-list>

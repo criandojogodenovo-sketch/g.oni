@@ -2273,6 +2273,71 @@ Java_com_goni_runtime_EditorJni_nativeEditorPhysicsSetDt(JNIEnv* /*env*/,
                                                                   : JNI_FALSE;
 }
 
+// --- P4.6 (Bloco 1): camadas de COLISÃO nomeadas (project settings) --------
+// ≠ camadas de CENA/tick (nativeEditorLayer*, ADR-051): bitfields que
+// filtram pares de colisão — (A.mask & B.layer) && (B.mask & A.layer).
+
+/// TSV: name\tbit (uma linha por camada nomeada; ordem da tabela).
+JNIEXPORT jstring JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorCollisionLayerList(
+    JNIEnv* env, jobject /*thiz*/, jlong handle)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return nullptr;
+    }
+    std::string tsv;
+    char line[512];
+    for (const auto& layer : host->document().collisionLayers()) {
+        std::snprintf(line, sizeof(line), "%s\t%u\n", layer.name.c_str(),
+                      static_cast<unsigned>(layer.bit));
+        tsv += line;
+    }
+    if (!tsv.empty()) {
+        tsv.pop_back();
+    }
+    return stringToJni(env, tsv);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorSetCollisionLayerName(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jlong bit, jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return JNI_FALSE;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return JNI_FALSE;
+    }
+    return record(handle,
+                  host->document().setCollisionLayerName(
+                      static_cast<std::uint32_t>(bit), nameBuf))
+               ? JNI_TRUE
+               : JNI_FALSE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_goni_runtime_EditorJni_nativeEditorAddCollisionLayer(
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring name)
+{
+    EditorHost* host = fromHandle(handle);
+    if (host == nullptr) {
+        return 0;
+    }
+    char nameBuf[kMaxStringArg];
+    if (!copyJString(env, name, nameBuf, sizeof(nameBuf))) {
+        return 0;
+    }
+    auto added = host->document().addCollisionLayer(nameBuf);
+    if (added.isError()) {
+        record(handle, added);
+        return 0;
+    }
+    return static_cast<jlong>(added.value());
+}
+
 /// Nomes dos assets de ÁUDIO (linhas \n) — picker do Inspector (kind audio).
 JNIEXPORT jstring JNICALL
 Java_com_goni_runtime_EditorJni_nativeEditorListAudio(JNIEnv* env,

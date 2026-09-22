@@ -109,12 +109,64 @@ eng::core::Result<ProjectConfig> ProjectFile::configFromJson(
         }
     }
 
+    // P4.6 (Bloco 1): camadas de colisão nomeadas — chave ADITIVA
+    // (ausente = tabela default "default" bit 1, compatível com projetos
+    // pré-P4.6). Estrita quando presente: nome não-vazio único + bit
+    // potência de 2 não repetido (erros precisos, nunca silêncio).
+    std::vector<CollisionLayerName> collisionLayers = defaultCollisionLayers();
+    const auto layersKey = value.find("collisionLayers");
+    if (layersKey.has_value()) {
+        if (!layersKey->isArray()) {
+            return makeUnexpected(bad("collisionLayers não é array"));
+        }
+        collisionLayers.clear();
+        for (std::size_t i = 0; i < layersKey->size(); ++i) {
+            const JsonValue& entry = layersKey->at(i);
+            if (!entry.isObject()) {
+                return makeUnexpected(bad("collisionLayers[] não é objeto"));
+            }
+            const auto entryName = entry.find("name");
+            const auto entryBit = entry.find("bit");
+            if (!entryName.has_value() || !entryName->isString() ||
+                entryName->asString().empty()) {
+                return makeUnexpected(
+                    bad("collisionLayers[]: name ausente/vazio"));
+            }
+            if (!entryBit.has_value() || !entryBit->isUnsigned()) {
+                return makeUnexpected(
+                    bad("collisionLayers[]: bit ausente/não-unsigned"));
+            }
+            const auto bit = entryBit->asU64();
+            if (bit == 0u || (bit & (bit - 1u)) != 0u || bit > 0x80000000ull) {
+                return makeUnexpected(bad(
+                    "collisionLayers[]: bit não é potência de 2 (1..2^31)"));
+            }
+            for (const CollisionLayerName& existing : collisionLayers) {
+                if (existing.name == entryName->asString()) {
+                    return makeUnexpected(bad("collisionLayers[]: nome '" +
+                                              existing.name + "' duplicado"));
+                }
+                if (existing.bit == static_cast<std::uint32_t>(bit)) {
+                    return makeUnexpected(bad(
+                        "collisionLayers[]: bit duplicado '" +
+                        existing.name + "'"));
+                }
+            }
+            collisionLayers.push_back(CollisionLayerName{
+                entryName->asString(), static_cast<std::uint32_t>(bit)});
+        }
+        if (collisionLayers.empty()) {
+            return makeUnexpected(bad("collisionLayers vazio"));
+        }
+    }
+
     ProjectConfig config;
     config.projectId = projectId.value();
     config.name = name->asString();
     config.engineVersion = engineVersion.value();
     config.assetRegistryPath = assetRegistryPath.value();
     config.sceneRoots = std::move(sceneRoots);
+    config.collisionLayers = std::move(collisionLayers);
     return config;
 }
 
@@ -135,6 +187,23 @@ eng::core::Result<eng::serial::JsonValue> ProjectFile::toJson(
     value.set("assetRegistryPath",
               JsonValue::string(config.assetRegistryPath.str()));
     value.set("sceneRoots", std::move(roots));
+    // P4.6 (Bloco 1): SEMPRE escreve a tabela — vazio no struct significa
+    // "tabela default" e é NORMALIZADO aqui (um array vazio no arquivo
+    // seria rejeitado pelo parse estrito; default é gerido num lugar só).
+    std::vector<CollisionLayerName> defaultTable;
+    const std::vector<CollisionLayerName>* table = &config.collisionLayers;
+    if (table->empty()) {
+        defaultTable = defaultCollisionLayers();
+        table = &defaultTable;
+    }
+    JsonValue layersJson = JsonValue::array();
+    for (const CollisionLayerName& layer : *table) {
+        JsonValue entry = JsonValue::object();
+        entry.set("name", JsonValue::string(layer.name));
+        entry.set("bit", JsonValue::uinteger(layer.bit));
+        layersJson.append(std::move(entry));
+    }
+    value.set("collisionLayers", std::move(layersJson));
     return value;
 }
 

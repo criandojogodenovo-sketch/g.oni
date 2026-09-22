@@ -21,10 +21,12 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "eng/niscript/NiScript.hpp"
 #include "eng/niscript/NiVm.hpp"
+#include "eng/physics/Physics.hpp"
 #include "eng/reflect/Reflect.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/Scene.hpp"
@@ -115,6 +117,36 @@ struct TestHost final : eng::ni::NiHost {
                 }
             });
         return found;
+    }
+
+    // --- P4.6 (Bloco 1): hosts de teste implementam os serviços reais ----
+    // translate: transform direto; moveAndSlide: DELEGA para a física REAL
+    // (o comportamento do verbo no test é o do jogo — zero fake de física).
+
+    bool translate(eng::ecs::Entity self, float dx, float dy) override
+    {
+        auto* transform = scene->localTransform(self);
+        if (transform == nullptr) {
+            return false;
+        }
+        transform->position =
+            transform->position + eng::math::Vec3{dx, dy, 0.f};
+        return true;
+    }
+
+    bool moveAndSlide(eng::ecs::Entity self, float dx, float dy,
+                      eng::math::Vec3& outPosition) override
+    {
+        if (scene->world().get<eng::physics::CharacterBody>(self) ==
+            nullptr) {
+            return false;
+        }
+        outPosition = eng::physics::PhysicsWorld::moveAndSlide(
+            *scene, self, eng::math::Vec3{dx, dy, 0.f});
+        if (auto* transform = scene->localTransform(self)) {
+            transform->position = outPosition;
+        }
+        return true;
     }
 };
 
@@ -1344,4 +1376,96 @@ TEST_CASE("ni ferramentas: hook de trace observa execução (§6.5)", "[ni][tool
     env.vm.setTraceHook(nullptr, 0);
     REQUIRE(calls > 10);   // todo instruction dispatch observável
     REQUIRE(maxLine >= 4); // corpo do repeat (linha 4) visitado
+}
+
+// =============================================================================
+// P4.6 (Bloco 1): verbos de movimento — move / move_and_slide
+// =============================================================================
+
+TEST_CASE("p46 ni: move(dx,dy) transla o SELF (teletransporte cru)",
+          "[ni][p46]")
+{
+    NiEnv env;
+    auto p = env.compileOrFail(
+        "up update:\n"
+        "    move(0.5, -1.0)\n"
+        "stop\n");
+    auto e = env.scene.createNode();
+    auto& st = env.instantiate(p, e);
+    REQUIRE(env.vm.run(st, "update", env.params()) == std::nullopt);
+    const auto* transform = env.scene.world().get<eng::math::Transform>(e);
+    REQUIRE(transform != nullptr);
+    REQUIRE(transform->position.x == 0.5);
+    REQUIRE(transform->position.y == -1.0);
+}
+
+TEST_CASE("p46 ni: move aceita literais INTEIROS (autoraria simples)",
+          "[ni][p46]")
+{
+    NiEnv env;
+    auto p = env.compileOrFail(
+        "up update:\n"
+        "    move(2, 0)\n"
+        "stop\n");
+    auto e = env.scene.createNode();
+    auto& st = env.instantiate(p, e);
+    REQUIRE(env.vm.run(st, "update", env.params()) == std::nullopt);
+    const auto* transform = env.scene.world().get<eng::math::Transform>(e);
+    REQUIRE(transform != nullptr);
+    REQUIRE(transform->position.x == 2.0);
+}
+
+TEST_CASE("p46 ni: move_and_slide sem CharacterBody = fault PRECISO",
+          "[ni][p46]")
+{
+    NiEnv env;
+    auto p = env.compileOrFail(
+        "up update:\n"
+        "    move_and_slide(1.0, 0.0)\n"
+        "stop\n");
+    auto e = env.scene.createNode();
+    auto& st = env.instantiate(p, e);
+    REQUIRE(env.vm.run(st, "update", env.params()) != std::nullopt);
+    REQUIRE(st.lastFault().has_value());
+    REQUIRE(st.lastFault()->kind == NiFault::Kind::NativeError);
+    REQUIRE(st.lastFault()->message.find("CharacterBody") !=
+            std::string::npos);
+}
+
+TEST_CASE("p46 ni: move_and_slide desliza de verdade (física REAL — sem "
+          "parede avança, com parede para/desliza)",
+          "[ni][p46]")
+{
+    NiEnv env;
+    // Parede estática: caixa em x=3 (face em 2.5).
+    auto wall = env.scene.createNode();
+    eng::physics::Collider wallShape;
+    wallShape.shape = eng::physics::ColliderShape::Box;
+    wallShape.halfExtents = {0.5f, 5.f, 5.f};
+    (void)env.scene.world().emplace<eng::physics::Collider>(
+        wall, wallShape);
+    env.scene.localTransform(wall)->position = {3.f, 0.f, 0.f};
+
+    auto p = env.compileOrFail(
+        "up update:\n"
+        "    move_and_slide(delta() * 2.0, delta() * 0.5)\n"
+        "stop\n");
+    auto e = env.scene.createNode();
+    (void)env.scene.world().emplace<eng::physics::CharacterBody>(
+        e, eng::physics::CharacterBody{{0.f, 0.f, 0.f}, 0.5f});
+    env.scene.localTransform(e)->position = {0.f, 0.f, 0.f};
+    auto& st = env.instantiate(p, e);
+
+    // delta = 1/60 → 0.0333 por tick; 90 ticks ≈ 3 u de tentativa.
+    for (int i = 0; i < 90; ++i) {
+        (void)env.vm.run(st, "update", env.params());
+    }
+    const auto* transform = env.scene.world().get<eng::math::Transform>(e);
+    REQUIRE(transform != nullptr);
+    // Face da parede (2.5) − raio (0.5) → centro para ~2.0. NUNCA além.
+    CHECK(transform->position.x < 2.05f);
+    CHECK(transform->position.x > 1.9f);
+    // E o componente Y deslizou livre (2 u de tentativa, sem obstáculo).
+    CHECK(transform->position.y ==
+          Catch::Approx(90.0 / 60.0 * 0.5).margin(0.01));
 }

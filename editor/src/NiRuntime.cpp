@@ -23,6 +23,7 @@
 #include "eng/log/Macros.hpp"
 #include "eng/math/Quat.hpp"
 #include "eng/niscript/NiBindings.hpp"
+#include "eng/physics/Physics.hpp"
 #include "eng/scene/Name.hpp"
 #include "eng/scene/SceneSerializer.hpp"
 
@@ -75,6 +76,52 @@ struct NiRuntime::HostImpl final : eng::ni::NiHost {
                 }
             });
         return found;
+    }
+
+    // --- P4.6 (Bloco 1): movimento de gameplay -----------------------------
+
+    bool translate(eng::ecs::Entity self, float dx, float dy) override
+    {
+        auto* transform = scene->localTransform(self);
+        if (transform == nullptr) {
+            return false;
+        }
+        transform->position =
+            transform->position + eng::math::Vec3{dx, dy, 0.f};
+        return true;
+    }
+
+    bool moveAndSlide(eng::ecs::Entity self, float dx, float dy,
+                      eng::math::Vec3& outPosition) override
+    {
+        // Preciso SEM CharacterBody → fault do verbo (nunca deslize
+        // silencioso — contrato NiBindings.hpp).
+        if (scene->world().get<eng::physics::CharacterBody>(self) ==
+            nullptr) {
+            return false;
+        }
+        // Mundo ANTES da varredura (o moveAndSlide parte do mundo).
+        const eng::math::Mat4 before = scene->computeWorldMatrix(self);
+        const eng::math::Vec3 worldBefore{before.at(3, 0), before.at(3, 1),
+                                          before.at(3, 2)};
+        const eng::math::Vec3 resolved = eng::physics::PhysicsWorld::
+            moveAndSlide(*scene, self, eng::math::Vec3{dx, dy, 0.f});
+        auto* transform = scene->localTransform(self);
+        if (transform == nullptr) {
+            return false;
+        }
+        // Sem pai: local == mundo (aplicação direta). Com pai: aplica o
+        // DELTA de mundo ao local — exato para pais sem rotação/escala
+        // (limitação v1 documentada; gameplay mobile move na raiz).
+        if (scene->parentOf(self) == eng::ecs::Entity{0xFFFFFFFFu,
+                                                      0xFFFFFFFFu}) {
+            transform->position = resolved;
+        } else {
+            transform->position = transform->position +
+                                  (resolved - worldBefore);
+        }
+        outPosition = resolved;
+        return true;
     }
 };
 

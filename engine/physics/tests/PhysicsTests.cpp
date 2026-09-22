@@ -355,3 +355,170 @@ TEST_CASE("physics: snapToGround projeta o personagem ao chão (C-18)", "[physic
                                                   Vec3{0.f, 2.f, 0.f});
     CHECK(jumped.y > 1.f);
 }
+
+// =============================================================================
+// P4.6 (Bloco 1): BodyType — static / kinematic / dynamic-lite
+// =============================================================================
+
+TEST_CASE("p46: bodyType default é DynamicLite (comportamento pré-P4.6 1:1)",
+          "[physics][p46]")
+{
+    WorldFixture f;
+    auto body = f.addBody({0.f, 10.f, 0.f});
+    const auto* rb = f.scene.world().get<RigidBody>(body);
+    REQUIRE(rb != nullptr);
+    CHECK(rb->bodyType == BodyType::DynamicLite);
+    // E o caminho integral continua: cai com gravidade.
+    f.physics.step(f.scene, 1.f / 60.f);
+    CHECK(f.scene.localTransform(body)->position.y < 10.f);
+}
+
+TEST_CASE("p46: bodyType Static NUNCA integra (mesmo com mass > 0) e não "
+          "é empurrado",
+          "[physics][p46]")
+{
+    WorldFixture f;
+    auto wall = f.addBody({0.f, 0.f, 0.f}, 5.f); // mass > 0 mas STATIC
+    {
+        auto* rb = f.scene.world().get<RigidBody>(wall);
+        rb->bodyType = BodyType::Static;
+        rb->useGravity = false;
+        rb->velocity = {1.f, 0.f, 0.f}; // velocidade autorada é IGNORADA
+    }
+    auto dyn = f.addBody({-0.9f, 0.f, 0.f}); // overlap com o "muro"
+    f.physics.step(f.scene, 1.f / 60.f);
+
+    // Static não integrou (velocidade ignorada, sem queda).
+    CHECK(f.scene.localTransform(wall)->position.x == Catch::Approx(0.f));
+    CHECK(f.scene.localTransform(wall)->position.y == Catch::Approx(0.f));
+    // Foi o dinâmico que tomou a correção INTEIRA (inv do static = 0):
+    // empurrado para oeste até a superfície (distância 1.0 = r+r).
+    CHECK(f.scene.localTransform(dyn)->position.x <= -0.99f);
+}
+
+TEST_CASE("p46: bodyType Kinematic integra velocidade AUTORADA, ignora "
+          "gravidade e empurra o dinâmico",
+          "[physics][p46]")
+{
+    WorldFixture f;
+    auto kin = f.addBody({0.f, 0.f, 0.f});
+    {
+        auto* rb = f.scene.world().get<RigidBody>(kin);
+        rb->bodyType = BodyType::Kinematic;
+        rb->useGravity = true; // IGNORADO p/ kinematic
+        rb->velocity = {1.f, 0.f, 0.f};
+    }
+    auto dyn = f.addBody({-0.98f, 0.f, 0.f}); // dinâmico encostado a oeste
+    f.physics.step(f.scene, 1.f / 60.f);
+
+    // Kinematic moveu 1/60 em x e NÃO caiu (sem gravidade/damping).
+    const auto* kinPos = f.scene.localTransform(kin);
+    CHECK(kinPos->position.x ==
+          Catch::Approx(1.f / 60.f).margin(1e-6f));
+    CHECK(kinPos->position.y == Catch::Approx(0.f).margin(1e-6f));
+    // Dinâmico: EMPURRADO para oeste pelo kinematic (inv do kin = 0)…
+    CHECK(f.scene.localTransform(dyn)->position.x < -0.98f);
+    // …e caiu (gravidade própria continua).
+    CHECK(f.scene.localTransform(dyn)->position.y < 0.f);
+}
+
+TEST_CASE("p46: mass == 0 continua estático (legado pré-P4.6 preservado)",
+          "[physics][p46]")
+{
+    WorldFixture f;
+    auto body = f.addBody({0.f, 5.f, 0.f}, 0.f);
+    f.physics.step(f.scene, 1.f / 60.f);
+    CHECK(f.scene.localTransform(body)->position.y == Catch::Approx(5.f));
+}
+
+TEST_CASE("p46: filtragem de mask funciona nos DOIS sentidos "
+          "(A.mask&B.layer && B.mask&A.layer)",
+          "[physics][p46]")
+{
+    // Sentido 1: A quer B, B não quer A → filtrado (já coberto no legado,
+    // re-assert explícito do contrato bidirecional).
+    {
+        WorldFixture f;
+        auto a = f.addBody({0.f, 0.f, 0.f});
+        auto b = f.addBody({0.1f, 0.f, 0.f});
+        auto* ca = f.scene.world().get<Collider>(a);
+        auto* cb = f.scene.world().get<Collider>(b);
+        ca->layer = 1u; ca->mask = 3u;  // A quer bits 1|2
+        cb->layer = 2u; cb->mask = 2u;  // B só quer bit 2 (NÃO quer A)
+        f.physics.step(f.scene, 1.f / 60.f);
+        CHECK(f.physics.contactCount() == 0);
+    }
+    // Sentido 2: B quer A, A não quer B → filtrado (espelho).
+    {
+        WorldFixture f;
+        auto a = f.addBody({0.f, 0.f, 0.f});
+        auto b = f.addBody({0.1f, 0.f, 0.f});
+        auto* ca = f.scene.world().get<Collider>(a);
+        auto* cb = f.scene.world().get<Collider>(b);
+        ca->layer = 1u; ca->mask = 1u;  // A só quer bit 1 (NÃO quer B)
+        cb->layer = 2u; cb->mask = 3u;  // B quer bits 1|2
+        f.physics.step(f.scene, 1.f / 60.f);
+        CHECK(f.physics.contactCount() == 0);
+    }
+    // Ambos querem → colide.
+    {
+        WorldFixture f;
+        auto a = f.addBody({0.f, 0.f, 0.f});
+        auto b = f.addBody({0.35f, 0.f, 0.f});
+        auto* ca = f.scene.world().get<Collider>(a);
+        auto* cb = f.scene.world().get<Collider>(b);
+        ca->layer = 1u; ca->mask = 3u;
+        cb->layer = 2u; cb->mask = 3u;
+        f.physics.step(f.scene, 1.f / 60.f);
+        CHECK(f.physics.contactCount() == 1);
+    }
+}
+
+// =============================================================================
+// P4.6 (Bloco 1): moveAndSlide — substeps anti-túnel + mask do corpo
+// =============================================================================
+
+TEST_CASE("p46: moveAndSlide com movimento > raio NÃO atravessa parede fina "
+          "(anti-túnel)",
+          "[physics][p46]")
+{
+    WorldFixture f;
+    // Parede FINA: caixa de meia-espessura 0.1 (face em x=2.9). O v1 de
+    // passada única checava só o destino (x=6) e ATRAVESSAVA.
+    f.addStaticBox({3.f, 0.f, 0.f}, {0.1f, 5.f, 5.f});
+    auto character = f.addBody({0.f, 0.f, 0.f}, 0.f, 0.5f, {0, 0, 0}, false);
+    (void)f.scene.world().emplace<CharacterBody>(
+        character, CharacterBody{{0.f, 0.f, 0.f}, 0.5f});
+    f.scene.world().remove<RigidBody>(character);
+
+    const Vec3 finalPos =
+        PhysicsWorld::moveAndSlide(f.scene, character, {6.f, 0.f, 0.f});
+    // Parou ANTES da face (2.9) menos o raio — nunca do outro lado.
+    CHECK(finalPos.x < 2.5f);
+    CHECK(finalPos.x >= 2.39f); // face (2.9) − raio (0.5) − epsilon
+}
+
+TEST_CASE("p46: moveAndSlide respeita o MASK do próprio corpo",
+          "[physics][p46]")
+{
+    WorldFixture f;
+    auto wall = f.addStaticBox({3.f, 0.f, 0.f}, {1.f, 5.f, 5.f});
+    (void)wall;
+    auto ghost = f.addBody({0.f, 0.f, 0.f}, 0.f, 0.5f, {0, 0, 0}, false);
+    (void)f.scene.world().emplace<CharacterBody>(
+        ghost, CharacterBody{{0.f, 0.f, 0.f}, 0.5f});
+    (void)f.scene.world().emplace<Collider>(ghost, Collider{});
+    // Ghost SÓ colide com bit 2; a parede é bit 1 (default) → ATRAVESSA.
+    f.scene.world().get<Collider>(ghost)->mask = 2u;
+    const Vec3 through =
+        PhysicsWorld::moveAndSlide(f.scene, ghost, {6.f, 0.f, 0.f});
+    CHECK(through.x == Catch::Approx(6.f).margin(1e-4f));
+
+    // Corpo com mask default (tudo) → para na parede.
+    auto solid = f.addBody({0.f, 0.f, 0.f}, 0.f, 0.5f, {0, 0, 0}, false);
+    (void)f.scene.world().emplace<CharacterBody>(
+        solid, CharacterBody{{0.f, 0.f, 0.f}, 0.5f});
+    const Vec3 blocked =
+        PhysicsWorld::moveAndSlide(f.scene, solid, {6.f, 0.f, 0.f});
+    CHECK(blocked.x < 2.5f);
+}

@@ -299,6 +299,16 @@ fun EditorActivity.updateInspectorValuesInPlace() {
                 val shown = value.ifEmpty { empty }
                 if (v.text.toString() != shown) v.text = shown
             }
+            // P4.6 (Bloco 1): rows de bitfield re-estilizam in-place.
+            inspectorBitfieldRows["$component\u0001$path"]?.let { row ->
+                (row.tag as? BitfieldHolder)?.let { holder ->
+                    val newBits = value.toLongOrNull()
+                    if (newBits != null && newBits != holder.value) {
+                        holder.value = newBits
+                        styleBitfieldChips(holder)
+                    }
+                }
+            }
         }
     }
 }
@@ -954,6 +964,112 @@ fun EditorActivity.toggleAnimPreview() {
 
 // --- linhas de campo do Inspector (P0-6, ADR-052) -----------------------------------
 
+// --- P4.6 (Bloco 1): bitfields nomeados (chips no Inspector) ------------------
+
+/// Estado vivo de uma row de bitfield (chips + valor corrente) — tag da
+/// row para o sync diferencial (mesmo espírito do B-B: in-place, sem
+/// recriar a view).
+internal class BitfieldHolder {
+    var value: Long = 0L
+    val chips = mutableListOf<Pair<TextView, Long>>()
+    var extraLabel: TextView? = null
+}
+
+/** Campos cuja edição correta é por NOME de camada (bitfield nomeado). */
+internal fun bitfieldKindOf(component: String, path: String): Boolean {
+    // P4.6 (Bloco 1): Collider.layer/mask. O Bloco 2 (luz) estende aqui
+    // (Light2D.mask / SpriteData.lightLayer).
+    return component == "eng::physics::Collider" &&
+        (path == "layer" || path == "mask")
+}
+
+/** Re-estila os chips do holder pelo valor corrente (ativo = ACCENT). */
+internal fun EditorActivity.styleBitfieldChips(holder: BitfieldHolder) {
+    for ((chip, bit) in holder.chips) {
+        val active = (holder.value and bit) != 0L
+        if (active) {
+            chip.setTextColor(Oni.ON_ACCENT)
+            chip.background = Oni.ripplePill(this, Oni.ACCENT)
+        } else {
+            chip.setTextColor(Oni.TEXT)
+            chip.background = Oni.ripplePill(this, Oni.RAISED)
+        }
+    }
+    val extra = holder.value and holder.chips.fold(0L) { acc, (_, bit) ->
+        acc and bit.inv()
+    }
+    holder.extraLabel?.let { label ->
+        label.text = "0x%08X".format(extra)
+        label.visibility = if (extra != 0L) View.VISIBLE else View.GONE
+    }
+}
+
+/**
+ * P4.6 (Bloco 1): row de bitfield nomeado — chips toggle (um por camada
+ * nomeada no project settings) + mono com bits SEM nome (honesto: bits
+ * fora da tabela aparecem, não somem). Escrita via setFieldQuiet (inteiro);
+ * visual re-estilizado in-place (zero rebuild — o foco de outros campos
+ * sobrevive, regra N2).
+ */
+internal fun EditorActivity.addBitfieldRow(
+    parent: LinearLayout, component: String, path: String, value: String
+) {
+    val holder = BitfieldHolder()
+    holder.value = value.toLongOrNull() ?: 0L
+
+    parent.addView(labelView(prettyFieldLabel(path)))
+    val row = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    val chipRow = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+    }
+    val table = EditorJni.nativeEditorCollisionLayerList(handle) ?: ""
+    for (line in table.lines().filter { it.isNotEmpty() }) {
+        val parts = line.split('\t')
+        if (parts.size < 2) continue
+        val bit = parts[1].toLongOrNull() ?: continue
+        if (bit == 0L) continue
+        val name = parts[0]
+        val chip = Oni.chip(this, name, active = (holder.value and bit) != 0L,
+                            textSizeSp = 12f).apply {
+            setOnClickListener {
+                // Valor fresco do holder (sync diferencial mantém veraz).
+                val newValue = (holder.value xor bit) and 0xFFFFFFFFL
+                setFieldQuiet(component, path, newValue.toString())
+                holder.value = newValue
+                styleBitfieldChips(holder)
+            }
+        }
+        holder.chips.add(chip to bit)
+        chipRow.addView(
+            chip,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
+        )
+    }
+    // Bits setados fora da tabela nomeada — visíveis, nunca silenciados.
+    val extra = TextView(this).apply {
+        setTextColor(Oni.TEXT_DIM)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        typeface = Typeface.MONOSPACE
+        setPadding(dp(10), 0, dp(10), 0)
+        visibility = View.GONE
+    }
+    holder.extraLabel = extra
+    row.addView(chipRow, LinearLayout.LayoutParams(
+        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    row.addView(extra, LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+    parent.addView(row)
+    styleBitfieldChips(holder)
+    // Sync diferencial (P4.2/B-B): a row inteira re-estila in-place quando
+    // o valor muda por fora (undo/gizmo/outra via).
+    inspectorBitfieldRows["$component\u0001$path"] = row
+    row.tag = holder
+}
+
 /**
  * Linha de campo do Inspector: o kind semântico vindo do C++ decide o
  * editor — Switch (bool), dropdown (enum), swatch+sliders (color), picker
@@ -965,6 +1081,12 @@ fun EditorActivity.addFieldRow(
     typeName: String, value: String, kind: String, options: String
 ) {
     val act = this
+    // P4.6 (Bloco 1): bitfields nomeados vêm como kind "int" — a edição
+    // correta é por NOME de camada (chips), não por número cru.
+    if (kind == "int" && bitfieldKindOf(component, path)) {
+        addBitfieldRow(parent, component, path, value)
+        return
+    }
     when (kind) {
         "bool" -> {
             val row = LinearLayout(this).apply {

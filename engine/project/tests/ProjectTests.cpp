@@ -174,3 +174,102 @@ TEST_CASE("project: systemDefaults via eng::platform", "[project]")
     CHECK(paths.cacheRoot() ==
           (paths.projectDir() / eng::fs::Path{"cache"}).normalized());
 }
+
+// =============================================================================
+// P4.6 (Bloco 1): camadas de colisão nomeadas — chave aditiva
+// =============================================================================
+
+TEST_CASE("p46 project: collisionLayers ausente = tabela default",
+          "[project][p46]")
+{
+    const eng::project::ProjectId id = eng::project::ProjectId::generate();
+    // Projeto pré-P4.6 (SEM a chave) carrega com default "default"/bit 1.
+    const auto parsed = eng::project::ProjectFile::parse(
+        eng::fs::Path{"/j/project.goni.json"}, validProjectText(id.toString()));
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.value().config.collisionLayers.size() == 1);
+    CHECK(parsed.value().config.collisionLayers[0].name == "default");
+    CHECK(parsed.value().config.collisionLayers[0].bit == 1u);
+
+    // E o re-dump escreve a tabela (nunca array vazio).
+    const auto serialized = parsed.value().serialize();
+    REQUIRE(serialized.ok());
+    CHECK(serialized.value().find("collisionLayers") != std::string::npos);
+}
+
+TEST_CASE("p46 project: collisionLayers round-trip byte-estável",
+          "[project][p46]")
+{
+    const eng::project::ProjectId id = eng::project::ProjectId::generate();
+    const std::string text =
+        "{\"assetRegistryPath\":\"asset_registry.json\",\"collisionLayers\":"
+        "[{\"bit\":1,\"name\":\"default\"},{\"bit\":2,\"name\":\"player\"},"
+        "{\"bit\":4,\"name\":\"inimigo\"}],\"engineVersion\":\"0.3.0\","
+        "\"formatVersion\":1,\"name\":\"Meu Jogo\",\"projectId\":\"" +
+        id.toString() + "\",\"sceneRoots\":[\"scenes\"]}";
+    const auto parsed = eng::project::ProjectFile::parse(
+        eng::fs::Path{"/j/project.goni.json"}, text);
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.value().config.collisionLayers.size() == 3);
+    CHECK(parsed.value().config.collisionLayers[1].name == "player");
+    CHECK(parsed.value().config.collisionLayers[1].bit == 2u);
+
+    const auto serialized = parsed.value().serialize();
+    REQUIRE(serialized.ok());
+    const auto reparsed = eng::project::ProjectFile::parse(
+        eng::fs::Path{"/j/project.goni.json"}, serialized.value());
+    REQUIRE(reparsed.ok());
+    CHECK(reparsed.value().serialize().value() == serialized.value());
+}
+
+TEST_CASE("p46 project: collisionLayers inválidas são REJEITADAS",
+          "[project][p46]")
+{
+    const eng::project::ProjectId id = eng::project::ProjectId::generate();
+    const std::string base =
+        "\"engineVersion\":\"0.3.0\",\"formatVersion\":1,"
+        "\"name\":\"J\",\"projectId\":\"" +
+        id.toString() + "\",\"sceneRoots\":[\"scenes\"]";
+
+    // bit não-potência-de-2
+    {
+        const std::string bad =
+            "{\"collisionLayers\":[{\"bit\":3,\"name\":\"x\"}]," + base + "}";
+        const auto parsed = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"}, bad);
+        CHECK(parsed.isError());
+    }
+    // bit 0
+    {
+        const std::string bad =
+            "{\"collisionLayers\":[{\"bit\":0,\"name\":\"x\"}]," + base + "}";
+        const auto parsed = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"}, bad);
+        CHECK(parsed.isError());
+    }
+    // nome duplicado
+    {
+        const std::string bad =
+            "{\"collisionLayers\":[{\"bit\":1,\"name\":\"x\"},"
+            "{\"bit\":2,\"name\":\"x\"}]," + base + "}";
+        const auto parsed = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"}, bad);
+        CHECK(parsed.isError());
+    }
+    // nome vazio
+    {
+        const std::string bad =
+            "{\"collisionLayers\":[{\"bit\":1,\"name\":\"\"}]," + base + "}";
+        const auto parsed = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"}, bad);
+        CHECK(parsed.isError());
+    }
+    // array vazio
+    {
+        const std::string bad =
+            "{\"collisionLayers\":[]," + base + "}";
+        const auto parsed = eng::project::ProjectFile::parse(
+            eng::fs::Path{"/j/project.goni.json"}, bad);
+        CHECK(parsed.isError());
+    }
+}

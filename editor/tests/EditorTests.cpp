@@ -7979,6 +7979,7 @@ TEST_CASE("p45: viewportFit enquadra a cena (e a seleção)", "[p45]")
 TEST_CASE("JNI symbol contract — cada external fun de EditorJni.kt resolve por dlsym", "[jni][contract]")
 {
 static constexpr const char* kExpectedJniSymbols[] = {
+    "Java_com_goni_runtime_EditorJni_nativeEditorAddCollisionLayer",
     "Java_com_goni_runtime_EditorJni_nativeEditorAddComponent",
     "Java_com_goni_runtime_EditorJni_nativeEditorAddableComponents",
     "Java_com_goni_runtime_EditorJni_nativeEditorAnimationAddFrame",
@@ -8007,6 +8008,7 @@ static constexpr const char* kExpectedJniSymbols[] = {
     "Java_com_goni_runtime_EditorJni_nativeEditorCreate",
     "Java_com_goni_runtime_EditorJni_nativeEditorCreateEntity",
     "Java_com_goni_runtime_EditorJni_nativeEditorCreateSprite",
+    "Java_com_goni_runtime_EditorJni_nativeEditorCollisionLayerList",
     "Java_com_goni_runtime_EditorJni_nativeEditorDeleteEntity",
     "Java_com_goni_runtime_EditorJni_nativeEditorDestroy",
     "Java_com_goni_runtime_EditorJni_nativeEditorDumpState",
@@ -8076,6 +8078,7 @@ static constexpr const char* kExpectedJniSymbols[] = {
     "Java_com_goni_runtime_EditorJni_nativeEditorSelection",
     "Java_com_goni_runtime_EditorJni_nativeEditorSelectionRevision",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetBackend",
+    "Java_com_goni_runtime_EditorJni_nativeEditorSetCollisionLayerName",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetComponentField",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetGameViewportSize",
     "Java_com_goni_runtime_EditorJni_nativeEditorSetPaused",
@@ -8103,9 +8106,10 @@ static constexpr const char* kExpectedJniSymbols[] = {
 
     // RTLD_DEFAULT = escopo global do processo (o próprio executável,
     // linkado com +rdynamic: símbolos JNIEXPORT → tabela dinâmica).
+    // P4.6: 120 (P4.5.2) + 3 camadas de colisão nomeadas = 123.
     constexpr std::size_t kExpected =
         sizeof(kExpectedJniSymbols) / sizeof(kExpectedJniSymbols[0]);
-    STATIC_REQUIRE(kExpected == 120);
+    STATIC_REQUIRE(kExpected == 123);
 
     std::vector<std::string> missing;
     for (const char* name : kExpectedJniSymbols) {
@@ -8122,4 +8126,192 @@ static constexpr const char* kExpectedJniSymbols[] = {
         FAIL("Símbolos JNI ausentes/manglados (" << missing.size() << '/'
                                                  << kExpected << "):" << joined);
     }
+}
+
+// =============================================================================
+// P4.6 (Bloco 1): colisão v2 — camadas nomeadas, migração, repro kinematic
+// =============================================================================
+
+TEST_CASE("p46: camadas de colisão nomeadas — tabela, rename, add, "
+          "persistência no project.goni.json",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Tabela default do projeto novo.
+    auto layers = f.doc->collisionLayers();
+    REQUIRE(layers.size() == 1);
+    CHECK(layers[0].name == "default");
+    CHECK(layers[0].bit == 1u);
+
+    // Rename do bit 1.
+    REQUIRE(f.doc->setCollisionLayerName(1u, "cenario").ok());
+    layers = f.doc->collisionLayers();
+    CHECK(layers[0].name == "cenario");
+
+    // Add recebe o MENOR bit livre (2).
+    auto added = f.doc->addCollisionLayer("player");
+    REQUIRE(added.ok());
+    CHECK(added.value() == 2u);
+
+    // Erros precisos (nunca silêncio):
+    CHECK(f.doc->addCollisionLayer("player").isError()); // duplicado
+    CHECK(f.doc->setCollisionLayerName(2u, "cenario").isError()); // duplicado
+    CHECK(f.doc->setCollisionLayerName(4u, "x").isError()); // bit sem nome
+    CHECK(f.doc->setCollisionLayerName(1u, "").isError()); // vazio
+
+    // Persistência: saveProject escreve a tabela no project.goni.json.
+    REQUIRE(f.doc->saveProject().ok());
+    auto text = f.fs->readAllText(eng::fs::Path{"TestGame/project.goni.json"});
+    REQUIRE(text.ok());
+    CHECK(text.value().find("collisionLayers") != std::string::npos);
+    CHECK(text.value().find("cenario") != std::string::npos);
+    CHECK(text.value().find("player") != std::string::npos);
+}
+
+TEST_CASE("p46: migração aditiva — cena PRÉ-P4.6 (RigidBody sem bodyType) "
+          "carrega com o tipo certo (mass 0 → Static, mass > 0 → DynamicLite)",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Cena ATUAL: dois corpos (mass 0 e mass 3).
+    auto light = f.doc->createEntity("Livre", eng::scene::kNoEntity);
+    REQUIRE(light.ok());
+    REQUIRE(f.doc->addComponent(light.value(), "eng::physics::RigidBody").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(light.value(), "eng::physics::RigidBody",
+                                    "mass", "0")
+                .ok());
+    auto heavy = f.doc->createEntity("Pesado", eng::scene::kNoEntity);
+    REQUIRE(heavy.ok());
+    REQUIRE(f.doc->addComponent(heavy.value(), "eng::physics::RigidBody").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(heavy.value(), "eng::physics::RigidBody",
+                                    "mass", "3")
+                .ok());
+    REQUIRE(f.doc->saveScene("main.json").ok());
+
+    // SIMULAÇÃO PRÉ-P4.6: strip da chave nova do JSON salvo (é exatamente
+    // o que uma cena dca9922 tem — decode estrito REJEITARIA sem migração).
+    auto saved = f.fs->readAllText(eng::fs::Path{"TestGame/scenes/main.json"});
+    REQUIRE(saved.ok());
+    std::string oldScene = saved.value();
+    // bodyType é a 1ª chave do data (dump ordena alfabeticamente) — o
+    // padrão inclui a vírgula seguinte para NÃO quebrar o JSON.
+    const std::string dynamicText = "\"bodyType\":\"DynamicLite\",";
+    const std::string staticText = "\"bodyType\":\"Static\",";
+    CHECK(oldScene.find(dynamicText) != std::string::npos); // encode escreve
+    while (true) {
+        const auto pos = oldScene.find(dynamicText);
+        if (pos == std::string::npos) { break; }
+        oldScene.erase(pos, dynamicText.size());
+    }
+    while (true) {
+        const auto pos = oldScene.find(staticText);
+        if (pos == std::string::npos) { break; }
+        oldScene.erase(pos, staticText.size());
+    }
+    CHECK(oldScene.find("bodyType") == std::string::npos);
+    REQUIRE(f.fs->writeAllText(eng::fs::Path{"TestGame/scenes/main.json"},
+                               oldScene));
+
+    // Load da cena ANTIGA: migração injeta e o load passa.
+    REQUIRE(f.doc->loadScene("main.json").ok());
+    std::size_t bodies = 0;
+    f.doc->sceneInFocus()->world().each<eng::physics::RigidBody>(
+        [&](eng::ecs::Entity, const eng::physics::RigidBody& body) {
+            ++bodies;
+            if (body.mass == 0.f) {
+                CHECK(body.bodyType == eng::physics::BodyType::Static);
+            } else {
+                CHECK(body.bodyType ==
+                      eng::physics::BodyType::DynamicLite);
+            }
+        });
+    CHECK(bodies == 2);
+}
+
+TEST_CASE("p46: REPRO do utilizador — script move_and_slide contra estático "
+          "sólido: para/desliza, NUNCA atravessa",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Parede estática: box (0.5, 5, 5) em x=3 — face em 2.5.
+    auto wall = f.doc->createEntity("Parede", eng::scene::kNoEntity);
+    REQUIRE(wall.ok());
+    REQUIRE(f.doc->addComponent(wall.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "shape", "Box")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "halfExtents.x", "0.5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "halfExtents.y", "5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::physics::Collider",
+                                    "halfExtents.z", "5")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(wall.value(), "eng::math::Transform",
+                                    "position.x", "3")
+                .ok());
+
+    // Jogador: CharacterBody + Collider + script kinematic.
+    auto player = f.doc->createEntity("Jogador", eng::scene::kNoEntity);
+    REQUIRE(player.ok());
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::physics::CharacterBody")
+                .ok());
+    REQUIRE(f.doc->addComponent(player.value(), "eng::physics::Collider").ok());
+    const char* source =
+        "up update:\n"
+        "    move_and_slide(delta() * 3.0, delta() * 1.0)\n"
+        "stop\n";
+    REQUIRE(f.doc->addComponent(player.value(),
+                                "eng::editor::NiScriptComponent")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(player.value(),
+                                    "eng::editor::NiScriptComponent",
+                                    "source", source)
+                .ok());
+
+    REQUIRE(f.doc->play().ok());
+    // 120 ticks: tentativa de 6 u em x — a parede segura (face 2.5 − raio).
+    for (int i = 0; i < 120; ++i) {
+        f.doc->tick(1.f / 60.f);
+    }
+    auto posX = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
+        "position.x");
+    REQUIRE(posX.ok());
+    INFO("player.x = " << posX.value());
+    const double x = std::atof(posX.value().c_str());
+    CHECK(x < 2.55); // NUNCA do outro lado (face 2.5 + folga)
+    CHECK(x > 1.90); // mas parou NA parede (~2.0 = face − raio)
+    auto posY = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
+        "position.y");
+    REQUIRE(posY.ok());
+    const double y = std::atof(posY.value().c_str());
+    INFO("player.y = " << posY.value());
+    CHECK(y > 1.5); // deslizou tangencialmente (2 u esperadas)
+
+    // STOP: a edição NUNCA foi tocada (ADR-044).
+    f.doc->stop();
+    auto editX = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), player.value(), "eng::math::Transform",
+        "position.x");
+    REQUIRE(editX.ok());
+    CHECK(editX.value() == "0");
 }
