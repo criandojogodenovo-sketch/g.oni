@@ -138,8 +138,8 @@ STARTUP_NATIVE_LIBRARY → STARTUP_JNI → STARTUP_APPLICATION → STARTUP_ACTIV
 | R2: splashscreen NoClassDef refutado | VERIFIED (APK) | 0 ocorrências de `androidx`/`splashscreen` nos 3 dex do artefato @0b5bcde (SHA256 no §3) |
 | R2: tema/splash válidos p/ API do C33 | VERIFIED (código) | Atributos API 21+; cadeia de recursos completa no APK (§3) |
 | Suíte de editor existente não regrediu | VERIFIED (local) | 167 casos: 155 passaram, 12 SKIP (sem GPU no container); únicos FAILs = 2 testes de sinal que falham idênticos no HEAD limpo neste container (kernel/ASan) e são verdes no CI |
-| CI Linux (ASan+UBSan+Werror) + CI Android | VERIFIED (CI) | Verdes no commit P4.5.1 |
-| APK P4.5.1 + SHA256 | VERIFIED (CI) | Artefato da execução Android deste commit |
+| CI Linux (ASan+UBSan+Werror) + CI Android | VERIFIED (CI) | #63 / #57 verdes @ `f262661` — suíte completa com o teste R1 novo |
+| APK P4.5.1 + SHA256 | VERIFIED (CI) | Artefato da execução #57: SHA256 `c16d99d795e0ccfac152043cb19c4f8fb390406d31d227bf446e86de0ca168a5` — os 6 marks R3 presentes nos dex (strings) e `host + documento prontos`/`STARTUP_EDITOR_HOST` no `libgoni.so` arm64 |
 | Morte real nomeada no device | NOT VERIFIED (device) | Exige a próxima morte (esperada: nenhuma, OU agora com forense completo) |
 | Runtime-demo (GoniActivity) com guard | LIMITATION | Fora do escopo P4.5.1 (5 mortes são todas do editor); uma linha fecha quando necessário |
 | Comportamento em caminho saudável | PRESERVADO | Zero mudanças em lógica de UI/JNI/gameplay; marks são writes log-only; auditorias de tema são read-only |
