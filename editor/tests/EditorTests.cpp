@@ -8400,3 +8400,57 @@ TEST_CASE("p46: filtro de luz por camada empacota SÓ as luzes do grupo + "
     const eng::render::FrameUniforms none = list.packUniformsFor("FX");
     CHECK(none.lightCount() == 0);
 }
+
+TEST_CASE("p46: migração/round-trip — cena com colisão v2 preserva bits e "
+          "bodyType (cenas existentes não quebram)",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Tabela nomeada do projeto + colisor com bits 1|2 contra mask 2|4.
+    REQUIRE(f.doc->addCollisionLayer("player").ok());  // bit 2
+    REQUIRE(f.doc->addCollisionLayer("inimigo").ok()); // bit 4
+    auto e = f.doc->createEntity("Ator", eng::scene::kNoEntity);
+    REQUIRE(e.ok());
+    REQUIRE(f.doc->addComponent(e.value(), "eng::physics::RigidBody").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(e.value(), "eng::physics::RigidBody",
+                                    "bodyType", "Kinematic")
+                .ok());
+    REQUIRE(f.doc->addComponent(e.value(), "eng::physics::Collider").ok());
+    REQUIRE(f.doc
+                ->setInspectorField(e.value(), "eng::physics::Collider",
+                                    "layer", "3")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(e.value(), "eng::physics::Collider",
+                                    "mask", "6")
+                .ok());
+
+    // Round-trip completo (save → load): NADA se perde.
+    REQUIRE(f.doc->saveScene("main.json").ok());
+    REQUIRE(f.doc->loadScene("main.json").ok());
+
+    auto bodyType = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::physics::RigidBody",
+        "bodyType");
+    REQUIRE(bodyType.ok());
+    CHECK(bodyType.value() == "Kinematic");
+    auto layer = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::physics::Collider", "layer");
+    REQUIRE(layer.ok());
+    CHECK(layer.value() == "3");
+    auto mask = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), e.value(), "eng::physics::Collider", "mask");
+    REQUIRE(mask.ok());
+    CHECK(mask.value() == "6");
+
+    // Tabela do projeto sobrevive ao save/load de CENA (vive no projeto).
+    auto layers = f.doc->collisionLayers();
+    REQUIRE(layers.size() == 3);
+    CHECK(layers[1].name == "player");
+    CHECK(layers[1].bit == 2u);
+    CHECK(layers[2].name == "inimigo");
+    CHECK(layers[2].bit == 4u);
+}

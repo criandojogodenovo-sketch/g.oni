@@ -908,7 +908,7 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
             PANEL_ASSETS -> "Assets"
             PANEL_SCRIPTS -> "Scripts"
             PANEL_ANIM -> "Animação"
-            PANEL_TICKS -> "Ticks & Camadas"
+            PANEL_TICKS -> "Grupos de Tick"
             else -> ""
         }
         val header = LinearLayout(this).apply {

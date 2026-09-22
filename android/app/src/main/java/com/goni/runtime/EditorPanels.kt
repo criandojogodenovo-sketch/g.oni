@@ -25,7 +25,13 @@ import android.widget.TextView
  */
 private const val TAG = "EditorPanels"
 
-// --- sheet Ticks & Camadas (P4.3 — Bloco 2; ADR-051 autorável) -----------------
+// --- sheet Grupos de Tick (P4.3 — Bloco 2; ADR-051 autorável) -----------------
+//
+// P4.6 (Bloco 3): separação CONCEITUAL — estes grupos são de SCHEDULING
+// (timeScale + participação update/física/render por camada da cena,
+// ADR-051). Camadas de COLISÃO são outro conceito (bitfields nomeados no
+// project.goni.json, chips no Inspector do colider) — vivem em
+// Configurações → "Camadas de colisão (bitfields)".
 
 internal data class LayerRow(
     val name: String,
@@ -37,12 +43,27 @@ internal data class LayerRow(
 
 fun EditorActivity.buildTicksPanel() {
     val act = this
+    // P4.6 (Bloco 3): explicação honesta da separação de conceitos.
+    panelContainer.addView(
+        TextView(this).apply {
+            text = "Scheduling por camada da cena (ADR-051). " +
+                "Camadas de colisão (bitfields) ficam em " +
+                "Configurações → Camadas de colisão."
+            setTextColor(Oni.TEXT_DIM)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(16), dp(6), dp(16), 0)
+        },
+        LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+    )
     val bar = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         setPadding(dp(12), 0, dp(12), dp(4))
     }
     bar.addView(
-        Oni.chip(this, "+ Camada", active = true, textSizeSp = 12f).also {
+        Oni.chip(this, "+ Grupo", active = true, textSizeSp = 12f).also {
             it.setOnClickListener { addLayerDialog() }
         },
         LinearLayout.LayoutParams(0, dp(48), 1f)

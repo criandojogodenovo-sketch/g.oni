@@ -1006,7 +1006,7 @@ internal fun EditorActivity.colorPickerDialog(
     )
 }
 
-// --- Ticks & Camadas: diálogos (ADR-051) ---------------------------------------------
+// --- Grupos de Tick: diálogos (ADR-051 — P4.6 Bloco 3 renomeou a sheet) --------------
 
 internal fun EditorActivity.addLayerDialog() {
     val act = this
@@ -1065,7 +1065,7 @@ internal fun EditorActivity.layerEditDialog(row: LayerRow) {
     container.addView(rowPhysics)
     container.addView(rowRender)
     OniDialog.custom(
-        this, "Camada: ${row.name}", container,
+        this, "Grupo: ${row.name}", container,
         listOf(
             OniDialog.Btn("Cancelar", accent = false),
             OniDialog.Btn("Aplicar") {
