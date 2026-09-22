@@ -1670,6 +1670,58 @@ Result<void> EditorDocument::addComponent(eng::ecs::Entity entity,
     if (added.isError()) {
         return makeUnexpected(added.error());
     }
+    // P4.6 (Bloco 2): luz nova CASA COM A CAMADA onde vivem os sprites
+    // lit da cena (defaults coerentes — uma luz criada num projeto cujos
+    // sprites estão em "UI" ilumina "UI", não some para "GAME"). Material
+    // vazio = lit (default); material explícito só conta quando o shader
+    // resolvido é lit (cache frio conta como lit — default do engine).
+    if (component == "eng::render::Light2D") {
+        if (auto* light =
+                scene_->world().get<eng::render::Light2D>(entity)) {
+            std::vector<std::pair<std::string, std::size_t>> counts;
+            scene_->world().each<eng::editor::SpriteData>(
+                [&](eng::ecs::Entity sprite,
+                    const eng::editor::SpriteData& data) {
+                    if (!data.materialAsset.empty()) {
+                        const auto it =
+                            materialCache_.find(data.materialAsset);
+                        if (it != materialCache_.end() &&
+                            it->second.shader !=
+                                std::string(eng::render::kShaderLit)) {
+                            return; // unlit: luz não afeta — não conta
+                        }
+                    }
+                    std::string layerName = "GAME";
+                    if (const auto* member =
+                            scene_->world().get<eng::scene::LayerMember>(
+                                sprite)) {
+                        layerName = member->layer;
+                    }
+                    bool found = false;
+                    for (auto& entry : counts) {
+                        if (entry.first == layerName) {
+                            ++entry.second;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        counts.emplace_back(layerName, 1u);
+                    }
+                });
+            // Vencedor = maior contagem (empate: 1ª camada vista —
+            // determinístico pela ordem do each).
+            const std::pair<std::string, std::size_t>* winner = nullptr;
+            for (const auto& entry : counts) {
+                if (winner == nullptr || entry.second > winner->second) {
+                    winner = &entry;
+                }
+            }
+            if (winner != nullptr) {
+                light->layer = winner->first;
+            }
+        }
+    }
     sceneDirty_ = true;
     ++selectionRevision_;  // Inspector reflete o componente novo (P2)
     return {};

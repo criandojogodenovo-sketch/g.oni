@@ -126,6 +126,9 @@ class EditorActivity : Activity(), SurfaceHolder.Callback2,
 
     // P4.2 (T5 — Modo Jogo G1): chrome escondido + HUD fullscreen.
     internal var gameMode = false
+    // P4.6 (Bloco 2): rows de chips single-select (layer da luz) p/ sync
+    // diferencial — mesmo contrato B-B (in-place).
+    internal val inspectorLayerChipRows = mutableMapOf<String, LinearLayout>()
     private var gameHudBar: LinearLayout? = null
     private var gameHudStatus: TextView? = null
     private var btnPauseGame: TextView? = null

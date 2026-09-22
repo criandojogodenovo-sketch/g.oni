@@ -309,6 +309,15 @@ fun EditorActivity.updateInspectorValuesInPlace() {
                     }
                 }
             }
+            // P4.6 (Bloco 2): chips de camada da luz re-estilizam in-place.
+            inspectorLayerChipRows["$component\u0001$path"]?.let { row ->
+                (row.tag as? LayerChipsHolder)?.let { holder ->
+                    if (value != holder.value) {
+                        holder.value = value
+                        styleLayerChips(holder)
+                    }
+                }
+            }
         }
     }
 }
@@ -983,6 +992,75 @@ internal fun bitfieldKindOf(component: String, path: String): Boolean {
         (path == "layer" || path == "mask")
 }
 
+// --- P4.6 (Bloco 2): chips de camada da CENA na luz (single-select) ---------
+
+/// Estado vivo de uma row de chips single-select (valor = nome).
+internal class LayerChipsHolder {
+    var value: String = ""
+    val chips = mutableListOf<Pair<TextView, String>>()
+}
+
+/** Re-estila os chips pelo valor corrente (ativo = ACCENT). */
+internal fun EditorActivity.styleLayerChips(holder: LayerChipsHolder) {
+    for ((chip, name) in holder.chips) {
+        val active = holder.value == name
+        if (active) {
+            chip.setTextColor(Oni.ON_ACCENT)
+            chip.background = Oni.ripplePill(this, Oni.ACCENT)
+        } else {
+            chip.setTextColor(Oni.TEXT)
+            chip.background = Oni.ripplePill(this, Oni.RAISED)
+        }
+    }
+}
+
+/**
+ * P4.6 (Bloco 2): a layer da luz é CAMADA DE CENA (ADR-051) — a fonte
+ * real do filtro de iluminação (DrawList::packUniformsFor por camada).
+ * Chips single-select com os nomes REAIS da registry (nativeEditorLayerList)
+ * em vez de texto livre: impossível digitar uma camada que não existe.
+ */
+internal fun EditorActivity.addLayerChipsRow(
+    parent: LinearLayout, component: String, path: String, value: String
+) {
+    val holder = LayerChipsHolder()
+    holder.value = value
+    parent.addView(labelView(prettyFieldLabel(path)))
+    val row = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+    }
+    val chipRow = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+    }
+    val layersTsv = EditorJni.nativeEditorLayerList(handle) ?: ""
+    for (line in layersTsv.lines().filter { it.isNotEmpty() }) {
+        val name = line.split('\t').getOrNull(0) ?: continue
+        if (name.isEmpty()) continue
+        val chip = Oni.chip(this, name, active = name == value,
+                            textSizeSp = 12f).apply {
+            setOnClickListener {
+                if (holder.value == name) return@setOnClickListener
+                setFieldQuiet(component, path, name)
+                holder.value = name
+                styleLayerChips(holder)
+            }
+        }
+        holder.chips.add(chip to name)
+        chipRow.addView(
+            chip,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
+        )
+    }
+    row.addView(chipRow, LinearLayout.LayoutParams(
+        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    parent.addView(row)
+    // Sync diferencial (B-B): re-estila in-place quando o valor muda por fora.
+    inspectorLayerChipRows["$component\u0001$path"] = row
+    row.tag = holder
+}
+
 /** Re-estila os chips do holder pelo valor corrente (ativo = ACCENT). */
 internal fun EditorActivity.styleBitfieldChips(holder: BitfieldHolder) {
     for ((chip, bit) in holder.chips) {
@@ -1081,6 +1159,12 @@ fun EditorActivity.addFieldRow(
     typeName: String, value: String, kind: String, options: String
 ) {
     val act = this
+    // P4.6 (Bloco 2): layer da luz → chips de camada da CENA (o filtro
+    // real de iluminação é por camada de cena — packUniformsFor).
+    if (component == "eng::render::Light2D" && path == "layer") {
+        addLayerChipsRow(parent, component, path, value)
+        return
+    }
     // P4.6 (Bloco 1): bitfields nomeados vêm como kind "int" — a edição
     // correta é por NOME de camada (chips), não por número cru.
     if (kind == "int" && bitfieldKindOf(component, path)) {
@@ -1279,6 +1363,20 @@ fun EditorActivity.addFieldRow(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))
             )
             parent.addView(row)
+            // P4.6 (Bloco 2): hint honesto — material unlit NÃO recebe luz.
+            // O autor precisa saber por que a luz "não faz nada" no sprite.
+            if (value.isNotEmpty()) {
+                val matJson = EditorJni.nativeEditorMaterialRead(handle, value)
+                if (matJson != null && matJson.contains("\"shader\":\"unlit\"")) {
+                    parent.addView(TextView(act).apply {
+                        text = "luzes não afetam shader unlit"
+                        setTextColor(Oni.TEXT_DIM)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                        typeface = Typeface.MONOSPACE
+                        setPadding(dp(4), 0, dp(4), dp(6))
+                    })
+                }
+            }
             return
         }
     }

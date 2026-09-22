@@ -8315,3 +8315,88 @@ TEST_CASE("p46: REPRO do utilizador — script move_and_slide contra estático "
     REQUIRE(editX.ok());
     CHECK(editX.value() == "0");
 }
+
+// =============================================================================
+// P4.6 (Bloco 2): Light2D — defaults coerentes + filtro por camada
+// =============================================================================
+
+TEST_CASE("p46: luz nova casa com a camada dos sprites lit (defaults "
+          "coerentes)",
+          "[editor][p46]")
+{
+    DocFixture f;
+    f.withProject();
+
+    // Camada "UI" + sprite lit (material vazio = lit default) nela.
+    REQUIRE(f.doc->addLayer("UI").ok());
+    auto sprite = f.doc->createEntity("Botao", eng::scene::kNoEntity);
+    REQUIRE(sprite.ok());
+    REQUIRE(f.doc->addComponent(sprite.value(), "eng::editor::SpriteData")
+                .ok());
+    REQUIRE(f.doc->addComponent(sprite.value(), "eng::scene::LayerMember")
+                .ok());
+    REQUIRE(f.doc
+                ->setInspectorField(sprite.value(), "eng::scene::LayerMember",
+                                    "layer", "UI")
+                .ok());
+
+    // Luz nova: deve casar com "UI" (onde vive o sprite lit), não "GAME".
+    auto light = f.doc->createEntity("Luz", eng::scene::kNoEntity);
+    REQUIRE(light.ok());
+    REQUIRE(f.doc->addComponent(light.value(), "eng::render::Light2D").ok());
+    auto layer = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), light.value(), "eng::render::Light2D",
+        "layer");
+    REQUIRE(layer.ok());
+    CHECK(layer.value() == "UI");
+
+    // Sprites em camadas DIFERENTES (1 GAME + 1 UI): empate → 1ª vista
+    // (GAME criado depois? Não — ordem de criação: Botao(UI) primeiro…
+    // um segundo sprite em GAME muda a contagem para empate 1:1).
+    auto sprite2 = f.doc->createEntity("Chao", eng::scene::kNoEntity);
+    REQUIRE(sprite2.ok());
+    REQUIRE(f.doc->addComponent(sprite2.value(), "eng::editor::SpriteData")
+                .ok());
+    auto light2 = f.doc->createEntity("Luz2", eng::scene::kNoEntity);
+    REQUIRE(light2.ok());
+    REQUIRE(f.doc->addComponent(light2.value(), "eng::render::Light2D").ok());
+    auto layer2 = eng::editor::Inspector::getField(
+        *f.doc->sceneInFocus(), light2.value(), "eng::render::Light2D",
+        "layer");
+    REQUIRE(layer2.ok());
+    // UI=1 (Botao), GAME=1 (Chao, sem LayerMember) — primeiro visto vence
+    // e o each segue a ordem de criação: Botao → UI.
+    CHECK(layer2.value() == "UI");
+}
+
+TEST_CASE("p46: filtro de luz por camada empacota SÓ as luzes do grupo + "
+          "sanity de intensidade/raio dos defaults",
+          "[editor][p46]")
+{
+    using eng::render::DrawList;
+    using DrawItem = DrawList::LightItem;
+
+    DrawList list;
+    DrawItem gameLight;   // GAME (default) — intensity 1, radius 4
+    DrawItem uiLight;
+    uiLight.layer = "UI";
+    list.lights.push_back(gameLight);
+    list.lights.push_back(uiLight);
+
+    // GAME empacota 1 luz (a de GAME) — sanity dos defaults:
+    const eng::render::FrameUniforms game = list.packUniformsFor("GAME");
+    CHECK(game.lightCount() == 1);
+    CHECK(game.lightA[0][0] == 0.f);  // worldX default
+    CHECK(game.lightA[0][1] == 0.f);  // worldY default
+    CHECK(game.lightA[0][2] == 4.f);  // radius default (unidades de mundo)
+    CHECK(game.lightA[0][3] == 1.f);  // intensity default
+    CHECK(game.lightB[0][3] == 1.5f); // falloff default
+
+    // UI empacota 1 luz; cada grupo recebe SÓ as suas (filtro real).
+    const eng::render::FrameUniforms ui = list.packUniformsFor("UI");
+    CHECK(ui.lightCount() == 1);
+
+    // Luz disabled-like: camada sem luz nenhuma → bloco vazio.
+    const eng::render::FrameUniforms none = list.packUniformsFor("FX");
+    CHECK(none.lightCount() == 0);
+}
