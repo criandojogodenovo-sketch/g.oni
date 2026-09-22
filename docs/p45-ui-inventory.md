@@ -27,26 +27,26 @@
 
 | # | Superfície | ANTES (código real @8f1ce83) | DEPOIS (alvo) | Estado | Verificação |
 |---|---|---|---|---|---|
-| 1 | Top bar | `LinearLayout` flat `0xF211161F` colado no topo; brand 13sp; 5 toolButtons 36dp cinza | Header card curvo flutuante (raio 20dp, margem 8dp, tom `#12161D`): título 16sp + chips pill mono (backend/ferramenta) + Play icon-button acento | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 2 | Ferramenta (tool switcher) | Botão "FERRAMENTA" na top bar → `AlertDialog` default | Segmented pill flutuante acima das tabs (Select/Move/Rotate/Scale), segmento ativo = pill filled acento | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 3 | Tabs (bottom bar) | `LinearLayout` flat com 6 toolButtons iguais (sem estado ativo) | Tab bar card curvo (raio 20dp flutuante); tab ativa = pill filled acento, inativa = texto dim | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 4 | Painéis (sheets) | `panelContainer` retângulo reto `SURFACE_SOLID`, sem scrim, sem handle, sem animação | Bottom sheet curvo (topo 28dp) + scrim tocável + drag-handle + slide 180 ms; drawer landscape mantém comportamento (N2 preservado) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 5 | Listas (hierarquia/assets/scripts/anim/ticks) | `android.R.layout.simple_list_item_1` (texto default do tema) / rows manuais sem pressed; divisores default | Rows sem borda/divisores, separadas por tom+espaço, pressed overlay 12%, mono em números, seleção acento | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 6 | Diálogos/menus (~25 usos de `AlertDialog`) | `android.app.AlertDialog` Material default (cinza, cantos 28dp do tema, botões padrão) | `OniDialog`: card curvo 24dp `#222933`, título 16sp, confirm/cancel nos cantos inferiores, fade+scale 120 ms | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 7 | Inputs | `EditText` default (Material underline cinza) | Campos filled curvos 14dp (`#1A2029`), foco = borda acento (única borda), ≥44dp, numéricos com mono | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 8 | Sliders/toggles | `SeekBar`/`Switch`/`CheckBox` Material default | Track curva + thumb acento 20dp (hit ≥48dp); Switch com track/thumb tint acento; sem CheckBox cinza | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 9 | Spinner (categoria de assets) | `Spinner` com `simple_spinner_dropdown_item` default | Chip pill que abre picker curvo (lista temática) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 10 | Janela de script próprio | `AlertDialog` com `EditText` mono 12sp dentro de ScrollView | Janela dedicada fullscreen: card curvo, superfície código `#0D1117`, mono 13sp, syntax coloring (keywords acento/strings success/comentários secundário/números warn), numeração de linhas, toolbar flutuante Compilar/Anexar/Salvar, painéis laterais colapsáveis (variables/functions), auto-indent | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
-| 11 | Toasts | `Toast.makeText` default | Pill raised `#222933` raio total + ícone de severidade (info/ok/erro) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 12 | HUD Play (editor) | `TextView` retângulo `0x99000000` canto inferior esquerdo | Pill translúcida curva (raio 16dp) com mono nos números | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 13 | HUD Modo Jogo | Barra full-width flat `0xE0101010` | Pill flutuante translúcida: STOP (danger) / PAUSE (warn) / fps mono | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 14 | Zoom | Inexistente visível (só pinch) | Cluster pill vertical bottom-left (+/−/fit) — fit = enquadra seleção/cena (nativo novo) | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
-| 15 | Undo/redo | Inexistente | FABs circulares bottom-right (command pattern NATIVO — snapshots de cena), disabled sem histórico, regressões [p45] (move/rotate/scale/create/delete/attach) | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
-| 16 | Snap | Inexistente | Chips pill toggleáveis na tool sheet (grade / 15°) — nativo no gizmo, regressões [p45] | THEMED (código) | VERIFIED (kotlinc 0 erros; [p45] 11/11 local; device pendente) |
-| 17 | Project switcher | `AlertDialog` com lista de nomes | Sheet curva com thumbnail (1ª textura do projeto) + nome + data (mono) | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
-| 18 | Empty states | `TextView` dim ("Nenhuma entidade selecionada") / listas vazias em branco | Card curvo com ícone 48dp + dica + ação (ex.: "+ Sprite") | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
+| 1 | Top bar | `LinearLayout` flat `0xF211161F` colado no topo; brand 13sp; 5 toolButtons 36dp cinza | Header card curvo flutuante (raio 20dp, margem 8dp, tom `#12161D`): título 16sp + chips pill mono (backend/ferramenta) + Play icon-button acento | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 2 | Ferramenta (tool switcher) | Botão "FERRAMENTA" na top bar → `AlertDialog` default | Segmented pill flutuante acima das tabs (Select/Move/Rotate/Scale), segmento ativo = pill filled acento | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 3 | Tabs (bottom bar) | `LinearLayout` flat com 6 toolButtons iguais (sem estado ativo) | Tab bar card curvo (raio 20dp flutuante); tab ativa = pill filled acento, inativa = texto dim | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 4 | Painéis (sheets) | `panelContainer` retângulo reto `SURFACE_SOLID`, sem scrim, sem handle, sem animação | Bottom sheet curvo (topo 28dp) + scrim tocável + drag-handle + slide 180 ms; drawer landscape mantém comportamento (N2 preservado) | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 5 | Listas (hierarquia/assets/scripts/anim/ticks) | `android.R.layout.simple_list_item_1` (texto default do tema) / rows manuais sem pressed; divisores default | Rows sem borda/divisores, separadas por tom+espaço, pressed overlay 12%, mono em números, seleção acento | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 6 | Diálogos/menus (~25 usos de `AlertDialog`) | `android.app.AlertDialog` Material default (cinza, cantos 28dp do tema, botões padrão) | `OniDialog`: card curvo 24dp `#222933`, título 16sp, confirm/cancel nos cantos inferiores, fade+scale 120 ms | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 7 | Inputs | `EditText` default (Material underline cinza) | Campos filled curvos 14dp (`#1A2029`), foco = borda acento (única borda), ≥44dp, numéricos com mono | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 8 | Sliders/toggles | `SeekBar`/`Switch`/`CheckBox` Material default | Track curva + thumb acento 20dp (hit ≥48dp); Switch com track/thumb tint acento; sem CheckBox cinza | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 9 | Spinner (categoria de assets) | `Spinner` com `simple_spinner_dropdown_item` default | Chip pill que abre picker curvo (lista temática) | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 10 | Janela de script próprio | `AlertDialog` com `EditText` mono 12sp dentro de ScrollView | Janela dedicada fullscreen: card curvo, superfície código `#0D1117`, mono 13sp, syntax coloring (keywords acento/strings success/comentários secundário/números warn), numeração de linhas, toolbar flutuante Compilar/Anexar/Salvar, painéis laterais colapsáveis (variables/functions), auto-indent | THEMED | VERIFIED (kotlinc + CI verde; [p45] 11/11 local; device pendente) |
+| 11 | Toasts | `Toast.makeText` default | Pill raised `#222933` raio total + ícone de severidade (info/ok/erro) | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 12 | HUD Play (editor) | `TextView` retângulo `0x99000000` canto inferior esquerdo | Pill translúcida curva (raio 16dp) com mono nos números | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 13 | HUD Modo Jogo | Barra full-width flat `0xE0101010` | Pill flutuante translúcida: STOP (danger) / PAUSE (warn) / fps mono | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 14 | Zoom | Inexistente visível (só pinch) | Cluster pill vertical bottom-left (+/−/fit) — fit = enquadra seleção/cena (nativo novo) | THEMED | VERIFIED (kotlinc + CI verde; [p45] 11/11 local; device pendente) |
+| 15 | Undo/redo | Inexistente | FABs circulares bottom-right (command pattern NATIVO — snapshots de cena), disabled sem histórico, regressões [p45] (move/rotate/scale/create/delete/attach) | THEMED | VERIFIED (kotlinc + CI verde; [p45] 11/11 local; device pendente) |
+| 16 | Snap | Inexistente | Chips pill toggleáveis na tool sheet (grade / 15°) — nativo no gizmo, regressões [p45] | THEMED | VERIFIED (kotlinc + CI verde; [p45] 11/11 local; device pendente) |
+| 17 | Project switcher | `AlertDialog` com lista de nomes | Sheet curva com thumbnail (1ª textura do projeto) + nome + data (mono) | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
+| 18 | Empty states | `TextView` dim ("Nenhuma entidade selecionada") / listas vazias em branco | Card curvo com ícone 48dp + dica + ação (ex.: "+ Sprite") | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
 | 19 | Splash/ícone | Robô Android default (sem `android:icon`; windowBackground preto) | Ícone adaptativo gerado do prompt verbatim (arco G + nó, `#8AB4F8` em `#0B0E13`) + splash carvão com logo 96dp + wordmark | PENDENTE | — |
-| 20 | Tema/base | `Theme.Material.NoActionBar.Fullscreen`, windowBackground preto | Mesmo tema + windowBackground splash carvão; edge effect tint acento | THEMED (código) | VERIFIED (kotlinc 0 erros; device pendente) |
+| 20 | Tema/base | `Theme.Material.NoActionBar.Fullscreen`, windowBackground preto | Mesmo tema + windowBackground splash carvão; edge effect tint acento | THEMED | VERIFIED (kotlinc + CI verde; device pendente) |
 
 ### 1.1 Notas dos Blocos B/C
 
@@ -100,3 +100,34 @@ dedicada: syntax/linhas/toolbar/painéis/auto-indent) · play (HUDs) · settings
 · undo/redo (move/rotate/scale/create/delete/attach) · snap chips · zoom
 cluster · tabs/sheets/diálogos — **sem uma única superfície cinzenta ou canto
 vivo**; regressões B-B/N1/N2 re-executadas.
+
+
+## 5. Gates (fecho)
+
+| Gate | Estado |
+|---|---|
+| CI Linux (linux-debug + linux-release) | VERDE @ e6c3573 (commits 9e10d2c/3b483c5/e6c3573 todos verdes) |
+| CI Android (assembleDebug arm64+x86_64) | VERDE @ e6c3573 |
+| APK do CI | goni-debug-apk @ run 35686873824 → goni-p4.5-debug.apk (7.43 MB) |
+| SHA256 | 7779055760e3379771d61e1db1b62dc448ddb077d45f5a2986468247c63f62cb |
+| Testes de editor (regressões) | 31/31 local (166 casos, +11 [p45]) |
+| Grep zero-defaults | 0 (AlertDialog/Spinner/simple_list_item/CheckBox/Toast default) |
+| Loop Producer→Critic | 2 iterações — 2ª apanhou alvos <48dp (§1.8) e elevou tudo |
+| Verificação device (round 5) | PENDENTE do usuário — passos na secção 4 |
+
+## 6. NOT VERIFIED / LIMITATION (honesto)
+
+- **Device round 5 pendente**: visual real (cantos, scrim, motion, IME com o
+  novo chrome) — kotlinc/CI provam compilação, não aparência.
+- **Snap em filhos de pais rotacionados**: o snap é aplicado ao ALVO EM
+  MUNDO; para filhos com pai rotacionado, a posição local resultante pode
+  não cair exatamente na grade local (documentado no código — aproximação
+  deliberada; raiz é exato).
+- **Fit sem texturas resolvidas** (TextureCache nulo em testes): AABB usa o
+  quad da escala; no device o cache resolve ppu/região (o código tem os
+  dois caminhos).
+- **Undo e seleção**: restaurar snapshot recria a cena (IDs novos) — a
+  seleção é LIMPA a cada undo/redo (honesto; documentado no §1.1 Bloco C).
+- **playHud**: caminho legado do P4.1 (o Modo Jogo cobre todo o Play desde
+  a P4.2 — a pill só apareceria num Play sem chrome, que não existe mais).
+  Mantida wired (atualiza por frame), zero UI morta nova introduzida.
